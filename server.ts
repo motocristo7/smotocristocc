@@ -52,12 +52,21 @@ const DEFAULT_ADMIN_USER = {
 
 function hashPassword(plain: string): string {
   const salt = crypto.randomBytes(16).toString('hex');
-  const derived = crypto.scryptSync(plain, salt, 64).toString('hex');
-  return `scrypt$${salt}$${derived}`;
+  const derived = crypto.pbkdf2Sync(plain, salt, 100000, 32, 'sha256').toString('hex');
+  return `pbkdf2$${salt}$${derived}`;
 }
 
 function verifyPassword(plain: string, stored?: string): boolean {
   if (!stored || !plain) return false;
+  if (stored.startsWith('pbkdf2$')) {
+    const parts = stored.split('$');
+    if (parts.length !== 3) return false;
+    const [, salt, originalHex] = parts;
+    const derivedBuf = crypto.pbkdf2Sync(plain, salt, 100000, 32, 'sha256');
+    const originalBuf = Buffer.from(originalHex, 'hex');
+    if (derivedBuf.length !== originalBuf.length) return false;
+    return crypto.timingSafeEqual(derivedBuf, originalBuf);
+  }
   if (stored.startsWith('scrypt$')) {
     const parts = stored.split('$');
     if (parts.length !== 3) return false;
@@ -584,7 +593,7 @@ app.post('/api/auth/register', (req, res) => {
 
 app.post('/api/auth/login', (req, res) => {
   try {
-    const { identifier, password } = req.body || {};
+    const { identifier, password, cloudAdminUser } = req.body || {};
     if (!identifier || !identifier.trim()) {
       return res.status(400).json({ success: false, error: 'Ingresa tu correo, teléfono o cédula' });
     }
@@ -593,7 +602,44 @@ app.post('/api/auth/login', (req, res) => {
     }
 
     const current = readDatabase();
-    const users = Array.isArray(current.users) ? current.users : [DEFAULT_ADMIN_USER];
+    let users = Array.isArray(current.users) ? [...current.users] : [{ ...DEFAULT_ADMIN_USER }];
+
+    // Synchronize admin password hash from shared Firestore cloudAdminUser if newer
+    if (
+      cloudAdminUser &&
+      typeof cloudAdminUser === 'object' &&
+      cloudAdminUser.hasCustomPassword &&
+      typeof cloudAdminUser.passwordHash === 'string' &&
+      cloudAdminUser.passwordHash.startsWith('pbkdf2$')
+    ) {
+      const adminIdx = users.findIndex(
+        (u: any) =>
+          u.id === 'usr-admin-1' ||
+          u.role === 'ADMIN' ||
+          (u.email && u.email.toLowerCase() === 'servimotoscristocentro@gmail.com')
+      );
+      const localAdmin = adminIdx >= 0 ? users[adminIdx] : null;
+      const localTs = localAdmin?.passwordUpdatedAt ? Date.parse(localAdmin.passwordUpdatedAt) : 0;
+      const cloudTs = cloudAdminUser.passwordUpdatedAt
+        ? Date.parse(cloudAdminUser.passwordUpdatedAt)
+        : 0;
+
+      if (!localAdmin || !localAdmin.hasCustomPassword || cloudTs > localTs) {
+        const mergedAdmin = {
+          ...(localAdmin || DEFAULT_ADMIN_USER),
+          role: 'ADMIN',
+          password: cloudAdminUser.passwordHash,
+          hasCustomPassword: true,
+          passwordUpdatedAt: cloudAdminUser.passwordUpdatedAt || new Date().toISOString(),
+        };
+        if (adminIdx >= 0) {
+          users[adminIdx] = mergedAdmin;
+        } else {
+          users.unshift(mergedAdmin);
+        }
+        writeDatabase({ users });
+      }
+    }
 
     const cleanInput = identifier.trim().toLowerCase();
     const cleanNumbers = identifier.replace(/\D/g, '');
@@ -604,10 +650,12 @@ app.post('/api/auth/login', (req, res) => {
       cleanInput === 'admin' ||
       cleanInput === 'administrador' ||
       cleanNumbers === '04127860509' ||
+      cleanNumbers === '4127860509' ||
+      cleanNumbers === '584127860509' ||
       cleanNumbers === '19996141';
 
     // Find user
-    const matchedUser = users.find((u: any) => {
+    const matchedIdx = users.findIndex((u: any) => {
       const uEmail = (u.email || '').trim().toLowerCase();
       const uPhone = (u.phone || '').replace(/\D/g, '');
       const uDoc = (u.documentId || '').replace(/\D/g, '');
@@ -619,12 +667,14 @@ app.post('/api/auth/login', (req, res) => {
       return false;
     });
 
-    if (!matchedUser) {
+    if (matchedIdx === -1) {
       return res.status(401).json({
         success: false,
         error: 'Usuario no encontrado. Verifica tu correo, cédula o teléfono, o regístrate.',
       });
     }
+
+    let matchedUser = users[matchedIdx];
 
     // Password check
     const isDefaultAdminUnchanged =
@@ -638,6 +688,23 @@ app.post('/api/auth/login', (req, res) => {
 
     if (!validPassword) {
       return res.status(401).json({ success: false, error: 'Contraseña incorrecta' });
+    }
+
+    // Automatically upgrade legacy scrypt$ custom admin password to cross-platform pbkdf2$ so Firestore & published app share it
+    if (
+      matchedUser.role === 'ADMIN' &&
+      matchedUser.hasCustomPassword &&
+      typeof matchedUser.password === 'string' &&
+      !matchedUser.password.startsWith('pbkdf2$')
+    ) {
+      const upgradedHash = hashPassword(password);
+      matchedUser = {
+        ...matchedUser,
+        password: upgradedHash,
+        passwordUpdatedAt: matchedUser.passwordUpdatedAt || new Date().toISOString(),
+      };
+      users[matchedIdx] = matchedUser;
+      writeDatabase({ users });
     }
 
     const safeUser = {
@@ -656,6 +723,13 @@ app.post('/api/auth/login', (req, res) => {
       success: true,
       message: 'Inicio de sesión exitoso',
       user: safeUser,
+      cloudSyncHash:
+        matchedUser.role === 'ADMIN' &&
+        matchedUser.hasCustomPassword &&
+        typeof matchedUser.password === 'string' &&
+        matchedUser.password.startsWith('pbkdf2$')
+          ? matchedUser.password
+          : undefined,
     });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err.message });
@@ -688,7 +762,7 @@ app.get('/api/auth/admin-status', (_req, res) => {
 
 app.post('/api/auth/change-admin-password', (req, res) => {
   try {
-    const { currentPassword, newPassword, confirmPassword } = req.body || {};
+    const { currentPassword, newPassword, confirmPassword, cloudAdminUser } = req.body || {};
 
     if (!currentPassword || typeof currentPassword !== 'string') {
       return res.status(400).json({ success: false, error: 'Ingresa tu clave administrativa actual.' });
@@ -711,6 +785,7 @@ app.post('/api/auth/change-admin-password', (req, res) => {
 
     let adminIndex = users.findIndex(
       (u: any) =>
+        u.id === 'usr-admin-1' ||
         u.role === 'ADMIN' ||
         (u.email && u.email.toLowerCase() === 'servimotoscristocentro@gmail.com')
     );
@@ -720,12 +795,36 @@ app.post('/api/auth/change-admin-password', (req, res) => {
       adminIndex = 0;
     }
 
-    const adminUser = users[adminIndex];
+    let adminUser = users[adminIndex];
+
+    // Sync from cloudAdminUser if Firestore holds a newer custom password
+    if (
+      cloudAdminUser &&
+      typeof cloudAdminUser === 'object' &&
+      cloudAdminUser.hasCustomPassword &&
+      typeof cloudAdminUser.passwordHash === 'string' &&
+      cloudAdminUser.passwordHash.startsWith('pbkdf2$')
+    ) {
+      const localTs = adminUser?.passwordUpdatedAt ? Date.parse(adminUser.passwordUpdatedAt) : 0;
+      const cloudTs = cloudAdminUser.passwordUpdatedAt
+        ? Date.parse(cloudAdminUser.passwordUpdatedAt)
+        : 0;
+      if (!adminUser.hasCustomPassword || cloudTs > localTs) {
+        adminUser = {
+          ...adminUser,
+          password: cloudAdminUser.passwordHash,
+          hasCustomPassword: true,
+          passwordUpdatedAt: cloudAdminUser.passwordUpdatedAt || adminUser.passwordUpdatedAt,
+        };
+      }
+    }
+
     const isDefaultAdminUnchanged =
       !adminUser.hasCustomPassword && (!adminUser.password || adminUser.password === 'admin');
 
     const isCurrentValid =
       verifyPassword(currentPassword, adminUser.password) ||
+      (cloudAdminUser?.passwordHash ? verifyPassword(currentPassword, cloudAdminUser.passwordHash) : false) ||
       (isDefaultAdminUnchanged &&
         (currentPassword === 'admin' || currentPassword === 'admin123' || currentPassword === '123456'));
 
@@ -737,10 +836,11 @@ app.post('/api/auth/change-admin-password', (req, res) => {
     }
 
     const nowIso = new Date().toISOString();
+    const newHash = hashPassword(newPassword);
     const updatedAdmin = {
       ...adminUser,
       role: 'ADMIN',
-      password: hashPassword(newPassword),
+      password: newHash,
       hasCustomPassword: true,
       passwordUpdatedAt: nowIso,
     };
@@ -770,6 +870,7 @@ app.post('/api/auth/change-admin-password', (req, res) => {
       success: true,
       message: '¡Clave administrativa actualizada correctamente!',
       user: safeUser,
+      passwordHash: newHash,
     });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err.message });

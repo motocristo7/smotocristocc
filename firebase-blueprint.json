@@ -147,7 +147,10 @@
         "phone": { "type": "string", "description": "Teléfono móvil / WhatsApp" },
         "email": { "type": "string", "description": "Correo electrónico" },
         "role": { "type": "string", "description": "Rol: ADMIN o CLIENTE", "enum": ["ADMIN", "CLIENTE"] },
-        "createdAt": { "type": "string", "description": "Fecha de registro ISO" }
+        "createdAt": { "type": "string", "description": "Fecha de registro ISO" },
+        "hasCustomPassword": { "type": "boolean", "description": "Indica si el administrador configuró una clave personalizada" },
+        "passwordUpdatedAt": { "type": "string", "description": "Fecha ISO de la última actualización de clave" },
+        "passwordHash": { "type": "string", "description": "Hash criptográfico PBKDF2 de la contraseña (nunca texto plano)" }
       },
       "required": ["id", "name", "role", "createdAt"]
     },

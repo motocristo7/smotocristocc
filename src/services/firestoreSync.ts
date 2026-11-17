@@ -2,6 +2,7 @@ import {
   collection,
   doc,
   getDoc,
+  getDocFromServer,
   setDoc,
   deleteDoc,
   onSnapshot,
@@ -465,9 +466,32 @@ export async function removeOnlineOrderFromFirestore(orderId: string): Promise<v
 
 export async function syncUserToFirestore(user: AppUser): Promise<void> {
   try {
-    await setDoc(doc(db, 'users', user.id), stripUndefined(user));
+    await setDoc(doc(db, 'users', user.id), stripUndefined(user), { merge: true });
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, `users/${user.id}`);
+  }
+}
+
+export async function fetchAdminUserFromFirestore(): Promise<AppUser | null> {
+  const adminRef = doc(db, 'users', 'usr-admin-1');
+  try {
+    const serverSnap = await getDocFromServer(adminRef);
+    if (serverSnap.exists()) {
+      const data = serverSnap.data() as AppUser;
+      return { ...data, id: serverSnap.id };
+    }
+    return null;
+  } catch {
+    try {
+      const cacheSnap = await getDoc(adminRef);
+      if (cacheSnap.exists()) {
+        const data = cacheSnap.data() as AppUser;
+        return { ...data, id: cacheSnap.id };
+      }
+    } catch (error) {
+      logFirestoreError(error, OperationType.GET, 'users/usr-admin-1');
+    }
+    return null;
   }
 }
 

@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { useApp } from '../../context/AppContext';
+import { fetchAdminUserFromFirestore } from '../../services/firestoreSync';
 import { VENEZUELA_LOCATIONS, VENEZUELAN_BANKS } from '../../data/venezuela';
 import { formatUSD, formatBs } from '../../utils/whatsapp';
 import {
@@ -62,21 +63,30 @@ export const SettingsView: React.FC = () => {
   }, [settings]);
 
   React.useEffect(() => {
+    let active = true;
     setAdminStatus({
       hasCustomPassword: Boolean(currentUser?.hasCustomPassword),
       passwordUpdatedAt: currentUser?.passwordUpdatedAt || null,
     });
-    fetch('/api/auth/admin-status')
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data) => {
-        if (data?.success) {
-          setAdminStatus({
-            hasCustomPassword: Boolean(data.hasCustomPassword),
-            passwordUpdatedAt: data.passwordUpdatedAt || null,
-          });
-        }
-      })
-      .catch(() => {});
+
+    Promise.all([
+      fetch('/api/auth/admin-status')
+        .then((res) => (res.ok && (res.headers.get('content-type') || '').includes('application/json') ? res.json() : null))
+        .catch(() => null),
+      fetchAdminUserFromFirestore().catch(() => null),
+    ]).then(([serverData, cloudAdmin]) => {
+      if (!active) return;
+      const hasCustom = Boolean(serverData?.hasCustomPassword || cloudAdmin?.hasCustomPassword || currentUser?.hasCustomPassword);
+      const updatedAt = cloudAdmin?.passwordUpdatedAt || serverData?.passwordUpdatedAt || currentUser?.passwordUpdatedAt || null;
+      setAdminStatus({
+        hasCustomPassword: hasCustom,
+        passwordUpdatedAt: updatedAt,
+      });
+    });
+
+    return () => {
+      active = false;
+    };
   }, [currentUser?.hasCustomPassword, currentUser?.passwordUpdatedAt]);
 
   const availableCities = VENEZUELA_LOCATIONS.find((l) => l.state === formData.state)?.cities || [formData.city];

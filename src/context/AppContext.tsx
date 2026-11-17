@@ -66,10 +66,19 @@ import {
   recordDeletedIdsInFirestore,
   clearDeletedIdsInFirestore,
   uploadAllToFirestore,
+  syncUserToFirestore,
+  fetchAdminUserFromFirestore,
   DeletedIdsMap,
   EMPTY_DELETED_IDS,
 } from '../services/firestoreSync';
 import { testFirestoreConnection } from '../firebase';
+import {
+  DEFAULT_ADMIN_PROFILE,
+  DEFAULT_ADMIN_FALLBACK_PASSWORDS,
+  hashPasswordClient,
+  isOwnerAdminIdentifier,
+  verifyPasswordClient,
+} from '../utils/authCrypto';
 
 function normalizePhoneKey(phone?: string): string {
   if (!phone) return '';
@@ -499,35 +508,121 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setIsAuthModalOpen(false);
   };
 
+  const applyAuthenticatedUser = (user: AppUser) => {
+    const cleanUser: AppUser = {
+      id: user.id,
+      name: user.name,
+      documentId: user.documentId,
+      phone: user.phone,
+      email: user.email,
+      role: user.role,
+      createdAt: user.createdAt,
+      hasCustomPassword: Boolean(user.hasCustomPassword),
+      passwordUpdatedAt: user.passwordUpdatedAt,
+    };
+    setCurrentUser(cleanUser);
+    try {
+      localStorage.setItem('servimotos_auth_user_v1', JSON.stringify(cleanUser));
+    } catch {}
+
+    if (cleanUser.role === 'ADMIN') {
+      setIsPublicClientMode(false);
+      _setCurrentView('admin_dashboard');
+      if (typeof window !== 'undefined') {
+        try {
+          window.history.pushState(null, '', '/admin');
+        } catch {}
+      }
+    } else {
+      setIsPublicClientMode(true);
+      if (cleanUser.phone) {
+        setTrackedPhone(cleanUser.phone);
+      }
+    }
+    return cleanUser;
+  };
+
   const login = async (identifier: string, password: string) => {
+    const trimmedId = identifier.trim();
+    const isAdminAttempt = isOwnerAdminIdentifier(trimmedId);
+
+    // Fetch latest shared admin credential record from Firestore so Dev and Published apps share the same password
+    let cloudAdminUser: AppUser | null = null;
+    try {
+      cloudAdminUser = await fetchAdminUserFromFirestore();
+    } catch {
+      cloudAdminUser = null;
+    }
+
+    let serverError: string | null = null;
+    let serverUnavailable = false;
+
     try {
       const res = await fetch('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ identifier, password }),
+        body: JSON.stringify({
+          identifier: trimmedId,
+          password,
+          cloudAdminUser: isAdminAttempt ? cloudAdminUser : undefined,
+        }),
       });
-      const data = await res.json();
-      if (res.ok && data.success && data.user) {
-        setCurrentUser(data.user);
-        try {
-          localStorage.setItem('servimotos_auth_user_v1', JSON.stringify(data.user));
-        } catch {}
+      const contentType = res.headers.get('content-type') || '';
+      if (!contentType.includes('application/json')) {
+        serverUnavailable = true;
+      } else {
+        const data = await res.json();
+        if (res.ok && data.success && data.user) {
+          const cleanUser = applyAuthenticatedUser(data.user);
 
-        if (data.user.role === 'ADMIN') {
-          setIsPublicClientMode(false);
-          _setCurrentView('admin_dashboard');
-        } else {
-          setIsPublicClientMode(true);
-          if (data.user.phone) {
-            setTrackedPhone(data.user.phone);
+          // Ensure Firestore holds the latest custom PBKDF2 admin hash across environments
+          if (
+            cleanUser.role === 'ADMIN' &&
+            data.cloudSyncHash &&
+            (!cloudAdminUser?.passwordHash || cloudAdminUser.passwordHash !== data.cloudSyncHash)
+          ) {
+            syncUserToFirestore({
+              ...cleanUser,
+              passwordHash: data.cloudSyncHash,
+            }).catch(() => {});
           }
+
+          return { success: true, user: cleanUser };
         }
-        return { success: true, user: data.user };
+        if (res.status >= 500 || res.status === 404) {
+          serverUnavailable = true;
+        }
+        serverError = data?.error || 'Credenciales inválidas';
       }
-      return { success: false, error: data.error || 'Credenciales inválidas' };
-    } catch (err: any) {
-      return { success: false, error: err.message || 'Error de conexión' };
+    } catch {
+      serverUnavailable = true;
     }
+
+    // Fallback: verify owner admin credentials directly against shared Firestore + Web Crypto PBKDF2
+    if (isAdminAttempt) {
+      const targetAdmin = cloudAdminUser || DEFAULT_ADMIN_PROFILE;
+      let validInCloud = false;
+
+      if (targetAdmin.hasCustomPassword && targetAdmin.passwordHash) {
+        validInCloud = await verifyPasswordClient(password, targetAdmin.passwordHash);
+      } else if (!targetAdmin.hasCustomPassword) {
+        validInCloud = DEFAULT_ADMIN_FALLBACK_PASSWORDS.includes(password);
+      }
+
+      if (validInCloud && (serverUnavailable || cloudAdminUser?.hasCustomPassword)) {
+        const cleanUser = applyAuthenticatedUser(targetAdmin);
+        return { success: true, user: cleanUser };
+      }
+
+      if (serverUnavailable) {
+        return { success: false, error: 'Contraseña incorrecta' };
+      }
+    }
+
+    return {
+      success: false,
+      error: serverError || 'No se pudo conectar con el servidor de autenticación.',
+    };
   };
 
   const register = async (userData: {
@@ -567,24 +662,98 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     newPassword: string,
     confirmPassword: string
   ): Promise<{ success: boolean; error?: string; user?: AppUser }> => {
+    if (!currentPassword) {
+      return { success: false, error: 'Ingresa tu clave administrativa actual.' };
+    }
+    if (!newPassword || newPassword.trim().length < 4) {
+      return { success: false, error: 'La nueva clave debe tener al menos 4 caracteres.' };
+    }
+    if (confirmPassword !== undefined && newPassword !== confirmPassword) {
+      return { success: false, error: 'La nueva clave y su confirmación no coinciden.' };
+    }
+
+    let cloudAdminUser: AppUser | null = null;
+    try {
+      cloudAdminUser = await fetchAdminUserFromFirestore();
+    } catch {
+      cloudAdminUser = null;
+    }
+
+    let serverUnavailable = false;
+    let serverError: string | null = null;
+
     try {
       const res = await fetch('/api/auth/change-admin-password', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ currentPassword, newPassword, confirmPassword }),
+        body: JSON.stringify({
+          currentPassword,
+          newPassword,
+          confirmPassword,
+          cloudAdminUser,
+        }),
       });
-      const data = await res.json();
-      if (res.ok && data.success && data.user) {
-        setCurrentUser(data.user);
-        try {
-          localStorage.setItem('servimotos_auth_user_v1', JSON.stringify(data.user));
-        } catch {}
-        return { success: true, user: data.user };
+      const contentType = res.headers.get('content-type') || '';
+      if (!contentType.includes('application/json')) {
+        serverUnavailable = true;
+      } else {
+        const data = await res.json();
+        if (res.ok && data.success && data.user) {
+          const cleanUser = applyAuthenticatedUser(data.user);
+          // Persist PBKDF2 hash in Firestore so Dev and Published URLs update immediately
+          const hashToStore = data.passwordHash || (await hashPasswordClient(newPassword));
+          await syncUserToFirestore({
+            ...cleanUser,
+            passwordHash: hashToStore,
+          }).catch(() => {});
+          return { success: true, user: cleanUser };
+        }
+        if (res.status >= 500 || res.status === 404) {
+          serverUnavailable = true;
+        }
+        serverError = data?.error || 'No se pudo cambiar la clave administrativa.';
       }
-      return { success: false, error: data.error || 'No se pudo cambiar la clave administrativa.' };
-    } catch (err: any) {
-      return { success: false, error: err.message || 'Error de conexión con el servidor.' };
+    } catch {
+      serverUnavailable = true;
     }
+
+    // Fallback when API endpoint is unavailable (e.g. static published environment)
+    if (serverUnavailable) {
+      const targetAdmin = cloudAdminUser || DEFAULT_ADMIN_PROFILE;
+      const isCurrentValid =
+        targetAdmin.hasCustomPassword && targetAdmin.passwordHash
+          ? await verifyPasswordClient(currentPassword, targetAdmin.passwordHash)
+          : DEFAULT_ADMIN_FALLBACK_PASSWORDS.includes(currentPassword);
+
+      if (!isCurrentValid) {
+        return {
+          success: false,
+          error: 'La clave actual es incorrecta. Verifícala e intenta de nuevo.',
+        };
+      }
+
+      const nowIso = new Date().toISOString();
+      const newHash = await hashPasswordClient(newPassword);
+      const updatedUser: AppUser = {
+        ...DEFAULT_ADMIN_PROFILE,
+        ...(cloudAdminUser || {}),
+        id: 'usr-admin-1',
+        role: 'ADMIN',
+        hasCustomPassword: true,
+        passwordUpdatedAt: nowIso,
+      };
+      await syncUserToFirestore({
+        ...updatedUser,
+        passwordHash: newHash,
+      });
+      const cleanUser = applyAuthenticatedUser(updatedUser);
+      return { success: true, user: cleanUser };
+    }
+
+    return {
+      success: false,
+      error: serverError || 'No se pudo cambiar la clave administrativa.',
+    };
   };
 
   const logout = () => {

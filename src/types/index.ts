@@ -10,6 +10,7 @@ export interface AppUser {
   createdAt: string;
   hasCustomPassword?: boolean;
   passwordUpdatedAt?: string;
+  passwordHash?: string;
 }
 
 export type DefaultProductCategory =

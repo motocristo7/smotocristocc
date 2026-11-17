@@ -18,6 +18,7 @@ import { AdminSidebar } from './components/layout/AdminSidebar';
 import { InvoiceModal } from './components/modals/InvoiceModal';
 import { WhatsAppModal } from './components/modals/WhatsAppModal';
 import { AuthModal } from './components/modals/AuthModal';
+import { ChangeAdminPasswordModal } from './components/modals/ChangeAdminPasswordModal';
 import {
   ShieldCheck,
   Phone,
@@ -96,6 +97,7 @@ const AppContent: React.FC = () => {
         onClose={closeAuthModal}
         defaultTab={authModalTab}
       />
+      <ChangeAdminPasswordModal />
 
       {/* Clean Domain Footer */}
       <footer className="bg-slate-950 text-slate-400 text-xs border-t border-slate-800 mt-auto no-print">

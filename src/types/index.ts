@@ -8,6 +8,8 @@ export interface AppUser {
   email?: string;
   role: UserRole;
   createdAt: string;
+  hasCustomPassword?: boolean;
+  passwordUpdatedAt?: string;
 }
 
 export type DefaultProductCategory =

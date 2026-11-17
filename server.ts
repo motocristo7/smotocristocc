@@ -4,6 +4,7 @@ import { createServer as createViteServer } from 'vite';
 import https from 'https';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import crypto from 'crypto';
 
 import fs from 'fs';
 import {
@@ -45,8 +46,29 @@ const DEFAULT_ADMIN_USER = {
   documentId: 'V-19996141',
   role: 'ADMIN',
   password: 'admin',
+  hasCustomPassword: false,
   createdAt: '2026-01-01T00:00:00.000Z',
 };
+
+function hashPassword(plain: string): string {
+  const salt = crypto.randomBytes(16).toString('hex');
+  const derived = crypto.scryptSync(plain, salt, 64).toString('hex');
+  return `scrypt$${salt}$${derived}`;
+}
+
+function verifyPassword(plain: string, stored?: string): boolean {
+  if (!stored || !plain) return false;
+  if (stored.startsWith('scrypt$')) {
+    const parts = stored.split('$');
+    if (parts.length !== 3) return false;
+    const [, salt, originalHex] = parts;
+    const derivedBuf = crypto.scryptSync(plain, salt, 64);
+    const originalBuf = Buffer.from(originalHex, 'hex');
+    if (derivedBuf.length !== originalBuf.length) return false;
+    return crypto.timingSafeEqual(derivedBuf, originalBuf);
+  }
+  return stored === plain;
+}
 
 interface DeletedIdsMap {
   sales: string[];
@@ -605,9 +627,14 @@ app.post('/api/auth/login', (req, res) => {
     }
 
     // Password check
+    const isDefaultAdminUnchanged =
+      matchedUser.role === 'ADMIN' &&
+      !matchedUser.hasCustomPassword &&
+      (!matchedUser.password || matchedUser.password === 'admin');
+
     const validPassword =
-      matchedUser.password === password ||
-      (matchedUser.role === 'ADMIN' && (password === 'admin' || password === 'admin123' || password === '123456'));
+      verifyPassword(password, matchedUser.password) ||
+      (isDefaultAdminUnchanged && (password === 'admin' || password === 'admin123' || password === '123456'));
 
     if (!validPassword) {
       return res.status(401).json({ success: false, error: 'Contraseña incorrecta' });
@@ -621,11 +648,127 @@ app.post('/api/auth/login', (req, res) => {
       email: matchedUser.email,
       role: matchedUser.role,
       createdAt: matchedUser.createdAt,
+      hasCustomPassword: Boolean(matchedUser.hasCustomPassword),
+      passwordUpdatedAt: matchedUser.passwordUpdatedAt,
     };
 
     return res.json({
       success: true,
       message: 'Inicio de sesión exitoso',
+      user: safeUser,
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.get('/api/auth/admin-status', (_req, res) => {
+  try {
+    const current = readDatabase();
+    const users = Array.isArray(current.users) ? current.users : [DEFAULT_ADMIN_USER];
+    const adminUser =
+      users.find(
+        (u: any) =>
+          u.role === 'ADMIN' ||
+          (u.email && u.email.toLowerCase() === 'servimotoscristocentro@gmail.com')
+      ) || DEFAULT_ADMIN_USER;
+
+    return res.json({
+      success: true,
+      hasCustomPassword: Boolean(adminUser.hasCustomPassword),
+      passwordUpdatedAt: adminUser.passwordUpdatedAt || null,
+      email: adminUser.email || DEFAULT_ADMIN_USER.email,
+      phone: adminUser.phone || DEFAULT_ADMIN_USER.phone,
+      documentId: adminUser.documentId || DEFAULT_ADMIN_USER.documentId,
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+app.post('/api/auth/change-admin-password', (req, res) => {
+  try {
+    const { currentPassword, newPassword, confirmPassword } = req.body || {};
+
+    if (!currentPassword || typeof currentPassword !== 'string') {
+      return res.status(400).json({ success: false, error: 'Ingresa tu clave administrativa actual.' });
+    }
+    if (!newPassword || typeof newPassword !== 'string' || newPassword.trim().length < 4) {
+      return res.status(400).json({
+        success: false,
+        error: 'La nueva clave debe tener al menos 4 caracteres.',
+      });
+    }
+    if (confirmPassword !== undefined && newPassword !== confirmPassword) {
+      return res.status(400).json({
+        success: false,
+        error: 'La nueva clave y su confirmación no coinciden.',
+      });
+    }
+
+    const current = readDatabase();
+    const users = Array.isArray(current.users) ? [...current.users] : [{ ...DEFAULT_ADMIN_USER }];
+
+    let adminIndex = users.findIndex(
+      (u: any) =>
+        u.role === 'ADMIN' ||
+        (u.email && u.email.toLowerCase() === 'servimotoscristocentro@gmail.com')
+    );
+
+    if (adminIndex === -1) {
+      users.unshift({ ...DEFAULT_ADMIN_USER });
+      adminIndex = 0;
+    }
+
+    const adminUser = users[adminIndex];
+    const isDefaultAdminUnchanged =
+      !adminUser.hasCustomPassword && (!adminUser.password || adminUser.password === 'admin');
+
+    const isCurrentValid =
+      verifyPassword(currentPassword, adminUser.password) ||
+      (isDefaultAdminUnchanged &&
+        (currentPassword === 'admin' || currentPassword === 'admin123' || currentPassword === '123456'));
+
+    if (!isCurrentValid) {
+      return res.status(401).json({
+        success: false,
+        error: 'La clave actual es incorrecta. Verifícala e intenta de nuevo.',
+      });
+    }
+
+    const nowIso = new Date().toISOString();
+    const updatedAdmin = {
+      ...adminUser,
+      role: 'ADMIN',
+      password: hashPassword(newPassword),
+      hasCustomPassword: true,
+      passwordUpdatedAt: nowIso,
+    };
+
+    users[adminIndex] = updatedAdmin;
+    const saved = writeDatabase({ users });
+    if (!saved) {
+      return res.status(500).json({
+        success: false,
+        error: 'No se pudo guardar la nueva clave en el servidor.',
+      });
+    }
+
+    const safeUser = {
+      id: updatedAdmin.id,
+      name: updatedAdmin.name,
+      documentId: updatedAdmin.documentId,
+      phone: updatedAdmin.phone,
+      email: updatedAdmin.email,
+      role: updatedAdmin.role,
+      createdAt: updatedAdmin.createdAt,
+      hasCustomPassword: true,
+      passwordUpdatedAt: nowIso,
+    };
+
+    return res.json({
+      success: true,
+      message: '¡Clave administrativa actualizada correctamente!',
       user: safeUser,
     });
   } catch (err: any) {

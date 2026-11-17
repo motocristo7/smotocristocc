@@ -384,6 +384,9 @@ interface AppContextType {
   closeAuthModal: () => void;
   login: (identifier: string, password: string) => Promise<{ success: boolean; user?: AppUser; error?: string }>;
   register: (userData: { name: string; documentId: string; phone: string; email?: string; password: string }) => Promise<{ success: boolean; user?: AppUser; error?: string }>;
+  changeAdminPassword: (currentPassword: string, newPassword: string, confirmPassword: string) => Promise<{ success: boolean; error?: string; user?: AppUser }>;
+  isChangePasswordModalOpen: boolean;
+  setIsChangePasswordModalOpen: (open: boolean) => void;
   logout: () => void;
 
   // Firebase Real-time Synchronization
@@ -485,6 +488,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
   const [authModalTab, setAuthModalTab] = useState<'login' | 'register'>('login');
+  const [isChangePasswordModalOpen, setIsChangePasswordModalOpen] = useState(false);
 
   const openAuthModal = (tab: 'login' | 'register' = 'login') => {
     setAuthModalTab(tab);
@@ -555,6 +559,31 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return { success: false, error: data.error || 'No se pudo crear la cuenta' };
     } catch (err: any) {
       return { success: false, error: err.message || 'Error de conexión' };
+    }
+  };
+
+  const changeAdminPassword = async (
+    currentPassword: string,
+    newPassword: string,
+    confirmPassword: string
+  ): Promise<{ success: boolean; error?: string; user?: AppUser }> => {
+    try {
+      const res = await fetch('/api/auth/change-admin-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ currentPassword, newPassword, confirmPassword }),
+      });
+      const data = await res.json();
+      if (res.ok && data.success && data.user) {
+        setCurrentUser(data.user);
+        try {
+          localStorage.setItem('servimotos_auth_user_v1', JSON.stringify(data.user));
+        } catch {}
+        return { success: true, user: data.user };
+      }
+      return { success: false, error: data.error || 'No se pudo cambiar la clave administrativa.' };
+    } catch (err: any) {
+      return { success: false, error: err.message || 'Error de conexión con el servidor.' };
     }
   };
 
@@ -4436,6 +4465,9 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
         closeAuthModal,
         login,
         register,
+        changeAdminPassword,
+        isChangePasswordModalOpen,
+        setIsChangePasswordModalOpen,
         logout,
         isFirebaseConnected,
         firebaseSyncStatus,

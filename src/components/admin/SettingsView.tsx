@@ -21,6 +21,8 @@ import {
   Check,
   Database,
   Flame,
+  KeyRound,
+  Lock,
 } from 'lucide-react';
 
 export const SettingsView: React.FC = () => {
@@ -37,6 +39,8 @@ export const SettingsView: React.FC = () => {
     isFirebaseConnected,
     firebaseConfigData,
     products,
+    currentUser,
+    setIsChangePasswordModalOpen,
   } = useApp();
   const [formData, setFormData] = useState({ ...settings });
   const [savedSuccess, setSavedSuccess] = useState(false);
@@ -45,10 +49,35 @@ export const SettingsView: React.FC = () => {
   const [copiedFirebaseConfig, setCopiedFirebaseConfig] = useState(false);
   const [firebaseSyncing, setFirebaseSyncing] = useState(false);
   const [firebaseSyncMsg, setFirebaseSyncMsg] = useState<string | null>(null);
+  const [adminStatus, setAdminStatus] = useState<{
+    hasCustomPassword: boolean;
+    passwordUpdatedAt: string | null;
+  }>({
+    hasCustomPassword: Boolean(currentUser?.hasCustomPassword),
+    passwordUpdatedAt: currentUser?.passwordUpdatedAt || null,
+  });
 
   React.useEffect(() => {
     setFormData(settings);
   }, [settings]);
+
+  React.useEffect(() => {
+    setAdminStatus({
+      hasCustomPassword: Boolean(currentUser?.hasCustomPassword),
+      passwordUpdatedAt: currentUser?.passwordUpdatedAt || null,
+    });
+    fetch('/api/auth/admin-status')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data?.success) {
+          setAdminStatus({
+            hasCustomPassword: Boolean(data.hasCustomPassword),
+            passwordUpdatedAt: data.passwordUpdatedAt || null,
+          });
+        }
+      })
+      .catch(() => {});
+  }, [currentUser?.hasCustomPassword, currentUser?.passwordUpdatedAt]);
 
   const availableCities = VENEZUELA_LOCATIONS.find((l) => l.state === formData.state)?.cities || [formData.city];
 
@@ -100,6 +129,48 @@ export const SettingsView: React.FC = () => {
         <p className="text-xs text-slate-500">
           Ajusta la tasa oficial del Banco Central de Venezuela, tus datos de Pago Móvil y cuentas para la facturación.
         </p>
+      </div>
+
+      {/* Seguridad y Clave de Usuario Administrativo */}
+      <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-2xs flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div className="flex items-start gap-3">
+          <div className="w-10 h-10 rounded-xl bg-amber-100 text-amber-700 flex items-center justify-center shrink-0 border border-amber-200">
+            <Lock className="w-5 h-5" />
+          </div>
+          <div className="space-y-1">
+            <div className="flex items-center gap-2 flex-wrap">
+              <h3 className="text-sm font-bold text-slate-900">
+                Clave de Acceso Administrativo
+              </h3>
+              {adminStatus.hasCustomPassword ? (
+                <span className="bg-emerald-100 text-emerald-800 border border-emerald-200 text-[10px] font-bold px-2 py-0.5 rounded-full">
+                  Clave Personalizada Activa
+                </span>
+              ) : (
+                <span className="bg-amber-100 text-amber-900 border border-amber-200 text-[10px] font-bold px-2 py-0.5 rounded-full">
+                  Clave Predeterminada
+                </span>
+              )}
+            </div>
+            <p className="text-xs text-slate-500">
+              Usuario administrador: <strong className="font-mono text-slate-700">{currentUser?.email || 'SERVIMOTOSCRISTOCENTRO@gmail.com'}</strong>
+              {adminStatus.passwordUpdatedAt && (
+                <span className="ml-2 text-[11px] text-slate-400">
+                  · Último cambio: {new Date(adminStatus.passwordUpdatedAt).toLocaleDateString('es-VE')}
+                </span>
+              )}
+            </p>
+          </div>
+        </div>
+
+        <button
+          type="button"
+          onClick={() => setIsChangePasswordModalOpen(true)}
+          className="px-4 py-2.5 bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs rounded-xl shadow-xs transition-colors flex items-center justify-center gap-2 cursor-pointer shrink-0"
+        >
+          <KeyRound className="w-4 h-4 text-amber-400" />
+          <span>Editar Clave Administrativa</span>
+        </button>
       </div>
 
       <form onSubmit={handleSubmit} className="space-y-6">

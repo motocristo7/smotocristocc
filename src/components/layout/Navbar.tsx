@@ -16,6 +16,7 @@ import {
   ChevronDown,
   ShieldCheck,
   UserPlus,
+  KeyRound,
 } from 'lucide-react';
 
 interface NavbarProps {
@@ -44,6 +45,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenCart }) => {
     isAuthenticated,
     isAdmin,
     openAuthModal,
+    setIsChangePasswordModalOpen,
     logout,
   } = useApp();
   const [isEditingRate, setIsEditingRate] = useState(false);
@@ -307,6 +309,17 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenCart }) => {
                         >
                           <LayoutDashboard className="w-3.5 h-3.5 text-amber-600" />
                           <span>Panel Administrativo</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsChangePasswordModalOpen(true);
+                            setIsUserMenuOpen(false);
+                          }}
+                          className="w-full text-left px-4 py-2 text-xs text-slate-700 hover:bg-amber-50 flex items-center gap-2 cursor-pointer font-semibold"
+                        >
+                          <KeyRound className="w-3.5 h-3.5 text-amber-600" />
+                          <span>Editar Clave Admin</span>
                         </button>
                         <button
                           type="button"

@@ -21,6 +21,7 @@ import {
   Share2,
 } from 'lucide-react';
 import { normalizeImageUrl, PRESET_PRODUCT_IMAGES } from '../../utils/imageUrl';
+import { CustomerPendingAccountsModal } from '../modals/CustomerPendingAccountsModal';
 
 interface StorefrontProps {
   onOpenCart: (step?: 'cart' | 'checkout') => void;
@@ -43,6 +44,7 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
   const [copiedStoreLink, setCopiedStoreLink] = useState(false);
   const [recentlyAddedId, setRecentlyAddedId] = useState<string | null>(null);
   const [cartToast, setCartToast] = useState<{ productName: string } | null>(null);
+  const [isPendingAccountsOpen, setIsPendingAccountsOpen] = useState(false);
 
   const storeName = onlineStoreBrand || 'Mercado Moto CC';
 
@@ -149,20 +151,29 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
             <div className="mt-8 flex flex-wrap items-center gap-3">
               <a
                 href="#catalogo"
-                className="px-6 py-3 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-sm transition-colors shadow-lg shadow-amber-500/20 cursor-pointer"
+                className="px-6 py-3 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-sm transition-colors shadow-lg shadow-amber-500/20 cursor-pointer whitespace-nowrap shrink-0"
               >
                 Explorar Catálogo Online
               </a>
               <button
+                type="button"
+                onClick={() => setIsPendingAccountsOpen(true)}
+                className="px-5 py-3 rounded-lg bg-slate-800/90 hover:bg-slate-700 text-white border border-amber-500/40 font-semibold text-sm transition-colors backdrop-blur-xs flex items-center gap-2 cursor-pointer whitespace-nowrap shrink-0"
+              >
+                <CreditCard className="w-4 h-4 text-amber-400 shrink-0" />
+                <span>Cuentas Pendientes por Pagar</span>
+              </button>
+              <button
+                type="button"
                 onClick={() => setCurrentView('consulta_cliente')}
-                className="px-5 py-3 rounded-lg bg-slate-800/80 hover:bg-slate-700 text-white border border-slate-700 font-semibold text-sm transition-colors backdrop-blur-xs cursor-pointer"
+                className="px-5 py-3 rounded-lg bg-slate-800/80 hover:bg-slate-700 text-white border border-slate-700 font-semibold text-sm transition-colors backdrop-blur-xs cursor-pointer whitespace-nowrap shrink-0"
               >
                 Consultar Estado de mi Moto
               </button>
               <button
                 type="button"
                 onClick={handleCopyStoreLink}
-                className="px-4 py-3 rounded-lg bg-slate-900/90 hover:bg-slate-800 text-slate-300 hover:text-white border border-slate-700/80 font-medium text-xs transition-colors flex items-center gap-2 cursor-pointer"
+                className="px-4 py-3 rounded-lg bg-slate-900/90 hover:bg-slate-800 text-slate-300 hover:text-white border border-slate-700/80 font-medium text-xs transition-colors flex items-center gap-2 cursor-pointer whitespace-nowrap shrink-0"
                 title="Copiar enlace de Mercado Moto CC para compartir"
               >
                 {copiedStoreLink ? (
@@ -752,6 +763,12 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
           </button>
         </div>
       )}
+
+      {/* Pending Accounts Lookup Modal by Cédula */}
+      <CustomerPendingAccountsModal
+        isOpen={isPendingAccountsOpen}
+        onClose={() => setIsPendingAccountsOpen(false)}
+      />
     </div>
   );
 };

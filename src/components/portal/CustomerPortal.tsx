@@ -19,6 +19,7 @@ import {
   ArrowRight,
   TrendingUp,
   FileDown,
+  CreditCard,
 } from 'lucide-react';
 
 export const CustomerPortal: React.FC = () => {
@@ -39,7 +40,7 @@ export const CustomerPortal: React.FC = () => {
   const [inputPhone, setInputPhone] = useState(
     trackedPhone || currentUser?.phone || currentUser?.documentId || ''
   );
-  const [activeTab, setActiveTab] = useState<'ventas' | 'servicios'>('servicios');
+  const [activeTab, setActiveTab] = useState<'servicios' | 'ventas' | 'cuentas'>('servicios');
 
   useEffect(() => {
     if (currentUser?.phone) {
@@ -52,44 +53,62 @@ export const CustomerPortal: React.FC = () => {
   }, [currentUser, trackedPhone]);
 
   const cleanSearch = inputPhone.replace(/\D/g, '');
+  const cleanSearchAlnum = inputPhone.trim().toLowerCase().replace(/[^a-z0-9]/g, '');
+
+  const matchedCustomer = useMemo(() => {
+    if (!cleanSearch && !cleanSearchAlnum) return null;
+    return customers.find((c) => {
+      const p = c.phone.replace(/\D/g, '');
+      const docDigits = (c.documentId || '').replace(/\D/g, '');
+      const docAlnum = (c.documentId || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+      if (cleanSearch && p && (p.includes(cleanSearch) || cleanSearch.includes(p))) return true;
+      if (cleanSearch.length >= 5 && docDigits && docDigits === cleanSearch) return true;
+      if (cleanSearchAlnum && docAlnum && docAlnum === cleanSearchAlnum) return true;
+      return false;
+    });
+  }, [customers, cleanSearch, cleanSearchAlnum]);
 
   const matchingSales = useMemo(() => {
     if (!cleanSearch && !inputPhone.trim()) return [];
-    const query = inputPhone.trim().toLowerCase();
+    const matchedCustPhone = (matchedCustomer?.phone || '').replace(/\D/g, '');
     return sales.filter((s) => {
+      if (matchedCustomer && s.customerId && s.customerId === matchedCustomer.id) return true;
       const p = s.customerPhone.replace(/\D/g, '');
-      const doc = (s.customerDocument || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-      const cleanQ = query.replace(/[^a-z0-9]/g, '');
+      const docAlnum = (s.customerDocument || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+      const docDigits = (s.customerDocument || '').replace(/\D/g, '');
       return (
-        (cleanSearch && (p.includes(cleanSearch) || cleanSearch.includes(p))) ||
-        (cleanQ && doc.includes(cleanQ))
+        (cleanSearch && p && (p.includes(cleanSearch) || cleanSearch.includes(p))) ||
+        (matchedCustPhone && p && (p.includes(matchedCustPhone) || matchedCustPhone.includes(p))) ||
+        (cleanSearch.length >= 5 && docDigits && docDigits === cleanSearch) ||
+        (cleanSearchAlnum && docAlnum.includes(cleanSearchAlnum))
       );
     });
-  }, [sales, cleanSearch, inputPhone]);
+  }, [sales, matchedCustomer, cleanSearch, cleanSearchAlnum, inputPhone]);
+
+  const matchingPendingSales = useMemo(() => {
+    return matchingSales.filter((s) => {
+      if (s.paymentType !== 'CREDITO' && s.paymentType !== 'APARTADO') return false;
+      if (s.isVoided || s.creditStatus === 'PAGADO' || s.creditStatus === 'ANULADO') return false;
+      return Math.max(0, s.total - (s.creditPaidAmount || 0)) > 0.01;
+    });
+  }, [matchingSales]);
 
   const matchingServices = useMemo(() => {
     if (!cleanSearch && !inputPhone.trim()) return [];
-    const query = inputPhone.trim().toLowerCase();
     return serviceOrders.filter((ord) => {
+      if (matchedCustomer && ord.customerId && ord.customerId === matchedCustomer.id) return true;
       const p = ord.customerPhone.replace(/\D/g, '');
-      const doc = (ord.customerDocument || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+      const docAlnum = (ord.customerDocument || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+      const docDigits = (ord.customerDocument || '').replace(/\D/g, '');
       const plate = ord.motorcycle.plate.toLowerCase().replace(/[^a-z0-9]/g, '');
-      const cleanQ = query.replace(/[^a-z0-9]/g, '');
 
       return (
-        (cleanSearch && (p.includes(cleanSearch) || cleanSearch.includes(p))) ||
-        (cleanQ && (plate.includes(cleanQ) || doc.includes(cleanQ)))
+        (cleanSearch && p && (p.includes(cleanSearch) || cleanSearch.includes(p))) ||
+        (cleanSearch.length >= 5 && docDigits && docDigits === cleanSearch) ||
+        (cleanSearchAlnum && (plate.includes(cleanSearchAlnum) || docAlnum.includes(cleanSearchAlnum)))
       );
     });
-  }, [serviceOrders, cleanSearch, inputPhone]);
-
-  const matchedCustomer = useMemo(() => {
-    if (!cleanSearch) return null;
-    return customers.find((c) => {
-      const p = c.phone.replace(/\D/g, '');
-      return p.includes(cleanSearch) || cleanSearch.includes(p);
-    });
-  }, [customers, cleanSearch]);
+  }, [serviceOrders, matchedCustomer, cleanSearch, cleanSearchAlnum, inputPhone]);
 
   const handleQuickLookup = (phone: string) => {
     setInputPhone(phone);
@@ -219,7 +238,7 @@ export const CustomerPortal: React.FC = () => {
                 type="text"
                 value={inputPhone}
                 onChange={(e) => setInputPhone(e.target.value)}
-                placeholder="Ingresa tu celular (ej. 04141234567) o placa..."
+                placeholder="Ingresa tu cédula (V-19996141), celular o placa..."
                 className="w-full pl-10 pr-4 py-3 text-sm rounded-xl border border-slate-200 bg-slate-50 focus:bg-white focus:outline-hidden focus:border-amber-500 font-mono transition-colors"
               />
             </div>
@@ -313,6 +332,18 @@ export const CustomerPortal: React.FC = () => {
               >
                 <FileText className="w-4 h-4 shrink-0" />
                 <span>Facturas de Compra ({matchingSales.length})</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveTab('cuentas')}
+                className={`flex items-center gap-2 py-3 px-4 sm:px-5 border-b-2 font-semibold text-xs sm:text-sm transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
+                  activeTab === 'cuentas'
+                    ? 'border-amber-600 text-amber-600'
+                    : 'border-transparent text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                <CreditCard className="w-4 h-4 shrink-0" />
+                <span>Cuentas por Pagar ({matchingPendingSales.length})</span>
               </button>
             </div>
 
@@ -600,6 +631,94 @@ export const CustomerPortal: React.FC = () => {
                             >
                               <MessageSquare className="w-3.5 h-3.5" />
                               <span>WhatsApp</span>
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            )}
+
+            {/* Tab: Pending Accounts Payable */}
+            {activeTab === 'cuentas' && (
+              <div className="space-y-4">
+                {matchingPendingSales.length === 0 ? (
+                  <div className="bg-white rounded-xl border border-slate-200 p-8 text-center text-slate-500">
+                    <CheckCircle2 className="w-10 h-10 mx-auto text-emerald-500 mb-2" />
+                    <h4 className="font-bold text-slate-800 text-sm">Sin cuentas pendientes por pagar</h4>
+                    <p className="text-xs text-slate-500 mt-1 max-w-sm mx-auto">
+                      No encontramos saldos pendientes a crédito o sistema de apartado para esta cédula o teléfono.
+                    </p>
+                  </div>
+                ) : (
+                  matchingPendingSales.map((sale) => {
+                    const paidUSD = sale.creditPaidAmount || 0;
+                    const pendingUSD = Math.max(0, sale.total - paidUSD);
+                    const pendingBs = pendingUSD * settings.bcvRate;
+                    const modality = sale.paymentType === 'APARTADO' ? 'Sistema de Apartado' : 'Crédito';
+
+                    return (
+                      <div
+                        key={sale.id}
+                        className="bg-white rounded-xl border border-slate-200 p-5 shadow-2xs flex flex-col sm:flex-row sm:items-center justify-between gap-4"
+                      >
+                        <div>
+                          <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500">
+                            <span className="font-mono font-bold text-slate-950">
+                              {sale.invoiceNumber}
+                            </span>
+                            <span aria-hidden="true">·</span>
+                            <span className="font-semibold text-amber-800">{modality}</span>
+                            <span aria-hidden="true">·</span>
+                            <span>{new Date(sale.createdAt).toLocaleDateString('es-VE', { dateStyle: 'medium' })}</span>
+                            {sale.creditDueDate && (
+                              <>
+                                <span aria-hidden="true">·</span>
+                                <span className="font-mono">Vence: {sale.creditDueDate}</span>
+                              </>
+                            )}
+                          </div>
+                          <div className="mt-2 space-y-1">
+                            {sale.items.map((item, idx) => (
+                              <p key={idx} className="text-xs text-slate-700">
+                                <span className="font-bold font-mono">{item.quantity}x</span> {item.name}
+                              </p>
+                            ))}
+                          </div>
+                          <p className="mt-2 text-xs text-slate-500 font-mono tabular-nums">
+                            Total: {formatUSD(sale.total)} · Abonado: {formatUSD(paidUSD)}
+                          </p>
+                        </div>
+
+                        <div className="flex items-center justify-between sm:justify-end gap-4 border-t sm:border-t-0 pt-3 sm:pt-0 border-slate-100">
+                          <div className="text-left sm:text-right">
+                            <span className="text-[10px] text-slate-500 uppercase font-medium block">Saldo Pendiente</span>
+                            <span className="text-base font-bold font-mono text-rose-700 tabular-nums block">
+                              {formatUSD(pendingUSD)}
+                            </span>
+                            <span className="text-xs font-semibold text-emerald-700 font-mono tabular-nums block">
+                              {formatBs(pendingBs)}
+                            </span>
+                          </div>
+
+                          <div className="flex flex-wrap items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => setSelectedInvoice(sale)}
+                              className="inline-flex items-center gap-1.5 px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-semibold rounded-lg transition-colors cursor-pointer"
+                            >
+                              <Eye className="w-3.5 h-3.5" />
+                              <span>Ver Factura</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => downloadInvoicePDF(sale, settings)}
+                              className="inline-flex items-center gap-1.5 px-3 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold rounded-lg transition-colors cursor-pointer shadow-2xs"
+                            >
+                              <FileDown className="w-3.5 h-3.5" />
+                              <span>PDF</span>
                             </button>
                           </div>
                         </div>

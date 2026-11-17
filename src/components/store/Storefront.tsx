@@ -48,8 +48,23 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
 
   const storeName = onlineStoreBrand || 'Mercado Moto CC';
 
-  const handleCopyStoreLink = () => {
-    navigator.clipboard.writeText(publicStoreUrl);
+  const handleCopyStoreLink = async () => {
+    try {
+      await navigator.clipboard.writeText(publicStoreUrl);
+    } catch {
+      const tempInput = document.createElement('textarea');
+      tempInput.value = publicStoreUrl;
+      tempInput.setAttribute('readonly', '');
+      tempInput.style.position = 'absolute';
+      tempInput.style.left = '-9999px';
+      document.body.appendChild(tempInput);
+      tempInput.select();
+      try {
+        document.execCommand('copy');
+      } finally {
+        document.body.removeChild(tempInput);
+      }
+    }
     setCopiedStoreLink(true);
     setTimeout(() => setCopiedStoreLink(false), 2500);
   };
@@ -174,7 +189,7 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
                 type="button"
                 onClick={handleCopyStoreLink}
                 className="px-4 py-3 rounded-lg bg-slate-900/90 hover:bg-slate-800 text-slate-300 hover:text-white border border-slate-700/80 font-medium text-xs transition-colors flex items-center gap-2 cursor-pointer whitespace-nowrap shrink-0"
-                title="Copiar enlace de Mercado Moto CC para compartir"
+                title={`Copiar enlace de la tienda (${publicStoreUrl}) para compartir`}
               >
                 {copiedStoreLink ? (
                   <>

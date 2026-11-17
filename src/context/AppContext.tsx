@@ -472,8 +472,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (stored === 'false') return false;
     } catch {}
 
-    // Public shared preview URL (ais-pre-) opens store if no admin route
-    if (window.location.hostname.includes('ais-pre-')) {
+    // Public shared preview URL (ais-pre- or vercel.app) opens store if no admin route
+    if (
+      window.location.hostname.includes('ais-pre-') ||
+      window.location.hostname.includes('vercel.app')
+    ) {
       return true;
     }
 
@@ -895,8 +898,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const publicStoreUrl = useMemo(() => {
-    const origin = getPublicAppOrigin();
-    return `${origin}/mercadomotocc`;
+    const origin = getPublicAppOrigin().replace(/\/+$/, '');
+    return `${origin}/`;
   }, []);
 
   // Admin Sidebar State (Collapsible)

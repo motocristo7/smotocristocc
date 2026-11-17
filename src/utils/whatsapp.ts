@@ -68,16 +68,17 @@ export function buildWhatsAppSendUrl(rawPhone: string | undefined, message: stri
   return `https://api.whatsapp.com/send?text=${encodedText}`;
 }
 
-export const PUBLIC_APP_ORIGIN = 'https://ais-pre-flhofni32tpb4dwfwnak7d-506340403707.us-west1.run.app';
+export const PUBLIC_APP_ORIGIN = 'https://smotocristocc-p5rg.vercel.app';
 
 export function getPublicAppOrigin(): string {
   if (typeof window !== 'undefined' && window.location?.origin) {
     const origin = window.location.origin;
-    if (origin.includes('localhost')) {
-      return origin;
-    }
-    if (origin.includes('ais-dev-')) {
-      return origin.replace('ais-dev-', 'ais-pre-');
+    if (
+      origin.includes('ais-dev-') ||
+      origin.includes('ais-pre-') ||
+      origin.includes('localhost')
+    ) {
+      return PUBLIC_APP_ORIGIN;
     }
     return origin;
   }

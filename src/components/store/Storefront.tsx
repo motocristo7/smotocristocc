@@ -229,10 +229,10 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
       </section>
 
       {/* Main Catalog Viewport */}
-      <main id="catalogo" className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-10">
+      <main id="catalogo" className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 pt-6 sm:pt-8">
         {/* Search & Categories Navigation Bar */}
-        <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-xs mb-8">
-          <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-4">
+        <div className="bg-white rounded-xl border border-slate-200 p-3 sm:p-4 shadow-xs mb-5">
+          <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3">
             {/* Search Input */}
             <div className="relative flex-1">
               <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
@@ -241,12 +241,12 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
                 placeholder="Buscar por repuesto, marca, referencia o moto (ej. Bera SBR, Horse, NMAX, GN)..."
-                className="w-full pl-10 pr-4 py-2.5 text-sm rounded-lg border border-slate-200 bg-slate-50 focus:bg-white focus:outline-hidden focus:border-amber-500 transition-colors"
+                className="w-full pl-10 pr-4 py-2 text-sm rounded-lg border border-slate-200 bg-slate-50 focus:bg-white focus:outline-hidden focus:border-amber-500 transition-colors"
               />
               {searchTerm && (
                 <button
                   onClick={() => setSearchTerm('')}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-slate-400 hover:text-slate-600"
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-slate-400 hover:text-slate-600 cursor-pointer"
                 >
                   Limpiar
                 </button>
@@ -255,7 +255,7 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
 
             {/* Live Tasa BCV & Stock indicator */}
             <div className="flex flex-wrap items-center gap-2.5 shrink-0 bg-slate-50 px-3 py-2 rounded-lg border border-slate-200/80 text-xs">
-              <div className="flex items-center gap-1.5 font-semibold text-emerald-700 whitespace-nowrap">
+              <div className="flex items-center gap-1.5 font-semibold text-emerald-700 whitespace-nowrap tabular-nums">
                 <TrendingUp className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
                 <span>Tasa BCV: Bs. {settings.bcvRate.toFixed(2)}</span>
               </div>
@@ -265,10 +265,10 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
           </div>
 
           {/* Category Tabs */}
-          <div className="mt-4 pt-4 border-t border-slate-100 flex items-center gap-1.5 overflow-x-auto pb-1 scrollbar-none">
+          <div className="mt-3 pt-3 border-t border-slate-100 flex items-center gap-1.5 overflow-x-auto pb-0.5 scrollbar-none">
             <button
               onClick={() => setSelectedCategory('all')}
-              className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap transition-colors cursor-pointer ${
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap shrink-0 transition-colors cursor-pointer ${
                 selectedCategory === 'all'
                   ? 'bg-slate-900 text-white shadow-2xs'
                   : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
@@ -282,13 +282,13 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
                 <button
                   key={cat}
                   onClick={() => setSelectedCategory(cat)}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-colors cursor-pointer ${
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap shrink-0 transition-colors cursor-pointer ${
                     selectedCategory === cat
                       ? 'bg-slate-900 text-white font-semibold shadow-2xs'
                       : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
                   }`}
                 >
-                  {cat} {count > 0 && <span className="opacity-70 font-mono">({count})</span>}
+                  {cat} {count > 0 && <span className="opacity-70 font-mono tabular-nums">({count})</span>}
                 </button>
               );
             })}
@@ -296,12 +296,12 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
         </div>
 
         {/* Section Header */}
-        <div className="flex flex-col sm:flex-row sm:items-baseline justify-between gap-2 mb-6">
+        <div className="flex flex-col sm:flex-row sm:items-baseline justify-between gap-2 mb-4">
           <div>
-            <h2 className="text-xl sm:text-2xl font-bold font-display text-slate-900">
+            <h2 className="text-lg sm:text-2xl font-bold font-display text-slate-900">
               Repuestos y Accesorios Disponibles en Mérida
             </h2>
-            <p className="text-xs text-slate-500 mt-1">
+            <p className="text-xs text-slate-500 mt-0.5 tabular-nums">
               Mostrando {filteredProducts.length} repuestos con precio en $ USD y equivalente en Bs. según tasa oficial BCV
             </p>
           </div>
@@ -331,23 +331,26 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
                 setSearchTerm('');
                 setSelectedCategory('all');
               }}
-              className="mt-4 px-4 py-2 bg-slate-900 text-white text-xs font-semibold rounded-lg hover:bg-slate-800 transition-colors"
+              className="mt-4 px-4 py-2 bg-slate-900 text-white text-xs font-semibold rounded-lg hover:bg-slate-800 transition-colors cursor-pointer"
             >
               Restablecer filtros
             </button>
           </div>
         ) : (
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-2.5 sm:gap-3.5">
             {filteredProducts.map((product) => {
               const priceBs = product.salePrice * settings.bcvRate;
 
               return (
-                <div
+                <article
                   key={product.id}
-                  className="group bg-white rounded-xl border border-slate-200 overflow-hidden flex flex-col hover:border-slate-300 hover:shadow-md transition-all duration-200"
+                  className="group bg-white rounded-xl border border-slate-200 overflow-hidden flex flex-col hover:border-slate-300 hover:shadow-md hover:-translate-y-0.5 transition-all duration-150"
                 >
                   {/* Product Image */}
-                  <div className="relative aspect-4/3 bg-slate-100 overflow-hidden">
+                  <div
+                    onClick={() => setSelectedProduct(product)}
+                    className="relative aspect-4/3 bg-slate-100 overflow-hidden cursor-pointer"
+                  >
                     <img
                       src={
                         normalizeImageUrl(product.imageUrl) ||
@@ -358,80 +361,73 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
                       referrerPolicy="no-referrer"
                       onError={(e) => handleProductImageError(e, product)}
                     />
-                    <div className="absolute top-2.5 left-2.5 bg-slate-900/80 backdrop-blur-xs text-white text-[10px] font-semibold px-2 py-0.5 rounded">
-                      {product.category}
-                    </div>
-                    <div className="absolute top-2.5 right-2.5 bg-emerald-600 text-white text-[10px] font-semibold px-2 py-0.5 rounded shadow-2xs">
+                    <span className="absolute top-2 right-2 bg-slate-950/80 backdrop-blur-xs text-white text-[10px] font-semibold px-1.5 py-0.5 rounded tabular-nums">
                       {product.stock} disp.
-                    </div>
+                    </span>
                   </div>
 
-                  {/* Content */}
-                  <div className="p-4 flex-1 flex flex-col justify-between">
-                    <div>
-                      <div className="flex items-center justify-between text-slate-400 text-[11px] mb-1 font-mono">
-                        <span>{product.brand}</span>
-                        <span>{product.sku}</span>
-                      </div>
-
-                      <h3
-                        onClick={() => setSelectedProduct(product)}
-                        className="font-bold text-slate-900 text-sm line-clamp-2 hover:text-amber-600 cursor-pointer transition-colors"
-                        title={product.name}
-                      >
-                        {product.name}
-                      </h3>
-
-                      <p className="text-xs text-slate-500 mt-1 line-clamp-2 leading-relaxed">
-                        {product.description}
-                      </p>
-
-                      <div className="mt-2.5 pt-2 border-t border-slate-100 text-[11px] text-slate-600">
-                        <span className="font-semibold text-slate-700">Compatible con: </span>
-                        <span className="text-slate-500">{product.compatibility}</span>
-                      </div>
+                  {/* Compact Content + Price + Actions */}
+                  <div className="p-2.5 sm:p-3 flex-1 flex flex-col">
+                    <div className="flex items-center justify-between gap-1.5 text-[10px] sm:text-[11px] text-slate-500 leading-tight">
+                      <span className="font-medium truncate">{product.brand} · {product.category}</span>
+                      <span className="font-mono text-slate-400 shrink-0 hidden sm:inline">{product.sku}</span>
                     </div>
 
-                    {/* Dual Pricing ($ USD and Bs.) & 2 Action Buttons */}
-                    <div className="mt-4 pt-3 border-t border-slate-100 space-y-2.5">
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <span className="text-base sm:text-lg font-extrabold text-slate-950 font-mono tabular-nums block leading-tight">
+                    <h3
+                      onClick={() => setSelectedProduct(product)}
+                      className="mt-1 font-bold text-slate-900 text-xs sm:text-[13px] leading-snug line-clamp-2 min-h-[2.45em] hover:text-amber-600 cursor-pointer transition-colors"
+                      title={product.name}
+                    >
+                      {product.name}
+                    </h3>
+
+                    <p
+                      className="mt-0.5 text-[11px] text-slate-500 truncate leading-tight"
+                      title={product.compatibility}
+                    >
+                      {product.compatibility}
+                    </p>
+
+                    {/* Dual Pricing ($ USD and Bs.) & 2 Compact Action Buttons */}
+                    <div className="mt-auto pt-1.5 border-t border-slate-100 flex flex-col gap-1.5">
+                      <div className="flex items-end justify-between gap-1">
+                        <div className="min-w-0">
+                          <span className="text-sm sm:text-base font-extrabold text-slate-950 font-mono tabular-nums block leading-none">
                             {formatUSD(product.salePrice)}
                           </span>
-                          <span className="text-[11px] font-bold text-emerald-700 font-mono tabular-nums block">
+                          <span className="text-[10px] sm:text-[11px] font-bold text-emerald-700 font-mono tabular-nums block leading-tight mt-0.5 truncate">
                             {formatBs(priceBs)}{' '}
-                            <span className="font-normal text-slate-400 text-[10px]">(BCV)</span>
+                            <span className="font-normal text-slate-400 text-[9px]">BCV</span>
                           </span>
                         </div>
 
                         <button
                           type="button"
                           onClick={() => setSelectedProduct(product)}
-                          className="inline-flex items-center gap-1 text-[11px] font-medium text-slate-500 hover:text-slate-900 hover:bg-slate-100 px-2 py-1 rounded-md transition-colors cursor-pointer"
-                          title="Ver detalles completos del repuesto"
+                          className="inline-flex items-center justify-center gap-1 text-[11px] font-medium text-slate-500 hover:text-slate-900 hover:bg-slate-100 p-1.5 sm:px-2 sm:py-1 rounded-md transition-colors cursor-pointer shrink-0 whitespace-nowrap"
+                          title="Ver ficha completa del repuesto"
+                          aria-label={`Ver detalles de ${product.name}`}
                         >
-                          <Eye className="w-3.5 h-3.5" />
-                          <span>Detalles</span>
+                          <Eye className="w-3.5 h-3.5 shrink-0" />
+                          <span className="hidden sm:inline">Ver</span>
                         </button>
                       </div>
 
-                      {/* 2 Buttons: Comprar (Direct to Payment) & Agregar al carrito */}
-                      <div className="grid grid-cols-2 gap-2 pt-1">
+                      <div className="grid grid-cols-2 gap-1.5">
                         <button
                           type="button"
                           onClick={() => handleBuyNow(product)}
-                          className="w-full inline-flex items-center justify-center gap-1.5 py-2.5 px-2 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs rounded-xl shadow-xs hover:shadow-sm transition-all cursor-pointer font-display"
+                          className="min-h-[36px] sm:min-h-[38px] w-full inline-flex items-center justify-center gap-1 py-1.5 px-1.5 sm:px-2 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-[11px] sm:text-xs rounded-lg shadow-2xs transition-colors cursor-pointer font-display whitespace-nowrap shrink-0"
                           title="Comprar directamente y gestionar el pago"
                         >
-                          <CreditCard className="w-3.5 h-3.5 text-slate-950 shrink-0" />
+                          <CreditCard className="w-3.5 h-3.5 text-slate-950 shrink-0 hidden min-[380px]:block" />
                           <span>Comprar</span>
                         </button>
 
                         <button
                           type="button"
                           onClick={() => handleAddToCart(product)}
-                          className={`w-full inline-flex items-center justify-center gap-1.5 py-2.5 px-2 border rounded-xl font-semibold text-xs transition-all cursor-pointer ${
+                          className={`min-h-[36px] sm:min-h-[38px] w-full inline-flex items-center justify-center gap-1 py-1.5 px-1.5 sm:px-2 border rounded-lg font-semibold text-[11px] sm:text-xs transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
                             recentlyAddedId === product.id
                               ? 'bg-emerald-50 border-emerald-400 text-emerald-800 font-bold'
                               : 'bg-slate-900 hover:bg-slate-800 text-white border-transparent'
@@ -440,20 +436,20 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
                         >
                           {recentlyAddedId === product.id ? (
                             <>
-                              <Check className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-                              <span className="whitespace-nowrap">¡Agregado!</span>
+                              <Check className="w-3.5 h-3.5 text-emerald-600 shrink-0 hidden min-[380px]:block" />
+                              <span>¡Listo!</span>
                             </>
                           ) : (
                             <>
-                              <ShoppingCart className="w-3.5 h-3.5 text-slate-200 shrink-0" />
-                              <span className="whitespace-nowrap">Al carrito</span>
+                              <ShoppingCart className="w-3.5 h-3.5 text-slate-200 shrink-0 hidden min-[380px]:block" />
+                              <span>Al carrito</span>
                             </>
                           )}
                         </button>
                       </div>
                     </div>
                   </div>
-                </div>
+                </article>
               );
             })}
           </div>

@@ -99,7 +99,7 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
   }, [allCategories, onlineProducts]);
 
   const filteredProducts = useMemo(() => {
-    return onlineProducts.filter((product) => {
+    const filtered = onlineProducts.filter((product) => {
       if (product.stock <= 0) return false;
 
       if (selectedCategory !== 'all' && product.category !== selectedCategory) {
@@ -110,6 +110,7 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
         const query = searchTerm.toLowerCase();
         return (
           product.name.toLowerCase().includes(query) ||
+          (product.description && product.description.toLowerCase().includes(query)) ||
           product.sku.toLowerCase().includes(query) ||
           product.brand.toLowerCase().includes(query) ||
           product.compatibility.toLowerCase().includes(query)
@@ -118,6 +119,10 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
 
       return true;
     });
+
+    return [...filtered].sort((a, b) =>
+      a.name.trim().localeCompare(b.name.trim(), 'es', { sensitivity: 'base', numeric: true })
+    );
   }, [onlineProducts, selectedCategory, searchTerm]);
 
   const handleCopy = (text: string, label: string) => {
@@ -368,25 +373,29 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
 
                   {/* Compact Content + Price + Actions */}
                   <div className="p-2.5 sm:p-3 flex-1 flex flex-col">
-                    <div className="flex items-center justify-between gap-1.5 text-[10px] sm:text-[11px] text-slate-500 leading-tight">
-                      <span className="font-medium truncate">{product.brand} · {product.category}</span>
+                    <div className="flex items-start justify-between gap-1.5 flex-wrap text-[10px] sm:text-[11px] text-slate-500 leading-tight">
+                      <span className="font-medium whitespace-normal break-words">{product.brand} · {product.category}</span>
                       <span className="font-mono text-slate-400 shrink-0 hidden sm:inline">{product.sku}</span>
                     </div>
 
                     <h3
                       onClick={() => setSelectedProduct(product)}
-                      className="mt-1 font-bold text-slate-900 text-xs sm:text-[13px] leading-snug line-clamp-2 min-h-[2.45em] hover:text-amber-600 cursor-pointer transition-colors"
-                      title={product.name}
+                      className="mt-1 font-bold text-slate-900 text-xs sm:text-[13px] leading-snug whitespace-normal break-words hover:text-amber-600 cursor-pointer transition-colors"
                     >
                       {product.name}
                     </h3>
 
-                    <p
-                      className="mt-0.5 text-[11px] text-slate-500 truncate leading-tight"
-                      title={product.compatibility}
-                    >
-                      {product.compatibility}
-                    </p>
+                    {product.description && (
+                      <p className="mt-0.5 text-[11px] text-slate-600 whitespace-normal break-words leading-snug">
+                        {product.description}
+                      </p>
+                    )}
+
+                    {product.compatibility && (
+                      <p className="mt-0.5 text-[11px] text-slate-500 whitespace-normal break-words leading-tight">
+                        <span className="font-semibold text-slate-600">Compat:</span> {product.compatibility}
+                      </p>
+                    )}
 
                     {/* Dual Pricing ($ USD and Bs.) & 2 Compact Action Buttons */}
                     <div className="mt-auto pt-1.5 border-t border-slate-100 flex flex-col gap-1.5">

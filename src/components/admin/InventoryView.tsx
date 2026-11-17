@@ -93,8 +93,10 @@ export const InventoryView: React.FC = () => {
   const [isAddingCategory, setIsAddingCategory] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState('');
 
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
+
   const filteredProducts = useMemo(() => {
-    return products.filter((p) => {
+    const filtered = products.filter((p) => {
       if (selectedCategory !== 'all' && p.category !== selectedCategory) return false;
       if (filterStockStatus === 'low' && p.stock > p.minStock) return false;
       if (filterStockStatus === 'out' && p.stock > 0) return false;
@@ -105,6 +107,7 @@ export const InventoryView: React.FC = () => {
         const q = searchTerm.toLowerCase();
         return (
           p.name.toLowerCase().includes(q) ||
+          (p.description && p.description.toLowerCase().includes(q)) ||
           p.sku.toLowerCase().includes(q) ||
           (p.barcode && p.barcode.toLowerCase().includes(q)) ||
           (p.warehouseLocation && p.warehouseLocation.toLowerCase().includes(q)) ||
@@ -115,7 +118,17 @@ export const InventoryView: React.FC = () => {
 
       return true;
     });
-  }, [products, selectedCategory, filterStockStatus, filterPhotoStatus, searchTerm]);
+
+    return [...filtered].sort((a, b) => {
+      const cmp = a.name
+        .trim()
+        .localeCompare(b.name.trim(), 'es', { sensitivity: 'base', numeric: true });
+      if (cmp !== 0) {
+        return sortOrder === 'asc' ? cmp : -cmp;
+      }
+      return a.sku.trim().localeCompare(b.sku.trim(), 'es', { sensitivity: 'base', numeric: true });
+    });
+  }, [products, selectedCategory, filterStockStatus, filterPhotoStatus, searchTerm, sortOrder]);
 
   const [imagePreviewError, setImagePreviewError] = useState(false);
   const [isCompressingUpload, setIsCompressingUpload] = useState(false);
@@ -600,7 +613,19 @@ export const InventoryView: React.FC = () => {
                     title={allFilteredSelected ? 'Deseleccionar todos' : 'Seleccionar todos los visibles'}
                   />
                 </th>
-                <th className="py-3 px-4">Ítem / SKU</th>
+                <th className="py-3 px-4">
+                  <button
+                    type="button"
+                    onClick={() => setSortOrder((prev) => (prev === 'asc' ? 'desc' : 'asc'))}
+                    className="inline-flex items-center gap-1.5 hover:text-slate-900 transition-colors cursor-pointer uppercase font-semibold"
+                    title="Cambiar orden alfabético (A-Z / Z-A)"
+                  >
+                    <span>Ítem / SKU</span>
+                    <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 font-bold">
+                      {sortOrder === 'asc' ? 'A-Z' : 'Z-A'}
+                    </span>
+                  </button>
+                </th>
                 <th className="py-3 px-3">Categoría & Marca</th>
                 <th className="py-3 px-3">Ubicación Almacén</th>
                 <th className="py-3 px-3">Compatibilidad</th>
@@ -642,10 +667,10 @@ export const InventoryView: React.FC = () => {
                       </td>
 
                       {/* Name, Direct Photo Upload & SKU */}
-                      <td className="py-3 px-4">
-                        <div className="flex items-center gap-3">
+                      <td className="py-3 px-4 min-w-[240px] max-w-[380px] align-top">
+                        <div className="flex items-start gap-3">
                           <label
-                            className="relative group w-11 h-11 rounded-lg bg-slate-100 shrink-0 border border-slate-200 overflow-hidden cursor-pointer flex items-center justify-center"
+                            className="relative group w-11 h-11 rounded-lg bg-slate-100 shrink-0 border border-slate-200 overflow-hidden cursor-pointer flex items-center justify-center mt-0.5"
                             title="Haz clic para subir o cambiar la foto de este repuesto"
                           >
                             {quickUploadingId === product.id ? (
@@ -679,9 +704,16 @@ export const InventoryView: React.FC = () => {
                               className="hidden"
                             />
                           </label>
-                          <div className="min-w-0">
-                            <p className="font-bold text-slate-900 line-clamp-1">{product.name}</p>
-                            <div className="flex items-center gap-1.5 flex-wrap mt-0.5">
+                          <div className="min-w-0 flex-1">
+                            <p className="font-bold text-slate-900 whitespace-normal break-words leading-snug">
+                              {product.name}
+                            </p>
+                            {product.description && (
+                              <p className="text-[11px] text-slate-500 whitespace-normal break-words leading-snug mt-0.5">
+                                {product.description}
+                              </p>
+                            )}
+                            <div className="flex items-center gap-1.5 flex-wrap mt-1">
                               <span className="font-mono text-[10px] text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded">
                                 SKU: {product.sku}
                               </span>
@@ -732,14 +764,14 @@ export const InventoryView: React.FC = () => {
                       </td>
 
                       {/* Warehouse Location */}
-                      <td className="py-3 px-3">
+                      <td className="py-3 px-3 align-top">
                         {product.warehouseLocation ? (
                           <span
-                            className="inline-flex items-center gap-1 font-mono text-[11px] font-semibold text-amber-900 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-md max-w-[160px] truncate"
+                            className="inline-flex items-start gap-1 font-mono text-[11px] font-semibold text-amber-900 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-md whitespace-normal break-words"
                             title={`Ubicación: ${product.warehouseLocation}`}
                           >
-                            <MapPin className="w-3 h-3 text-amber-600 shrink-0" />
-                            <span className="truncate">{product.warehouseLocation}</span>
+                            <MapPin className="w-3 h-3 text-amber-600 shrink-0 mt-0.5" />
+                            <span>{product.warehouseLocation}</span>
                           </span>
                         ) : (
                           <span className="text-[11px] text-slate-400 italic">Sin asignar</span>
@@ -747,8 +779,8 @@ export const InventoryView: React.FC = () => {
                       </td>
 
                       {/* Compatibility */}
-                      <td className="py-3 px-3 text-slate-500 max-w-[180px]">
-                        <p className="truncate" title={product.compatibility}>
+                      <td className="py-3 px-3 text-slate-500 min-w-[150px] max-w-[240px] align-top">
+                        <p className="whitespace-normal break-words leading-snug">
                           {product.compatibility}
                         </p>
                       </td>
@@ -1394,7 +1426,7 @@ export const InventoryView: React.FC = () => {
                   </div>
                 )}
                 <div className="flex-1 min-w-0">
-                  <p className="font-bold text-slate-900 truncate text-sm">
+                  <p className="font-bold text-slate-900 whitespace-normal break-words text-sm">
                     {productToDelete.name}
                   </p>
                   <p className="font-mono text-slate-500 text-[11px]">
@@ -1475,7 +1507,7 @@ export const InventoryView: React.FC = () => {
                       className="flex items-center justify-between p-2 bg-white rounded-lg border border-slate-100 text-xs"
                     >
                       <div className="min-w-0 flex-1 pr-2">
-                        <p className="font-semibold text-slate-900 truncate">{p.name}</p>
+                        <p className="font-semibold text-slate-900 whitespace-normal break-words">{p.name}</p>
                         <span className="font-mono text-[10px] text-slate-400">SKU: {p.sku}</span>
                       </div>
                       <span className="text-[11px] font-mono font-bold text-slate-700 shrink-0">

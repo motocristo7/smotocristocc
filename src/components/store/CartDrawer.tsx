@@ -269,7 +269,7 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({ isOpen, onClose, initial
                         <div className="flex-1 flex flex-col justify-between">
                           <div>
                             <div className="flex items-start justify-between gap-1">
-                              <h4 className="text-xs font-bold text-slate-900 line-clamp-1">
+                              <h4 className="text-xs font-bold text-slate-900 whitespace-normal break-words leading-snug">
                                 {item.product.name}
                               </h4>
                               <button

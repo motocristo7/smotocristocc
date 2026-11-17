@@ -74,6 +74,7 @@ export const PosView: React.FC = () => {
   const [activeSuggestionSource, setActiveSuggestionSource] = useState<'search' | 'name' | 'document' | null>(null);
   const [highlightedCustomerIdx, setHighlightedCustomerIdx] = useState<number>(0);
   const customerBoxRef = useRef<HTMLDivElement | null>(null);
+  const customerSearchInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -436,14 +437,15 @@ export const PosView: React.FC = () => {
 
   const rate = settings.bcvRate;
 
-  // Filter products for POS
+  // Filter products for POS (sorted alphabetically A-Z)
   const filteredProducts = useMemo(() => {
-    return products.filter((prod) => {
+    const filtered = products.filter((prod) => {
       if (selectedCategory !== 'all' && prod.category !== selectedCategory) return false;
       if (!productSearch.trim()) return true;
       const q = productSearch.toLowerCase();
       return (
         prod.name.toLowerCase().includes(q) ||
+        (prod.description && prod.description.toLowerCase().includes(q)) ||
         prod.sku.toLowerCase().includes(q) ||
         (prod.barcode && prod.barcode.toLowerCase().includes(q)) ||
         (prod.warehouseLocation && prod.warehouseLocation.toLowerCase().includes(q)) ||
@@ -451,6 +453,10 @@ export const PosView: React.FC = () => {
         prod.compatibility.toLowerCase().includes(q)
       );
     });
+
+    return [...filtered].sort((a, b) =>
+      a.name.trim().localeCompare(b.name.trim(), 'es', { sensitivity: 'base', numeric: true })
+    );
   }, [products, selectedCategory, productSearch]);
 
   const normalizeText = (val?: string) =>
@@ -667,6 +673,7 @@ export const PosView: React.FC = () => {
 
   const subtotalBs = subtotalUSD * rate;
   const totalBs = totalUSD * rate;
+  const totalCartUnits = posCart.reduce((sum, item) => sum + item.quantity, 0);
 
   const handleSelectCreditDays = (days: number) => {
     setCreditDays(days);
@@ -820,26 +827,218 @@ export const PosView: React.FC = () => {
   };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-4">
       {/* Top Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
         <div>
-          <span className="text-xs font-bold text-amber-600 uppercase tracking-wider">
+          <span className="text-[11px] font-bold text-amber-600 uppercase tracking-wider">
             Punto de Venta Mostrador & Taller
           </span>
-          <h1 className="text-2xl font-bold font-display text-slate-900 mt-0.5">
+          <h1 className="text-xl sm:text-2xl font-bold font-display text-slate-900">
             Registro de Ventas y Facturación (Venezuela)
           </h1>
-          <p className="text-xs text-slate-500">
-            Factura en Dólares ($) con liquidación automática en Bolívares (Bs.) a la tasa oficial del BCV y envío directo a WhatsApp.
-          </p>
         </div>
 
-        <div className="flex items-center gap-2 bg-emerald-50 text-emerald-900 px-3 py-1.5 rounded-xl border border-emerald-200 text-xs font-bold self-start sm:self-auto">
+        <div className="flex items-center gap-2 bg-emerald-50 text-emerald-900 px-3 py-1.5 rounded-xl border border-emerald-200 text-xs font-bold self-start sm:self-auto shrink-0 tabular-nums">
           <TrendingUp className="w-4 h-4 text-emerald-600" />
           <span>Tasa Oficial BCV: Bs. {rate.toFixed(2)} / USD</span>
         </div>
       </div>
+
+      {/* Primer Plano: Cliente, Repuestos Agregados y Monto Total en Grande ($ USD y Bs.) */}
+      <section
+        aria-label="Resumen en primer plano de la venta actual"
+        className="bg-slate-950 text-white rounded-2xl border border-slate-800 shadow-md overflow-hidden"
+      >
+        <div className="grid grid-cols-1 lg:grid-cols-12 divide-y lg:divide-y-0 lg:divide-x divide-slate-800">
+          {/* 1. Cliente Seleccionado en Primer Plano */}
+          <div className="lg:col-span-3 p-3.5 sm:p-4 flex flex-col justify-between gap-2">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
+                <User className="w-3.5 h-3.5 text-amber-400" />
+                <span>Cliente</span>
+              </span>
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={handleSetQuickWalkInCustomer}
+                  className="px-2 py-0.5 text-[10px] font-bold bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-500/40 rounded-md transition-colors cursor-pointer whitespace-nowrap"
+                  title="Usar Cliente Mostrador"
+                >
+                  ⚡ Mostrador
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    customerSearchInputRef.current?.focus();
+                    customerSearchInputRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                  }}
+                  className="px-2 py-0.5 text-[10px] font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 rounded-md transition-colors cursor-pointer whitespace-nowrap"
+                  title="Buscar o cambiar cliente"
+                >
+                  Cambiar
+                </button>
+              </div>
+            </div>
+
+            <div className="min-w-0">
+              <p className="text-base sm:text-lg font-extrabold text-white leading-snug whitespace-normal break-words">
+                {customerName.trim() || 'Cliente Mostrador'}
+              </p>
+              <div className="mt-1 flex flex-wrap items-center gap-x-2.5 gap-y-0.5 text-xs text-slate-300 font-mono">
+                {customerDocument.trim() ? (
+                  <span>C.I./RIF: {customerDocument}</span>
+                ) : (
+                  <span className="text-slate-400 font-sans text-[11px]">
+                    {!customerName.trim() || customerName === 'Cliente Mostrador'
+                      ? 'Venta rápida de mostrador'
+                      : 'Sin cédula registrada'}
+                  </span>
+                )}
+                {customerPhone.trim() && <span>Tel: {customerPhone}</span>}
+              </div>
+            </div>
+          </div>
+
+          {/* 2. Repuestos Agregados a la Compra en Primer Plano */}
+          <div className="lg:col-span-5 p-3.5 sm:p-4 flex flex-col justify-between">
+            <div className="flex items-center justify-between gap-2 mb-1.5">
+              <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
+                <ShoppingCart className="w-3.5 h-3.5 text-amber-400" />
+                <span>Repuestos en la Compra</span>
+              </span>
+              <div className="flex items-center gap-2">
+                <span className="text-[11px] font-bold text-amber-300 font-mono tabular-nums">
+                  {posCart.length} {posCart.length === 1 ? 'ítem' : 'ítems'} · {totalCartUnits} unds
+                </span>
+                {posCart.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setPosCart([])}
+                    className="text-[10px] font-semibold text-rose-400 hover:text-rose-300 cursor-pointer"
+                  >
+                    Vaciar
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {posCart.length === 0 ? (
+              <div className="py-2 text-xs text-slate-400">
+                No hay repuestos agregados todavía. Haz clic en un artículo del catálogo para sumarlo.
+              </div>
+            ) : (
+              <div className="max-h-32 overflow-y-auto divide-y divide-slate-800/80 pr-1">
+                {posCart.map((item) => {
+                  const effectivePrice = getItemEffectivePrice(item);
+                  return (
+                    <div
+                      key={item.product.id}
+                      className="py-1.5 flex items-start justify-between gap-2 text-xs"
+                    >
+                      <div className="min-w-0 flex-1 flex items-start gap-1.5">
+                        <span className="font-mono font-extrabold text-amber-400 shrink-0 tabular-nums">
+                          {item.quantity}x
+                        </span>
+                        <span className="font-semibold text-white whitespace-normal break-words leading-snug">
+                          {item.product.name}
+                        </span>
+                      </div>
+
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <div className="flex items-center border border-slate-700 rounded bg-slate-900">
+                          <button
+                            type="button"
+                            onClick={() => handleUpdateQty(item.product.id, -1)}
+                            className="px-1.5 py-0.5 text-slate-300 hover:text-white hover:bg-slate-800 cursor-pointer"
+                            title="Restar 1"
+                          >
+                            -
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleUpdateQty(item.product.id, 1)}
+                            className="px-1.5 py-0.5 text-slate-300 hover:text-white hover:bg-slate-800 cursor-pointer border-l border-slate-700"
+                            title="Sumar 1"
+                          >
+                            +
+                          </button>
+                        </div>
+                        <span className="font-mono font-bold text-slate-100 tabular-nums min-w-[60px] text-right">
+                          {formatUSD(effectivePrice * item.quantity)}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveFromCart(item.product.id)}
+                          className="text-slate-500 hover:text-rose-400 p-0.5 cursor-pointer"
+                          title="Quitar repuesto"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* 3. Monto Total a Cobrar en Letra Grande y Legible ($ USD y Bs.) */}
+          <div className="lg:col-span-4 p-3.5 sm:p-4 bg-slate-900/90 flex flex-col justify-between gap-2">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-[11px] font-bold text-slate-300 uppercase tracking-wider">
+                Total a Cobrar
+              </span>
+              <span
+                className={`font-bold px-2 py-0.5 rounded text-[10px] tracking-wide ${
+                  paymentType === 'APARTADO'
+                    ? 'bg-indigo-500/20 text-indigo-300 border border-indigo-400/40'
+                    : paymentType === 'CREDITO'
+                    ? 'bg-amber-500/20 text-amber-300 border border-amber-400/40'
+                    : paymentType === 'MERCADOLIBRE'
+                    ? 'bg-yellow-500/20 text-yellow-300 border border-yellow-400/40'
+                    : 'bg-emerald-500/20 text-emerald-300 border border-emerald-400/40'
+                }`}
+              >
+                {paymentType === 'APARTADO'
+                  ? `APARTADO (${creditDays}D)`
+                  : paymentType === 'CREDITO'
+                  ? `CRÉDITO (${creditDays}D)`
+                  : paymentType === 'MERCADOLIBRE'
+                  ? 'MERCADOLIBRE'
+                  : 'CONTADO'}
+              </span>
+            </div>
+
+            <div className="space-y-2">
+              <div className="flex items-baseline justify-between gap-3">
+                <span className="text-xs font-bold text-amber-300 uppercase shrink-0">
+                  Dólares ($ USD)
+                </span>
+                <span className="text-3xl sm:text-4xl font-extrabold font-mono text-amber-400 tabular-nums tracking-tight leading-none">
+                  {formatUSD(totalUSD)}
+                </span>
+              </div>
+
+              <div className="flex items-baseline justify-between gap-3 pt-2 border-t border-slate-800">
+                <span className="text-xs font-bold text-emerald-300 uppercase shrink-0">
+                  Bolívares (Bs.)
+                </span>
+                <span className="text-2xl sm:text-3xl font-extrabold font-mono text-emerald-400 tabular-nums tracking-tight leading-none">
+                  {formatBs(totalBs)}
+                </span>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between text-[11px] text-slate-400 pt-1 tabular-nums">
+              <span>Tasa BCV: Bs. {rate.toFixed(2)}</span>
+              {discountUSD > 0 && (
+                <span className="text-emerald-400 font-semibold">Desc: -{formatUSD(discountUSD)}</span>
+              )}
+            </div>
+          </div>
+        </div>
+      </section>
 
       {/* MercadoLibre Debt Notification Alert (Direct to Owner WhatsApp) */}
       {lastMlNotification && (
@@ -882,7 +1081,7 @@ export const PosView: React.FC = () => {
       )}
 
       {/* 2-Column POS Layout */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
         {/* Left: Product Catalog & Search (7 Cols) */}
         <div className="lg:col-span-7 space-y-4">
           <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-2xs space-y-3">
@@ -1028,8 +1227,13 @@ export const PosView: React.FC = () => {
                       </div>
                     </div>
 
-                    <h4 className="text-xs font-bold text-slate-900 line-clamp-1">{product.name}</h4>
-                    <p className="text-[11px] text-slate-500 line-clamp-1 mt-0.5">{product.compatibility}</p>
+                    <h4 className="text-xs font-bold text-slate-900 whitespace-normal break-words leading-snug">{product.name}</h4>
+                    {product.description && (
+                      <p className="text-[10px] text-slate-500 whitespace-normal break-words leading-snug mt-0.5">
+                        {product.description}
+                      </p>
+                    )}
+                    <p className="text-[11px] text-slate-500 whitespace-normal break-words leading-snug mt-0.5">{product.compatibility}</p>
                     {product.warehouseLocation && (
                       <span
                         className="mt-1 inline-flex items-center gap-1 text-[10px] font-mono font-semibold text-amber-900 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded"
@@ -1091,8 +1295,169 @@ export const PosView: React.FC = () => {
 
         {/* Right: POS Sale Ticket & Customer Info (5 Cols) */}
         <div className="lg:col-span-5 space-y-4">
-          <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-2xs space-y-4">
-            {/* Customer Information Block */}
+          <div className="bg-white rounded-xl border border-slate-200 p-4 sm:p-5 shadow-2xs space-y-4">
+            {/* 1. Sale Items Table (Primer plano arriba) */}
+            <div className="pb-3 border-b border-slate-200">
+              <div className="flex items-center justify-between mb-2">
+                <div>
+                  <span className="text-xs font-bold text-slate-900 uppercase tracking-wider block">
+                    Ítems a Facturar ({posCart.length})
+                  </span>
+                  <span className="text-[10px] text-slate-500 font-normal">
+                    Puedes editar la cantidad o el precio de venta unitario directamente aquí.
+                  </span>
+                </div>
+                {posCart.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setPosCart([])}
+                    className="text-[11px] text-rose-600 hover:underline cursor-pointer"
+                  >
+                    Limpiar lista
+                  </button>
+                )}
+              </div>
+
+              {posCart.length === 0 ? (
+                <div className="p-5 text-center border border-dashed border-slate-200 rounded-lg text-slate-400 text-xs space-y-2.5">
+                  <p>Haz clic en un repuesto del catálogo o agrega mano de obra para iniciar la venta.</p>
+                  <button
+                    type="button"
+                    onClick={() => handleOpenQuickRegister()}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 rounded-lg text-xs font-bold transition-colors cursor-pointer"
+                  >
+                    <PackagePlus className="w-3.5 h-3.5 text-amber-600" />
+                    <span>+ Registrar repuesto no registrado</span>
+                  </button>
+                </div>
+              ) : (
+                <div className="space-y-2.5 max-h-[300px] overflow-y-auto pr-1">
+                  {posCart.map((item) => {
+                    const effectivePrice = getItemEffectivePrice(item);
+                    const isPriceModified =
+                      item.customPrice !== undefined &&
+                      item.customPrice !== '' &&
+                      Number(item.customPrice) !== item.product.salePrice;
+
+                    return (
+                      <div
+                        key={item.product.id}
+                        className={`p-2.5 rounded-xl border text-xs space-y-2 transition-colors ${
+                          isPriceModified ? 'bg-amber-50/40 border-amber-300' : 'bg-slate-50/60 border-slate-200'
+                        }`}
+                      >
+                        {/* Top: Product Name, SKU, Edit, and Delete */}
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <p className="font-bold text-slate-900 whitespace-normal break-words">{item.product.name}</p>
+                              {isPriceModified && (
+                                <span className="text-[9px] font-bold bg-amber-200 text-amber-950 px-1.5 py-0.2 rounded border border-amber-300 flex items-center gap-0.5">
+                                  <Edit3 className="w-2.5 h-2.5 text-amber-800" />
+                                  <span>Precio editado</span>
+                                </span>
+                              )}
+                            </div>
+                            <span className="text-[10px] text-slate-400 font-mono">
+                              SKU: {item.product.sku}
+                            </span>
+                          </div>
+
+                          <div className="flex items-center gap-0.5">
+                            <button
+                              type="button"
+                              onClick={() => handleOpenEditProduct(item.product)}
+                              className="text-slate-400 hover:text-amber-800 p-1 rounded hover:bg-white cursor-pointer"
+                              title="Editar datos de este repuesto (nombre, categoría, precio, stock)"
+                            >
+                              <Edit3 className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveFromCart(item.product.id)}
+                              className="text-slate-400 hover:text-rose-600 p-1 rounded hover:bg-white cursor-pointer"
+                              title="Eliminar este repuesto del ticket"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Bottom: Quantity, Editable Price, and Subtotal */}
+                        <div className="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-slate-200/80">
+                          {/* Qty +/- */}
+                          <div className="flex items-center border border-slate-200 rounded-lg bg-white shrink-0">
+                            <button
+                              type="button"
+                              onClick={() => handleUpdateQty(item.product.id, -1)}
+                              className="p-1 hover:bg-slate-100 text-slate-700 cursor-pointer rounded-l-lg"
+                              title="Restar cantidad"
+                            >
+                              <Minus className="w-2.5 h-2.5" />
+                            </button>
+                            <span className="px-2 font-mono font-bold text-xs min-w-[20px] text-center">
+                              {item.quantity}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => handleUpdateQty(item.product.id, 1)}
+                              className="p-1 hover:bg-slate-100 text-slate-700 cursor-pointer rounded-r-lg"
+                              title="Sumar cantidad"
+                            >
+                              <Plus className="w-2.5 h-2.5" />
+                            </button>
+                          </div>
+
+                          {/* Editable Price Input */}
+                          <div className="flex items-center gap-1.5 bg-white px-2 py-1 rounded-lg border border-slate-200 shadow-2xs">
+                            <span className="text-[10px] font-semibold text-slate-500 flex items-center gap-0.5">
+                              <Edit3 className="w-2.5 h-2.5 text-amber-600" />
+                              <span>Precio:</span>
+                            </span>
+                            <div className="flex items-center">
+                              <span className="text-[11px] font-bold text-slate-400 mr-0.5">$</span>
+                              <input
+                                type="number"
+                                step="0.01"
+                                min="0"
+                                value={item.customPrice !== undefined ? item.customPrice : item.product.salePrice}
+                                onChange={(e) => handleUpdateUnitPrice(item.product.id, e.target.value)}
+                                className={`w-16 font-mono font-bold text-xs outline-none text-right ${
+                                  isPriceModified ? 'text-amber-950 bg-amber-100/60 rounded px-1' : 'text-slate-900'
+                                }`}
+                                title="Modifica aquí el precio de venta unitario para este ticket"
+                              />
+                            </div>
+                            {isPriceModified && (
+                              <button
+                                type="button"
+                                onClick={() => handleResetUnitPrice(item.product.id)}
+                                className="text-slate-400 hover:text-amber-800 p-0.5 rounded cursor-pointer"
+                                title={`Restaurar precio original de catálogo: ${formatUSD(item.product.salePrice)}`}
+                              >
+                                <RotateCcw className="w-3 h-3" />
+                              </button>
+                            )}
+                          </div>
+
+                          {/* Subtotal */}
+                          <div className="text-right ml-auto shrink-0">
+                            <span className="font-mono font-bold text-slate-900 block tabular-nums text-xs">
+                              {formatUSD(effectivePrice * item.quantity)}
+                            </span>
+                            <span className="font-mono text-[10px] text-emerald-700 block tabular-nums">
+                              {formatBs(effectivePrice * item.quantity * rate)}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* 2. Customer Information Block */}
             <div ref={customerBoxRef} className="space-y-3 pb-3 border-b border-slate-200">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <span className="text-xs font-bold text-slate-900 uppercase tracking-wider flex items-center gap-1.5">
@@ -1128,6 +1493,7 @@ export const PosView: React.FC = () => {
                 <div className="relative">
                   <Search className="w-3.5 h-3.5 text-amber-600 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
                   <input
+                    ref={customerSearchInputRef}
                     type="text"
                     value={customerSearchQuery}
                     onFocus={() => setActiveSuggestionSource('search')}
@@ -1346,168 +1712,8 @@ export const PosView: React.FC = () => {
               )}
             </div>
 
-            {/* Sale Items Table */}
-            <div>
-              <div className="flex items-center justify-between mb-2">
-                <div>
-                  <span className="text-xs font-bold text-slate-900 uppercase tracking-wider block">
-                    Ítems a Facturar ({posCart.length})
-                  </span>
-                  <span className="text-[10px] text-slate-500 font-normal">
-                    Puedes editar el precio de venta de cualquier repuesto directamente en el campo de precio.
-                  </span>
-                </div>
-                {posCart.length > 0 && (
-                  <button
-                    onClick={() => setPosCart([])}
-                    className="text-[11px] text-rose-600 hover:underline cursor-pointer"
-                  >
-                    Limpiar lista
-                  </button>
-                )}
-              </div>
-
-              {posCart.length === 0 ? (
-                <div className="p-6 text-center border border-dashed border-slate-200 rounded-lg text-slate-400 text-xs space-y-2.5">
-                  <p>Haz clic en un repuesto del catálogo o agrega mano de obra para iniciar la venta.</p>
-                  <button
-                    type="button"
-                    onClick={() => handleOpenQuickRegister()}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 rounded-lg text-xs font-bold transition-colors cursor-pointer"
-                  >
-                    <PackagePlus className="w-3.5 h-3.5 text-amber-600" />
-                    <span>+ Registrar repuesto no registrado</span>
-                  </button>
-                </div>
-              ) : (
-                <div className="space-y-2.5 max-h-[300px] overflow-y-auto pr-1">
-                  {posCart.map((item) => {
-                    const effectivePrice = getItemEffectivePrice(item);
-                    const isPriceModified =
-                      item.customPrice !== undefined &&
-                      item.customPrice !== '' &&
-                      Number(item.customPrice) !== item.product.salePrice;
-
-                    return (
-                      <div
-                        key={item.product.id}
-                        className={`p-2.5 rounded-xl border text-xs space-y-2 transition-colors ${
-                          isPriceModified ? 'bg-amber-50/40 border-amber-300' : 'bg-slate-50/60 border-slate-200'
-                        }`}
-                      >
-                        {/* Top: Product Name, SKU, Edit, and Delete */}
-                        <div className="flex items-start justify-between gap-2">
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-1.5 flex-wrap">
-                              <p className="font-bold text-slate-900 truncate">{item.product.name}</p>
-                              {isPriceModified && (
-                                <span className="text-[9px] font-bold bg-amber-200 text-amber-950 px-1.5 py-0.2 rounded border border-amber-300 flex items-center gap-0.5">
-                                  <Edit3 className="w-2.5 h-2.5 text-amber-800" />
-                                  <span>Precio editado</span>
-                                </span>
-                              )}
-                            </div>
-                            <span className="text-[10px] text-slate-400 font-mono">
-                              SKU: {item.product.sku}
-                            </span>
-                          </div>
-
-                          <div className="flex items-center gap-0.5">
-                            <button
-                              type="button"
-                              onClick={() => handleOpenEditProduct(item.product)}
-                              className="text-slate-400 hover:text-amber-800 p-1 rounded hover:bg-white cursor-pointer"
-                              title="Editar datos de este repuesto (nombre, categoría, precio, stock)"
-                            >
-                              <Edit3 className="w-3.5 h-3.5" />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleRemoveFromCart(item.product.id)}
-                              className="text-slate-400 hover:text-rose-600 p-1 rounded hover:bg-white cursor-pointer"
-                              title="Eliminar este repuesto del ticket"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
-                          </div>
-                        </div>
-
-                        {/* Bottom: Quantity, Editable Price, and Subtotal */}
-                        <div className="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-slate-200/80">
-                          {/* Qty +/- */}
-                          <div className="flex items-center border border-slate-200 rounded-lg bg-white shrink-0">
-                            <button
-                              type="button"
-                              onClick={() => handleUpdateQty(item.product.id, -1)}
-                              className="p-1 hover:bg-slate-100 text-slate-700 cursor-pointer rounded-l-lg"
-                              title="Restar cantidad"
-                            >
-                              <Minus className="w-2.5 h-2.5" />
-                            </button>
-                            <span className="px-2 font-mono font-bold text-xs min-w-[20px] text-center">
-                              {item.quantity}
-                            </span>
-                            <button
-                              type="button"
-                              onClick={() => handleUpdateQty(item.product.id, 1)}
-                              className="p-1 hover:bg-slate-100 text-slate-700 cursor-pointer rounded-r-lg"
-                              title="Sumar cantidad"
-                            >
-                              <Plus className="w-2.5 h-2.5" />
-                            </button>
-                          </div>
-
-                          {/* Editable Price Input */}
-                          <div className="flex items-center gap-1.5 bg-white px-2 py-1 rounded-lg border border-slate-200 shadow-2xs">
-                            <span className="text-[10px] font-semibold text-slate-500 flex items-center gap-0.5">
-                              <Edit3 className="w-2.5 h-2.5 text-amber-600" />
-                              <span>Precio:</span>
-                            </span>
-                            <div className="flex items-center">
-                              <span className="text-[11px] font-bold text-slate-400 mr-0.5">$</span>
-                              <input
-                                type="number"
-                                step="0.01"
-                                min="0"
-                                value={item.customPrice !== undefined ? item.customPrice : item.product.salePrice}
-                                onChange={(e) => handleUpdateUnitPrice(item.product.id, e.target.value)}
-                                className={`w-16 font-mono font-bold text-xs outline-none text-right ${
-                                  isPriceModified ? 'text-amber-950 bg-amber-100/60 rounded px-1' : 'text-slate-900'
-                                }`}
-                                title="Modifica aquí el precio de venta unitario para este ticket"
-                              />
-                            </div>
-                            {isPriceModified && (
-                              <button
-                                type="button"
-                                onClick={() => handleResetUnitPrice(item.product.id)}
-                                className="text-slate-400 hover:text-amber-800 p-0.5 rounded cursor-pointer"
-                                title={`Restaurar precio original de catálogo: ${formatUSD(item.product.salePrice)}`}
-                              >
-                                <RotateCcw className="w-3 h-3" />
-                              </button>
-                            )}
-                          </div>
-
-                          {/* Subtotal */}
-                          <div className="text-right ml-auto shrink-0">
-                            <span className="font-mono font-bold text-slate-900 block tabular-nums text-xs">
-                              {formatUSD(effectivePrice * item.quantity)}
-                            </span>
-                            <span className="font-mono text-[10px] text-emerald-700 block tabular-nums">
-                              {formatBs(effectivePrice * item.quantity * rate)}
-                            </span>
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-
             {/* Payment Method & Dual Totals */}
-            <div className="pt-3 border-t border-slate-200 space-y-3">
+            <div className="space-y-3">
               {/* Condición de Venta: De Contado, A Crédito, Sistema de Apartado o MercadoLibre */}
               <div>
                 <label className="block text-[10px] font-bold text-slate-700 uppercase tracking-wider mb-1.5">
@@ -1952,16 +2158,19 @@ export const PosView: React.FC = () => {
                     <span className="font-mono">+{formatUSD(computedMlCommissionUSD)}</span>
                   </div>
                 )}
-                <div className="flex justify-between items-baseline text-base font-bold pt-2 border-t border-slate-800">
-                  <span>TOTAL A COBRAR ($ USD):</span>
-                  <span className="text-xl font-mono text-amber-400 font-extrabold tabular-nums">
+                <div className="flex justify-between items-baseline pt-2 border-t border-slate-800">
+                  <span className="text-xs sm:text-sm font-bold text-amber-300 uppercase">TOTAL ($ USD):</span>
+                  <span className="text-2xl sm:text-3xl font-mono text-amber-400 font-extrabold tabular-nums leading-none">
                     {formatUSD(totalUSD)}
                   </span>
                 </div>
 
-                <div className="pt-2 border-t border-slate-800/80 flex justify-between items-baseline text-xs">
-                  <span className="text-emerald-400 font-medium">Tasa BCV: Bs. {rate.toFixed(2)}</span>
-                  <span className="text-base font-mono text-emerald-300 font-bold tabular-nums">
+                <div className="pt-2 border-t border-slate-800/80 flex justify-between items-baseline">
+                  <div>
+                    <span className="text-xs sm:text-sm font-bold text-emerald-300 uppercase block">TOTAL (Bs.):</span>
+                    <span className="text-[11px] text-slate-400">Tasa BCV: Bs. {rate.toFixed(2)}</span>
+                  </div>
+                  <span className="text-xl sm:text-2xl font-mono text-emerald-300 font-extrabold tabular-nums leading-none">
                     {formatBs(totalBs)}
                   </span>
                 </div>

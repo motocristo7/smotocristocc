@@ -356,7 +356,7 @@ export const ImportExcelModal: React.FC<ImportExcelModalProps> = ({
                                 </span>
                               )}
                             </td>
-                            <td className="p-2.5 font-medium text-slate-900 max-w-[200px] truncate" title={row.name}>
+                            <td className="p-2.5 font-medium text-slate-900 min-w-[180px] max-w-[280px] whitespace-normal break-words">
                               {row.name}
                             </td>
                             <td className="p-2.5">
@@ -372,8 +372,8 @@ export const ImportExcelModal: React.FC<ImportExcelModalProps> = ({
                                 {row.stock}
                               </span>
                             </td>
-                            <td className="p-2.5 text-slate-500 max-w-[170px]">
-                              <span className="truncate block">
+                            <td className="p-2.5 text-slate-500 min-w-[150px] max-w-[230px]">
+                              <span className="whitespace-normal break-words block">
                                 {row.brand} · {row.compatibility}
                               </span>
                               {row.warehouseLocation && (

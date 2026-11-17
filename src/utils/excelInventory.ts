@@ -189,7 +189,10 @@ export function downloadInventoryTemplate() {
  */
 export function exportInventoryToExcel(products: Product[], bcvRate: number) {
   const today = new Date().toISOString().split('T')[0];
-  const exportRows = products.map((p) => ({
+  const sortedProducts = [...products].sort((a, b) =>
+    a.name.trim().localeCompare(b.name.trim(), 'es', { sensitivity: 'base', numeric: true })
+  );
+  const exportRows = sortedProducts.map((p) => ({
     codigo_sku: p.sku,
     codigo_barra: p.barcode || '',
     nombre_repuesto: p.name,

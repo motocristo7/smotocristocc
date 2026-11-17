@@ -789,7 +789,7 @@ const ServicePartsPicker: React.FC<ServicePartsPickerProps> = ({
                   >
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-1.5 flex-wrap">
-                        <span className="font-bold text-slate-900 truncate">{prod.name}</span>
+                        <span className="font-bold text-slate-900 whitespace-normal break-words">{prod.name}</span>
                         <span className="font-mono text-[10px] bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded border border-slate-200">
                           {prod.sku}
                         </span>
@@ -797,6 +797,11 @@ const ServicePartsPicker: React.FC<ServicePartsPickerProps> = ({
                           <span className="text-[10px] text-slate-500 font-medium">· {prod.brand}</span>
                         )}
                       </div>
+                      {prod.description && (
+                        <p className="text-[10px] text-slate-500 whitespace-normal break-words leading-snug mt-0.5">
+                          {prod.description}
+                        </p>
+                      )}
                       <div className="flex items-center gap-2 text-[10px] text-slate-500 mt-0.5 flex-wrap">
                         <span
                           className={`font-bold px-1.5 py-0.5 rounded tabular-nums ${
@@ -816,7 +821,7 @@ const ServicePartsPicker: React.FC<ServicePartsPickerProps> = ({
                           </span>
                         )}
                         {prod.compatibility && (
-                          <span className="text-slate-400 truncate max-w-[240px]">
+                          <span className="text-slate-400 whitespace-normal break-words">
                             Compat: {prod.compatibility}
                           </span>
                         )}

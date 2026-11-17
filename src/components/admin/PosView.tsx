@@ -1293,10 +1293,235 @@ export const PosView: React.FC = () => {
           </div>
         </div>
 
-        {/* Right: POS Sale Ticket & Customer Info (5 Cols) */}
+        {/* Right: Customer Search (aligned with Parts Search) + Sale Ticket (5 Cols) */}
         <div className="lg:col-span-5 space-y-4">
+          {/* 1. Buscador de Clientes (A la misma altura que el Buscador de Repuestos) */}
+          <div ref={customerBoxRef} className="bg-white rounded-xl border border-slate-200 p-4 shadow-2xs space-y-2.5">
+            {/* Search row aligned horizontally with Left Catalog Search */}
+            <div className="flex flex-wrap sm:flex-nowrap items-center gap-2">
+              <div className="relative flex-1 min-w-[180px]">
+                <Search className="w-4 h-4 text-amber-600 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                <input
+                  ref={customerSearchInputRef}
+                  type="text"
+                  value={customerSearchQuery}
+                  onFocus={() => setActiveSuggestionSource('search')}
+                  onChange={(e) => {
+                    setCustomerSearchQuery(e.target.value);
+                    setActiveSuggestionSource('search');
+                  }}
+                  onKeyDown={handleCustomerInputKeyDown}
+                  placeholder={`Buscar cliente por cédula o nombre (${customers.length})...`}
+                  className="w-full pl-9 pr-7 py-2 text-xs rounded-lg border border-amber-300/90 bg-amber-50/40 focus:bg-white focus:outline-hidden focus:border-amber-500 text-slate-900 placeholder:text-slate-500"
+                />
+                {customerSearchQuery && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCustomerSearchQuery('');
+                      setActiveSuggestionSource('search');
+                    }}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 p-0.5 cursor-pointer"
+                    title="Limpiar búsqueda de cliente"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
+
+                {activeSuggestionSource && (activeSuggestionSource === 'search' || customerSuggestions.length > 0) && (
+                  <div className="absolute left-0 right-0 z-30 mt-1 bg-white border border-slate-200 rounded-xl shadow-lg max-h-60 overflow-y-auto divide-y divide-slate-100">
+                    {customerSuggestions.length > 0 ? (
+                      <>
+                        <div className="px-3 py-1.5 bg-slate-50 text-[10px] font-semibold text-slate-500 flex items-center justify-between">
+                          <span>
+                            {activeCustomerQuery.trim()
+                              ? `Sugerencias (${customerSuggestions.length})`
+                              : `Clientes registrados (${customers.length})`}
+                          </span>
+                          <span>Clic o Enter para seleccionar</span>
+                        </div>
+                        {customerSuggestions.map((c, idx) => {
+                          const isHighlighted = idx === highlightedCustomerIdx;
+                          const isSelected = selectedCustomerId === c.id;
+                          return (
+                            <button
+                              key={c.id}
+                              type="button"
+                              onMouseDown={(e) => {
+                                e.preventDefault();
+                                handleSelectCustomer(c.id);
+                              }}
+                              onMouseEnter={() => setHighlightedCustomerIdx(idx)}
+                              className={`w-full text-left px-3 py-2 flex items-center justify-between gap-2 transition-colors cursor-pointer ${
+                                isHighlighted
+                                  ? 'bg-amber-50 text-slate-950'
+                                  : isSelected
+                                  ? 'bg-emerald-50/60 text-slate-900'
+                                  : 'hover:bg-slate-50 text-slate-800'
+                              }`}
+                            >
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center gap-1.5">
+                                  <span className="text-xs font-bold truncate">{c.name}</span>
+                                  {isSelected && (
+                                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                                  )}
+                                </div>
+                                <div className="flex items-center gap-2 text-[10px] text-slate-500 font-mono mt-0.5 flex-wrap">
+                                  {c.documentId ? (
+                                    <span className="bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded font-semibold">
+                                      C.I./RIF: {c.documentId}
+                                    </span>
+                                  ) : (
+                                    <span className="text-slate-400">Sin cédula</span>
+                                  )}
+                                  {c.phone && (
+                                    <span className="flex items-center gap-0.5">
+                                      <Phone className="w-2.5 h-2.5 text-slate-400" />
+                                      {c.phone}
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                              <span className="text-[10px] font-bold text-amber-700 shrink-0">
+                                Elegir
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </>
+                    ) : (
+                      <div className="px-3 py-3 text-center text-[11px] text-slate-500">
+                        No hay clientes registrados que coincidan con{' '}
+                        <strong className="text-slate-700">"{activeCustomerQuery}"</strong>.
+                        <span className="block text-[10px] text-slate-400 mt-0.5">
+                          Puedes llenar los campos de abajo para facturar y registrarlo automáticamente.
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              <button
+                type="button"
+                onClick={handleSetQuickWalkInCustomer}
+                className="inline-flex items-center gap-1 px-2.5 py-2 text-xs font-bold bg-amber-100 hover:bg-amber-200 text-amber-950 border border-amber-300 rounded-lg transition-colors cursor-pointer shadow-2xs whitespace-nowrap shrink-0"
+                title="Venta rápida: no requiere registrar cliente"
+              >
+                <span>⚡ Mostrador</span>
+              </button>
+
+              {(customerName || customerPhone || customerDocument || selectedCustomerId || customerSearchQuery) && (
+                <button
+                  type="button"
+                  onClick={handleClearCustomer}
+                  className="text-xs text-slate-500 hover:text-slate-800 px-2 py-2 rounded-lg hover:bg-slate-100 cursor-pointer whitespace-nowrap shrink-0"
+                  title="Limpiar datos de cliente"
+                >
+                  Limpiar
+                </button>
+              )}
+            </div>
+
+            {selectedCustomerId && (
+              <div className="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg bg-emerald-50 border border-emerald-200 text-[11px] text-emerald-900">
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                  <span className="font-bold truncate">{customerName}</span>
+                  {customerDocument && (
+                    <span className="font-mono text-[10px] bg-white px-1.5 py-0.5 rounded border border-emerald-200 text-emerald-800 shrink-0">
+                      C.I. {customerDocument}
+                    </span>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  onClick={handleClearCustomer}
+                  className="text-[10px] font-semibold text-emerald-700 hover:text-emerald-950 underline shrink-0 cursor-pointer"
+                >
+                  Cambiar
+                </button>
+              </div>
+            )}
+
+            {/* Compact 1-row Name / Phone / Document inputs */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+              <div>
+                <label className="block text-[10px] font-semibold text-slate-600 mb-0.5">
+                  Nombre Cliente
+                </label>
+                <input
+                  type="text"
+                  value={customerName}
+                  onFocus={() => {
+                    if (!selectedCustomerId && customerName.trim() && customerName !== 'Cliente Mostrador') {
+                      setActiveSuggestionSource('name');
+                    }
+                  }}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setCustomerName(val);
+                    if (selectedCustomerId) setSelectedCustomerId('');
+                    if (val.trim() && val !== 'Cliente Mostrador') {
+                      setActiveSuggestionSource('name');
+                    } else if (activeSuggestionSource === 'name') {
+                      setActiveSuggestionSource(null);
+                    }
+                  }}
+                  onKeyDown={handleCustomerInputKeyDown}
+                  placeholder="Cliente Mostrador"
+                  className="w-full text-xs p-1.5 rounded border border-slate-200 bg-slate-50 focus:bg-white"
+                />
+              </div>
+              <div>
+                <label className="block text-[10px] font-semibold text-slate-600 mb-0.5">
+                  Cédula / RIF
+                </label>
+                <input
+                  type="text"
+                  value={customerDocument}
+                  onFocus={() => {
+                    if (!selectedCustomerId && customerDocument.trim() && customerDocument !== 'V-00000000') {
+                      setActiveSuggestionSource('document');
+                    }
+                  }}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setCustomerDocument(val);
+                    if (selectedCustomerId) setSelectedCustomerId('');
+                    if (val.trim() && val !== 'V-00000000') {
+                      setActiveSuggestionSource('document');
+                    } else if (activeSuggestionSource === 'document') {
+                      setActiveSuggestionSource(null);
+                    }
+                  }}
+                  onKeyDown={handleCustomerInputKeyDown}
+                  placeholder="V-00000000 (opc.)"
+                  className="w-full text-xs p-1.5 rounded border border-slate-200 bg-slate-50 focus:bg-white font-mono"
+                />
+              </div>
+              <div>
+                <label className="block text-[10px] font-semibold text-slate-600 mb-0.5">
+                  Celular / WhatsApp
+                </label>
+                <input
+                  type="tel"
+                  value={customerPhone}
+                  onChange={(e) => {
+                    setCustomerPhone(e.target.value);
+                    if (selectedCustomerId) setSelectedCustomerId('');
+                  }}
+                  placeholder="0414... (opc.)"
+                  className="w-full text-xs p-1.5 rounded border border-slate-200 bg-slate-50 focus:bg-white font-mono"
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* 2. Sale Items & Payment Card */}
           <div className="bg-white rounded-xl border border-slate-200 p-4 sm:p-5 shadow-2xs space-y-4">
-            {/* 1. Sale Items Table (Primer plano arriba) */}
+            {/* Sale Items Table */}
             <div className="pb-3 border-b border-slate-200">
               <div className="flex items-center justify-between mb-2">
                 <div>
@@ -1453,261 +1678,6 @@ export const PosView: React.FC = () => {
                       </div>
                     );
                   })}
-                </div>
-              )}
-            </div>
-
-            {/* 2. Customer Information Block */}
-            <div ref={customerBoxRef} className="space-y-3 pb-3 border-b border-slate-200">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <span className="text-xs font-bold text-slate-900 uppercase tracking-wider flex items-center gap-1.5">
-                  <User className="w-3.5 h-3.5 text-amber-600" />
-                  <span>Datos del Cliente</span>
-                </span>
-
-                <div className="flex items-center gap-1.5">
-                  <button
-                    type="button"
-                    onClick={handleSetQuickWalkInCustomer}
-                    className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-bold bg-amber-100 hover:bg-amber-200 text-amber-950 border border-amber-300 rounded-lg transition-colors cursor-pointer shadow-2xs"
-                    title="Venta rápida: no requiere registrar cliente"
-                  >
-                    <span>⚡ Cliente Mostrador</span>
-                  </button>
-
-                  {(customerName || customerPhone || customerDocument || selectedCustomerId || customerSearchQuery) && (
-                    <button
-                      type="button"
-                      onClick={handleClearCustomer}
-                      className="text-[11px] text-slate-500 hover:text-slate-800 px-1.5 py-0.5 rounded hover:bg-slate-100 cursor-pointer"
-                      title="Limpiar datos de cliente"
-                    >
-                      Limpiar
-                    </button>
-                  )}
-                </div>
-              </div>
-
-              {/* Buscador inteligente de clientes registrados (por Cédula, Nombre o Teléfono) */}
-              <div className="relative">
-                <div className="relative">
-                  <Search className="w-3.5 h-3.5 text-amber-600 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
-                  <input
-                    ref={customerSearchInputRef}
-                    type="text"
-                    value={customerSearchQuery}
-                    onFocus={() => setActiveSuggestionSource('search')}
-                    onChange={(e) => {
-                      setCustomerSearchQuery(e.target.value);
-                      setActiveSuggestionSource('search');
-                    }}
-                    onKeyDown={handleCustomerInputKeyDown}
-                    placeholder={`Buscar cliente registrado por cédula o nombre (${customers.length} registrados)...`}
-                    className="w-full pl-8 pr-8 py-2 text-xs rounded-lg border border-amber-300/80 bg-amber-50/40 focus:bg-white focus:outline-hidden focus:border-amber-500 text-slate-900 placeholder:text-slate-500"
-                  />
-                  {customerSearchQuery && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setCustomerSearchQuery('');
-                        setActiveSuggestionSource('search');
-                      }}
-                      className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 p-0.5 cursor-pointer"
-                      title="Limpiar búsqueda de cliente"
-                    >
-                      <X className="w-3.5 h-3.5" />
-                    </button>
-                  )}
-                </div>
-
-                {selectedCustomerId && (
-                  <div className="mt-1.5 flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg bg-emerald-50 border border-emerald-200 text-[11px] text-emerald-900">
-                    <div className="flex items-center gap-1.5 min-w-0">
-                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-                      <span className="font-bold truncate">{customerName}</span>
-                      {customerDocument && (
-                        <span className="font-mono text-[10px] bg-white px-1.5 py-0.5 rounded border border-emerald-200 text-emerald-800 shrink-0">
-                          C.I. {customerDocument}
-                        </span>
-                      )}
-                    </div>
-                    <button
-                      type="button"
-                      onClick={handleClearCustomer}
-                      className="text-[10px] font-semibold text-emerald-700 hover:text-emerald-950 underline shrink-0 cursor-pointer"
-                    >
-                      Cambiar
-                    </button>
-                  </div>
-                )}
-
-                {activeSuggestionSource && (activeSuggestionSource === 'search' || customerSuggestions.length > 0) && (
-                  <div className="absolute left-0 right-0 z-30 mt-1 bg-white border border-slate-200 rounded-xl shadow-lg max-h-60 overflow-y-auto divide-y divide-slate-100">
-                    {customerSuggestions.length > 0 ? (
-                      <>
-                        <div className="px-3 py-1.5 bg-slate-50 text-[10px] font-semibold text-slate-500 flex items-center justify-between">
-                          <span>
-                            {activeCustomerQuery.trim()
-                              ? `Sugerencias (${customerSuggestions.length})`
-                              : `Clientes registrados (${customers.length})`}
-                          </span>
-                          <span>Clic o Enter para seleccionar</span>
-                        </div>
-                        {customerSuggestions.map((c, idx) => {
-                          const isHighlighted = idx === highlightedCustomerIdx;
-                          const isSelected = selectedCustomerId === c.id;
-                          return (
-                            <button
-                              key={c.id}
-                              type="button"
-                              onMouseDown={(e) => {
-                                e.preventDefault();
-                                handleSelectCustomer(c.id);
-                              }}
-                              onMouseEnter={() => setHighlightedCustomerIdx(idx)}
-                              className={`w-full text-left px-3 py-2 flex items-center justify-between gap-2 transition-colors cursor-pointer ${
-                                isHighlighted
-                                  ? 'bg-amber-50 text-slate-950'
-                                  : isSelected
-                                  ? 'bg-emerald-50/60 text-slate-900'
-                                  : 'hover:bg-slate-50 text-slate-800'
-                              }`}
-                            >
-                              <div className="min-w-0 flex-1">
-                                <div className="flex items-center gap-1.5">
-                                  <span className="text-xs font-bold truncate">{c.name}</span>
-                                  {isSelected && (
-                                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-                                  )}
-                                </div>
-                                <div className="flex items-center gap-2 text-[10px] text-slate-500 font-mono mt-0.5 flex-wrap">
-                                  {c.documentId ? (
-                                    <span className="bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded font-semibold">
-                                      C.I./RIF: {c.documentId}
-                                    </span>
-                                  ) : (
-                                    <span className="text-slate-400">Sin cédula</span>
-                                  )}
-                                  {c.phone && (
-                                    <span className="flex items-center gap-0.5">
-                                      <Phone className="w-2.5 h-2.5 text-slate-400" />
-                                      {c.phone}
-                                    </span>
-                                  )}
-                                </div>
-                              </div>
-                              <span className="text-[10px] font-bold text-amber-700 shrink-0">
-                                Elegir
-                              </span>
-                            </button>
-                          );
-                        })}
-                      </>
-                    ) : (
-                      <div className="px-3 py-3 text-center text-[11px] text-slate-500">
-                        No hay clientes registrados que coincidan con{' '}
-                        <strong className="text-slate-700">"{activeCustomerQuery}"</strong>.
-                        <span className="block text-[10px] text-slate-400 mt-0.5">
-                          Puedes llenar los campos de abajo para facturar y registrarlo automáticamente.
-                        </span>
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                <div>
-                  <div className="flex items-center justify-between mb-0.5">
-                    <label className="block text-[10px] font-semibold text-slate-600">
-                      Nombre del Cliente
-                    </label>
-                    <span className="text-[9px] text-slate-400 font-medium">
-                      (Opcional - Mostrador)
-                    </span>
-                  </div>
-                  <input
-                    type="text"
-                    value={customerName}
-                    onFocus={() => {
-                      if (!selectedCustomerId && customerName.trim() && customerName !== 'Cliente Mostrador') {
-                        setActiveSuggestionSource('name');
-                      }
-                    }}
-                    onChange={(e) => {
-                      const val = e.target.value;
-                      setCustomerName(val);
-                      if (selectedCustomerId) setSelectedCustomerId('');
-                      if (val.trim() && val !== 'Cliente Mostrador') {
-                        setActiveSuggestionSource('name');
-                      } else if (activeSuggestionSource === 'name') {
-                        setActiveSuggestionSource(null);
-                      }
-                    }}
-                    onKeyDown={handleCustomerInputKeyDown}
-                    placeholder="Ej. Juan Pérez (o dejar vacío)"
-                    className="w-full text-xs p-2 rounded border border-slate-200 bg-slate-50 focus:bg-white"
-                  />
-                </div>
-                <div>
-                  <div className="flex items-center justify-between mb-0.5">
-                    <label className="block text-[10px] font-semibold text-slate-600">
-                      Celular / WhatsApp
-                    </label>
-                    <span className="text-[9px] text-slate-400 font-medium">
-                      (Opcional)
-                    </span>
-                  </div>
-                  <input
-                    type="tel"
-                    value={customerPhone}
-                    onChange={(e) => {
-                      setCustomerPhone(e.target.value);
-                      if (selectedCustomerId) setSelectedCustomerId('');
-                    }}
-                    placeholder="Ej. 04141234567 (opcional)"
-                    className="w-full text-xs p-2 rounded border border-slate-200 bg-slate-50 focus:bg-white font-mono"
-                  />
-                </div>
-              </div>
-
-              <div>
-                <div className="flex items-center justify-between mb-0.5">
-                  <label className="block text-[10px] font-semibold text-slate-600">
-                    Cédula / RIF (Venezuela)
-                  </label>
-                  <span className="text-[9px] text-slate-400 font-medium">
-                    (Opcional)
-                  </span>
-                </div>
-                <input
-                  type="text"
-                  value={customerDocument}
-                  onFocus={() => {
-                    if (!selectedCustomerId && customerDocument.trim() && customerDocument !== 'V-00000000') {
-                      setActiveSuggestionSource('document');
-                    }
-                  }}
-                  onChange={(e) => {
-                    const val = e.target.value;
-                    setCustomerDocument(val);
-                    if (selectedCustomerId) setSelectedCustomerId('');
-                    if (val.trim() && val !== 'V-00000000') {
-                      setActiveSuggestionSource('document');
-                    } else if (activeSuggestionSource === 'document') {
-                      setActiveSuggestionSource(null);
-                    }
-                  }}
-                  onKeyDown={handleCustomerInputKeyDown}
-                  placeholder="Ej. V-19874521 (opcional)"
-                  className="w-full text-xs p-2 rounded border border-slate-200 bg-slate-50 focus:bg-white font-mono"
-                />
-              </div>
-
-              {(!customerName || customerName === 'Cliente Mostrador') && (
-                <div className="bg-amber-50/80 border border-amber-200/60 rounded-lg px-2.5 py-1.5 flex items-center gap-1.5 text-[11px] text-amber-900">
-                  <span className="font-bold text-amber-700">⚡ Venta Rápida:</span>
-                  <span>Factura a nombre de <strong>Cliente Mostrador</strong> sin requerir registro previo.</span>
                 </div>
               )}
             </div>

@@ -1163,6 +1163,154 @@ app.post('/api/data/reset', (_req, res) => {
   }
 });
 
+function extractDriveIdForServer(rawUrl: string): string | null {
+  if (!rawUrl) return null;
+  const trimmed = rawUrl.trim();
+  const matchFileD = trimmed.match(/\/file\/d\/([a-zA-Z0-9_-]+)/);
+  if (matchFileD?.[1]) return matchFileD[1];
+  const matchId = trimmed.match(/[?&]id=([a-zA-Z0-9_-]+)/);
+  if (matchId?.[1]) return matchId[1];
+  const matchD = trimmed.match(/\/d\/([a-zA-Z0-9_-]+)/);
+  if (matchD?.[1]) return matchD[1];
+  return null;
+}
+
+function isDriveHostForServer(rawUrl: string): boolean {
+  const lower = rawUrl.toLowerCase();
+  return (
+    lower.includes('drive.google.com') ||
+    lower.includes('docs.google.com') ||
+    lower.includes('googleusercontent.com')
+  );
+}
+
+async function probeImageCandidate(url: string): Promise<{ ok: boolean; contentType: string; status: number }> {
+  try {
+    const response = await fetch(url, {
+      method: 'GET',
+      redirect: 'follow',
+      signal: AbortSignal.timeout(4500),
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (compatible; ServimotosImageChecker/1.0)',
+      },
+    });
+    const contentType = (response.headers.get('content-type') || '').toLowerCase();
+    try {
+      await response.body?.cancel();
+    } catch {}
+    return {
+      ok: response.ok && contentType.startsWith('image/'),
+      contentType,
+      status: response.status,
+    };
+  } catch {
+    return { ok: false, contentType: '', status: 0 };
+  }
+}
+
+async function checkPublicImageAccessibility(
+  rawUrl: string
+): Promise<{ public: boolean; reason: string; workingUrl?: string }> {
+  const trimmed = (rawUrl || '').trim();
+  if (!trimmed) {
+    return { public: false, reason: 'empty' };
+  }
+  if (trimmed.startsWith('data:image/')) {
+    return { public: true, reason: 'embedded_data_url', workingUrl: trimmed };
+  }
+  if (trimmed.startsWith('/') || trimmed.startsWith('assets/')) {
+    return { public: true, reason: 'bundled_asset', workingUrl: trimmed };
+  }
+  if (!/^https?:\/\//i.test(trimmed)) {
+    return { public: false, reason: 'invalid_url' };
+  }
+
+  if (isDriveHostForServer(trimmed)) {
+    const driveId = extractDriveIdForServer(trimmed);
+    if (!driveId) {
+      return { public: false, reason: 'invalid_drive_link' };
+    }
+    const candidates = [
+      `https://lh3.googleusercontent.com/d/${driveId}`,
+      `https://drive.google.com/thumbnail?id=${driveId}&sz=w1000`,
+    ];
+    for (const candidate of candidates) {
+      const probe = await probeImageCandidate(candidate);
+      if (probe.ok) {
+        return { public: true, reason: 'public_drive_image', workingUrl: candidate };
+      }
+    }
+    return { public: false, reason: 'private_google_drive' };
+  }
+
+  const probe = await probeImageCandidate(trimmed);
+  if (probe.ok) {
+    return { public: true, reason: 'public_image', workingUrl: trimmed };
+  }
+  return {
+    public: false,
+    reason: probe.status ? `http_${probe.status}` : 'unreachable',
+  };
+}
+
+// Single image public visibility check (runs unauthenticated from server)
+app.get('/api/utils/check-image', async (req, res) => {
+  try {
+    const url = typeof req.query.url === 'string' ? req.query.url : '';
+    if (!url) {
+      return res.status(400).json({ success: false, error: 'Falta parámetro url' });
+    }
+    const result = await checkPublicImageAccessibility(url);
+    return res.json({ success: true, url, ...result });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Batch image public visibility check for inventory diagnostics
+app.post('/api/utils/check-images', async (req, res) => {
+  try {
+    let body = req.body || {};
+    if (typeof body === 'string') {
+      try {
+        body = JSON.parse(body);
+      } catch {}
+    }
+    const rawUrls: string[] = Array.isArray(body.urls) ? body.urls : [];
+    const uniqueUrls = Array.from(
+      new Set(
+        rawUrls
+          .filter((u) => typeof u === 'string' && u.trim().length > 0)
+          .map((u) => u.trim())
+      )
+    ).slice(0, 80);
+
+    const results: Record<string, { public: boolean; reason: string; workingUrl?: string }> = {};
+    const CONCURRENCY = 8;
+    for (let i = 0; i < uniqueUrls.length; i += CONCURRENCY) {
+      const batch = uniqueUrls.slice(i, i + CONCURRENCY);
+      const batchResults = await Promise.all(
+        batch.map(async (u) => ({ url: u, res: await checkPublicImageAccessibility(u) }))
+      );
+      for (const item of batchResults) {
+        results[item.url] = item.res;
+      }
+    }
+
+    const values = Object.values(results);
+    const publicCount = values.filter((r) => r.public).length;
+    const privateCount = values.filter((r) => !r.public).length;
+
+    return res.json({
+      success: true,
+      summary: { total: values.length, publicCount, privateCount },
+      results,
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 async function startServer() {
   // Ensure database exists on disk immediately
   readDatabase();

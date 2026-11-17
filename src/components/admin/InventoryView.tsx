@@ -12,23 +12,28 @@ import {
   Trash2,
   Eye,
   EyeOff,
-  Filter,
-  ArrowUpDown,
   X,
-  PackageCheck,
-  TrendingDown,
-  TrendingUp,
   Image as ImageIcon,
   Sparkles,
-  ExternalLink,
-  HelpCircle,
   FileSpreadsheet,
   Download,
   UploadCloud,
   Barcode,
   MapPin,
+  Camera,
+  Upload,
+  Loader2,
+  Link2,
 } from 'lucide-react';
-import { normalizeImageUrl, isGoogleDriveUrl, PRESET_PRODUCT_IMAGES } from '../../utils/imageUrl';
+import {
+  normalizeImageUrl,
+  isGoogleDriveUrl,
+  isEmbeddedImageUrl,
+  PRESET_PRODUCT_IMAGES,
+  getFallbackProductImage,
+  handleProductImageError,
+  compressImageFileToDataUrl,
+} from '../../utils/imageUrl';
 import { downloadInventoryTemplate, exportInventoryToExcel, ParsedProductRow } from '../../utils/excelInventory';
 import { ImportExcelModal } from './ImportExcelModal';
 
@@ -49,6 +54,7 @@ export const InventoryView: React.FC = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
   const [filterStockStatus, setFilterStockStatus] = useState<'all' | 'low' | 'out'>('all');
+  const [filterPhotoStatus, setFilterPhotoStatus] = useState<'all' | 'missing' | 'uploaded'>('all');
 
   // Modals state
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
@@ -92,6 +98,8 @@ export const InventoryView: React.FC = () => {
       if (selectedCategory !== 'all' && p.category !== selectedCategory) return false;
       if (filterStockStatus === 'low' && p.stock > p.minStock) return false;
       if (filterStockStatus === 'out' && p.stock > 0) return false;
+      if (filterPhotoStatus === 'uploaded' && !isEmbeddedImageUrl(p.imageUrl)) return false;
+      if (filterPhotoStatus === 'missing' && isEmbeddedImageUrl(p.imageUrl)) return false;
 
       if (searchTerm.trim()) {
         const q = searchTerm.toLowerCase();
@@ -107,9 +115,19 @@ export const InventoryView: React.FC = () => {
 
       return true;
     });
-  }, [products, selectedCategory, filterStockStatus, searchTerm]);
+  }, [products, selectedCategory, filterStockStatus, filterPhotoStatus, searchTerm]);
 
   const [imagePreviewError, setImagePreviewError] = useState(false);
+  const [isCompressingUpload, setIsCompressingUpload] = useState(false);
+  const [quickUploadingId, setQuickUploadingId] = useState<string | null>(null);
+  const [isDraggingPhoto, setIsDraggingPhoto] = useState(false);
+  const [showUrlInputInModal, setShowUrlInputInModal] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+
+  const pendingOwnPhotoCount = useMemo(
+    () => products.filter((p) => !isEmbeddedImageUrl(p.imageUrl)).length,
+    [products]
+  );
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
@@ -160,6 +178,8 @@ export const InventoryView: React.FC = () => {
   const handleStartEdit = (product: Product) => {
     setEditingProduct(product);
     setImagePreviewError(false);
+    setUploadError(null);
+    setShowUrlInputInModal(false);
     setFormError(null);
     setIsAddingCategory(false);
     setNewCategoryName('');
@@ -182,8 +202,57 @@ export const InventoryView: React.FC = () => {
 
   const handleImageUrlChange = (val: string) => {
     setImagePreviewError(false);
+    setUploadError(null);
     const converted = normalizeImageUrl(val);
     setFormData((prev) => ({ ...prev, imageUrl: converted }));
+  };
+
+  const processSelectedModalFile = async (file: File) => {
+    if (!file.type.startsWith('image/')) {
+      setUploadError('Selecciona un archivo de imagen válido (JPG, PNG o WebP).');
+      return;
+    }
+    setUploadError(null);
+    setIsCompressingUpload(true);
+    try {
+      const compressedDataUrl = await compressImageFileToDataUrl(file, 720, 0.82);
+      setImagePreviewError(false);
+      setFormData((prev) => ({ ...prev, imageUrl: compressedDataUrl }));
+    } catch (err: any) {
+      setUploadError(err?.message || 'No se pudo procesar la foto seleccionada.');
+    } finally {
+      setIsCompressingUpload(false);
+    }
+  };
+
+  const handleLocalImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    await processSelectedModalFile(file);
+  };
+
+  const handleQuickRowImageUpload = async (
+    product: Product,
+    e: React.ChangeEvent<HTMLInputElement>
+  ) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      showToast('⚠️ Selecciona un archivo de imagen válido (JPG, PNG o WebP).');
+      return;
+    }
+    setQuickUploadingId(product.id);
+    try {
+      const compressedDataUrl = await compressImageFileToDataUrl(file, 720, 0.82);
+      updateProduct(product.id, { imageUrl: compressedDataUrl });
+      showToast(`✓ Foto subida y guardada en "${product.name}".`);
+    } catch (err: any) {
+      showToast(`⚠️ ${err?.message || 'No se pudo subir la imagen.'}`);
+    } finally {
+      setQuickUploadingId((prev) => (prev === product.id ? null : prev));
+    }
   };
 
   const normalizedFormSku = formData.sku.trim().toLowerCase();
@@ -344,6 +413,9 @@ export const InventoryView: React.FC = () => {
             onClick={() => {
               setFormData(initialFormState);
               setFormError(null);
+              setUploadError(null);
+              setImagePreviewError(false);
+              setShowUrlInputInModal(false);
               setIsAddingCategory(false);
               setNewCategoryName('');
               setIsAddModalOpen(true);
@@ -393,6 +465,40 @@ export const InventoryView: React.FC = () => {
         </div>
       </div>
 
+      {/* Direct Photo Upload Quick Tip */}
+      {pendingOwnPhotoCount > 0 && (
+        <div className="bg-slate-900 text-white rounded-xl p-3.5 shadow-2xs flex flex-wrap items-center justify-between gap-3 border border-slate-800">
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-lg bg-amber-500/20 border border-amber-400/30 flex items-center justify-center text-amber-400 shrink-0">
+              <Camera className="w-4 h-4" />
+            </div>
+            <div className="text-xs">
+              <p className="font-bold text-white">
+                Sube las fotos directo a cada repuesto (sin depender de Google Drive)
+              </p>
+              <p className="text-[11px] text-slate-300">
+                Haz clic en la miniatura o en el botón <strong className="text-amber-400">Subir foto</strong> de cualquier repuesto en la tabla. Se optimizan y guardan al instante para todos tus clientes.
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() =>
+              setFilterPhotoStatus((prev) => (prev === 'missing' ? 'all' : 'missing'))
+            }
+            className={`px-3 py-1.5 rounded-lg text-[11px] font-bold transition-colors cursor-pointer shrink-0 ${
+              filterPhotoStatus === 'missing'
+                ? 'bg-amber-500 text-slate-950'
+                : 'bg-white/10 hover:bg-white/20 text-amber-300 border border-white/15'
+            }`}
+          >
+            {filterPhotoStatus === 'missing'
+              ? `Mostrando pendientes (${pendingOwnPhotoCount}) • Ver todos`
+              : `Filtrar pendientes de foto (${pendingOwnPhotoCount})`}
+          </button>
+        </div>
+      )}
+
       {/* Filters & Search Toolbar */}
       <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-2xs space-y-3">
         <div className="flex flex-col sm:flex-row gap-3">
@@ -407,7 +513,7 @@ export const InventoryView: React.FC = () => {
             />
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <select
               value={selectedCategory}
               onChange={(e) => setSelectedCategory(e.target.value)}
@@ -429,6 +535,16 @@ export const InventoryView: React.FC = () => {
               <option value="all">Todo el stock</option>
               <option value="low">Stock bajo / crítico</option>
               <option value="out">Agotados (Stock 0)</option>
+            </select>
+
+            <select
+              value={filterPhotoStatus}
+              onChange={(e) => setFilterPhotoStatus(e.target.value as any)}
+              className="text-xs p-2 rounded-lg border border-slate-200 bg-slate-50 font-medium"
+            >
+              <option value="all">Todas las fotos</option>
+              <option value="missing">Sin foto subida ({pendingOwnPhotoCount})</option>
+              <option value="uploaded">Con foto directa ({products.length - pendingOwnPhotoCount})</option>
             </select>
           </div>
         </div>
@@ -525,35 +641,76 @@ export const InventoryView: React.FC = () => {
                         />
                       </td>
 
-                      {/* Name & SKU */}
+                      {/* Name, Direct Photo Upload & SKU */}
                       <td className="py-3 px-4">
                         <div className="flex items-center gap-3">
-                          {product.imageUrl ? (
-                            <img
-                              src={normalizeImageUrl(product.imageUrl)}
-                              alt={product.name}
-                              className="w-10 h-10 rounded-lg object-cover bg-slate-100 shrink-0 border border-slate-200"
-                              referrerPolicy="no-referrer"
-                              onError={(e) => {
-                                const target = e.currentTarget;
-                                if (product.name.toLowerCase().includes('maleta')) {
-                                  target.src = PRESET_PRODUCT_IMAGES.maletaParaMoto;
-                                } else {
-                                  target.src = PRESET_PRODUCT_IMAGES.brakeKit;
-                                }
-                              }}
+                          <label
+                            className="relative group w-11 h-11 rounded-lg bg-slate-100 shrink-0 border border-slate-200 overflow-hidden cursor-pointer flex items-center justify-center"
+                            title="Haz clic para subir o cambiar la foto de este repuesto"
+                          >
+                            {quickUploadingId === product.id ? (
+                              <Loader2 className="w-4 h-4 animate-spin text-amber-500" />
+                            ) : (
+                              <>
+                                {product.imageUrl ? (
+                                  <img
+                                    src={
+                                      normalizeImageUrl(product.imageUrl) ||
+                                      getFallbackProductImage(product.name, product.category)
+                                    }
+                                    alt={product.name}
+                                    className="w-full h-full object-cover"
+                                    referrerPolicy="no-referrer"
+                                    onError={(e) => handleProductImageError(e, product)}
+                                  />
+                                ) : (
+                                  <Boxes className="w-4 h-4 text-slate-400" />
+                                )}
+                                <div className="absolute inset-0 bg-slate-900/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                                  <Camera className="w-4 h-4 text-white" />
+                                </div>
+                              </>
+                            )}
+                            <input
+                              type="file"
+                              accept="image/*"
+                              onChange={(e) => handleQuickRowImageUpload(product, e)}
+                              disabled={quickUploadingId === product.id}
+                              className="hidden"
                             />
-                          ) : (
-                            <div className="w-10 h-10 rounded-lg bg-slate-100 flex items-center justify-center text-slate-400 shrink-0">
-                              <Boxes className="w-4 h-4" />
-                            </div>
-                          )}
-                          <div>
+                          </label>
+                          <div className="min-w-0">
                             <p className="font-bold text-slate-900 line-clamp-1">{product.name}</p>
                             <div className="flex items-center gap-1.5 flex-wrap mt-0.5">
                               <span className="font-mono text-[10px] text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded">
                                 SKU: {product.sku}
                               </span>
+                              <label
+                                className={`text-[10px] px-1.5 py-0.5 rounded inline-flex items-center gap-1 font-semibold cursor-pointer transition-colors ${
+                                  isEmbeddedImageUrl(product.imageUrl)
+                                    ? 'text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200'
+                                    : 'text-amber-800 bg-amber-50 hover:bg-amber-100 border border-amber-300'
+                                }`}
+                                title="Subir imagen directamente desde tu dispositivo"
+                              >
+                                <Camera className="w-2.5 h-2.5" />
+                                <span>
+                                  {quickUploadingId === product.id
+                                    ? 'Subiendo...'
+                                    : isEmbeddedImageUrl(product.imageUrl)
+                                    ? 'Cambiar foto'
+                                    : isGoogleDriveUrl(product.imageUrl)
+                                    ? 'Subir foto (reemplazar Drive)'
+                                    : 'Subir foto'}
+                                </span>
+                                <input
+                                  type="file"
+                                  accept="image/*"
+                                  onChange={(e) => handleQuickRowImageUpload(product, e)}
+                                  disabled={quickUploadingId === product.id}
+                                  className="hidden"
+                                />
+                              </label>
                               {product.barcode && (
                                 <span
                                   className="font-mono text-[10px] text-indigo-700 bg-indigo-50 border border-indigo-200/60 px-1.5 py-0.5 rounded inline-flex items-center gap-1"
@@ -929,79 +1086,152 @@ export const InventoryView: React.FC = () => {
                 </div>
               </div>
 
-              <div className="space-y-2 bg-slate-50 p-3.5 rounded-xl border border-slate-200">
-                <div className="flex items-center justify-between">
+              <div
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  setIsDraggingPhoto(true);
+                }}
+                onDragLeave={() => setIsDraggingPhoto(false)}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  setIsDraggingPhoto(false);
+                  const file = e.dataTransfer.files?.[0];
+                  if (file) {
+                    void processSelectedModalFile(file);
+                  }
+                }}
+                onPaste={(e) => {
+                  const items = e.clipboardData?.items;
+                  if (!items) return;
+                  for (let i = 0; i < items.length; i++) {
+                    if (items[i].type.startsWith('image/')) {
+                      const pastedFile = items[i].getAsFile();
+                      if (pastedFile) {
+                        e.preventDefault();
+                        void processSelectedModalFile(pastedFile);
+                        break;
+                      }
+                    }
+                  }
+                }}
+                className={`space-y-3 p-4 rounded-xl border-2 transition-colors ${
+                  isDraggingPhoto
+                    ? 'bg-amber-50 border-amber-400 border-dashed'
+                    : 'bg-slate-50 border-slate-200'
+                }`}
+              >
+                <div className="flex flex-wrap items-center justify-between gap-2">
                   <label className="block font-semibold text-slate-800">
-                    Imagen del Repuesto (Enlace directo o Google Drive)
+                    Foto del Repuesto (Subida directa a la tienda)
                   </label>
-                  {isGoogleDriveUrl(formData.imageUrl) && (
-                    <span className="inline-flex items-center gap-1 text-[10px] bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full font-medium">
+                  {isEmbeddedImageUrl(formData.imageUrl) && (
+                    <span className="inline-flex items-center gap-1 text-[10px] bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full font-semibold">
                       <CheckCircle2 className="w-3 h-3 text-emerald-600" />
-                      Google Drive Detectado
+                      Foto Directa ({Math.max(1, Math.round((formData.imageUrl.length * 0.75) / 1024))} KB)
                     </span>
                   )}
                 </div>
 
-                <div className="relative">
-                  <input
-                    type="text"
-                    value={formData.imageUrl}
-                    onChange={(e) => handleImageUrlChange(e.target.value)}
-                    placeholder="Pega enlace de Google Drive (drive.google.com/file/d/...) o URL de imagen"
-                    className="w-full p-2.5 rounded-lg border border-slate-300 bg-white font-mono text-[11px] focus:border-amber-500 focus:outline-hidden"
-                  />
-                </div>
-
-                {/* Google Drive Notice and Helpers */}
-                {isGoogleDriveUrl(formData.imageUrl) && (
-                  <div className="text-[11px] bg-amber-50 border border-amber-200 rounded-lg p-2.5 text-amber-900 space-y-1">
-                    <p className="font-semibold flex items-center gap-1.5 text-amber-800">
-                      <HelpCircle className="w-3.5 h-3.5 shrink-0 text-amber-600" />
-                      <span>Requisito para imágenes de Google Drive:</span>
-                    </p>
-                    <p className="text-[10px] text-amber-800 leading-relaxed">
-                      El enlace fue transformado automáticamente a formato de visualización web directa.
-                      Para que la imagen se vea sin bloqueos, asegúrate de que en Google Drive el archivo tenga: <strong>Acceso general: "Cualquier persona que tenga el vínculo" (Lector)</strong>.
-                    </p>
-                  </div>
-                )}
-
-                {/* Live Image Preview */}
-                {formData.imageUrl && (
-                  <div className="flex items-start gap-3 pt-1">
-                    <div className="w-16 h-16 rounded-lg bg-white border border-slate-200 overflow-hidden shrink-0 relative flex items-center justify-center">
+                {/* Live Image Preview + Direct Upload Zone */}
+                <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3.5">
+                  <div className="w-24 h-24 rounded-xl bg-white border border-slate-200 overflow-hidden shrink-0 relative flex items-center justify-center shadow-2xs">
+                    {formData.imageUrl ? (
                       <img
+                        key={formData.imageUrl}
                         src={formData.imageUrl}
-                        alt="Vista previa"
+                        alt="Vista previa del repuesto"
                         className="w-full h-full object-cover"
                         referrerPolicy="no-referrer"
                         onLoad={() => setImagePreviewError(false)}
                         onError={() => setImagePreviewError(true)}
                       />
-                    </div>
-                    <div className="flex-1 text-xs">
-                      {imagePreviewError ? (
-                        <div className="text-rose-600 space-y-0.5">
-                          <p className="font-bold flex items-center gap-1 text-[11px]">
-                            <AlertTriangle className="w-3.5 h-3.5 text-rose-500" />
-                            No se pudo visualizar la imagen del enlace
-                          </p>
-                          <p className="text-[10px] text-slate-500 leading-normal">
-                            Si es de Google Drive, verifica que los permisos del archivo no estén en "Restringido".
-                          </p>
-                        </div>
-                      ) : (
-                        <div className="text-emerald-700">
-                          <p className="font-semibold flex items-center gap-1 text-[11px]">
-                            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-                            Vista previa cargada con éxito
-                          </p>
-                          <p className="text-[10px] text-slate-400 truncate max-w-xs">{formData.imageUrl}</p>
-                        </div>
+                    ) : (
+                      <div className="text-center p-2 text-slate-400">
+                        <ImageIcon className="w-6 h-6 mx-auto mb-1 opacity-60" />
+                        <span className="text-[10px] block">Sin foto</span>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="flex-1 space-y-2 w-full">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <label className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs rounded-lg transition-colors cursor-pointer shadow-xs">
+                        {isCompressingUpload ? (
+                          <Loader2 className="w-4 h-4 animate-spin text-amber-400" />
+                        ) : (
+                          <Upload className="w-4 h-4 text-amber-400" />
+                        )}
+                        <span>
+                          {isCompressingUpload
+                            ? 'Optimizando foto...'
+                            : formData.imageUrl
+                            ? 'Cambiar foto desde dispositivo'
+                            : 'Subir foto desde dispositivo'}
+                        </span>
+                        <input
+                          type="file"
+                          accept="image/*"
+                          onChange={handleLocalImageUpload}
+                          disabled={isCompressingUpload}
+                          className="hidden"
+                        />
+                      </label>
+
+                      {formData.imageUrl && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setFormData((prev) => ({ ...prev, imageUrl: '' }));
+                            setImagePreviewError(false);
+                          }}
+                          className="px-2.5 py-2 text-[11px] font-semibold text-rose-600 hover:bg-rose-50 border border-rose-200 rounded-lg transition-colors cursor-pointer"
+                        >
+                          Quitar foto
+                        </button>
                       )}
                     </div>
+
+                    <p className="text-[11px] text-slate-500 leading-snug">
+                      También puedes <strong>arrastrar y soltar</strong> una imagen aquí o pegarla con <kbd className="px-1 py-0.5 bg-white border border-slate-300 rounded text-[10px]">Ctrl+V</kbd>. Se guarda directamente en la tienda y la ven todos los clientes.
+                    </p>
+
+                    {uploadError && (
+                      <p className="text-[11px] text-rose-600 font-semibold">{uploadError}</p>
+                    )}
+                    {imagePreviewError && (
+                      <p className="text-[11px] text-rose-600 font-semibold flex items-center gap-1">
+                        <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                        <span>La imagen actual no cargó; sube una foto directa con el botón de arriba.</span>
+                      </p>
+                    )}
                   </div>
-                )}
+                </div>
+
+                {/* Optional External URL toggle (secondary fallback, zero Google Drive requirement) */}
+                <div className="pt-1">
+                  <button
+                    type="button"
+                    onClick={() => setShowUrlInputInModal((prev) => !prev)}
+                    className="inline-flex items-center gap-1 text-[11px] font-medium text-slate-500 hover:text-slate-800 cursor-pointer"
+                  >
+                    <Link2 className="w-3 h-3" />
+                    <span>
+                      {showUrlInputInModal
+                        ? 'Ocultar campo de enlace web'
+                        : 'Opcional: pegar un enlace web directo (URL)'}
+                    </span>
+                  </button>
+
+                  {showUrlInputInModal && (
+                    <input
+                      type="text"
+                      value={isEmbeddedImageUrl(formData.imageUrl) ? '' : formData.imageUrl}
+                      onChange={(e) => handleImageUrlChange(e.target.value)}
+                      placeholder="Pega aquí una URL directa (https://...)"
+                      className="mt-2 w-full p-2 rounded-lg border border-slate-300 bg-white font-mono text-[11px] focus:border-amber-500 focus:outline-hidden"
+                    />
+                  )}
+                </div>
 
                 {/* Quick Presets for Products, especially Maleta para Moto */}
                 <div className="pt-2 border-t border-slate-200">
@@ -1149,13 +1379,14 @@ export const InventoryView: React.FC = () => {
               <div className="flex items-center gap-3 p-3 bg-slate-50 rounded-xl border border-slate-200">
                 {productToDelete.imageUrl ? (
                   <img
-                    src={normalizeImageUrl(productToDelete.imageUrl)}
+                    src={
+                      normalizeImageUrl(productToDelete.imageUrl) ||
+                      getFallbackProductImage(productToDelete.name, productToDelete.category)
+                    }
                     alt={productToDelete.name}
                     className="w-12 h-12 rounded-lg object-cover bg-white shrink-0 border border-slate-200"
                     referrerPolicy="no-referrer"
-                    onError={(e) => {
-                      e.currentTarget.src = PRESET_PRODUCT_IMAGES.brakeKit;
-                    }}
+                    onError={(e) => handleProductImageError(e, productToDelete)}
                   />
                 ) : (
                   <div className="w-12 h-12 rounded-lg bg-slate-200 flex items-center justify-center text-slate-500 shrink-0">

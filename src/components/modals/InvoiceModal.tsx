@@ -5,6 +5,7 @@ import {
   formatBs,
   buildInvoiceWhatsAppMessage,
   hasValidWhatsAppPhone,
+  getPublicAppOrigin,
 } from '../../utils/whatsapp';
 import { downloadInvoicePDF } from '../../utils/pdfInvoice';
 import {
@@ -516,8 +517,35 @@ export const InvoiceModal: React.FC = () => {
             </div>
           )}
 
+          {/* Banner llamativo Tienda Online */}
+          <a
+            href={`${getPublicAppOrigin().replace(/\/+$/, '')}/`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="mt-5 block rounded-xl bg-slate-950 border-2 border-amber-500 overflow-hidden shadow-md hover:border-amber-400 transition-colors group"
+          >
+            <div className="bg-amber-500 text-slate-950 px-4 py-1.5 text-[11px] font-black uppercase tracking-wider flex items-center justify-between">
+              <span>{(settings.onlineStoreName || 'Mercado Moto CC').toUpperCase()} · TIENDA ONLINE OFICIAL</span>
+              <span>CATÁLOGO EN VIVO</span>
+            </div>
+            <div className="p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="space-y-1">
+                <p className="text-base sm:text-lg font-extrabold text-white font-display leading-snug">
+                  ¡Entra en nuestra tienda para más repuestos y ofertas!
+                </p>
+                <p className="text-xs text-slate-300">
+                  Explora precios actualizados a tasa BCV, apartados y consulta tus cuentas por pagar.
+                </p>
+              </div>
+              <div className="px-4 py-2.5 rounded-lg bg-amber-500 group-hover:bg-amber-400 text-slate-950 font-mono font-extrabold text-xs sm:text-sm whitespace-nowrap shrink-0 flex items-center justify-center gap-1.5 shadow-sm">
+                <span>{getPublicAppOrigin().replace(/^https?:\/\//, '')}</span>
+                <ExternalLink className="w-3.5 h-3.5 shrink-0" />
+              </div>
+            </div>
+          </a>
+
           {/* Guarantee & Notes */}
-          <div className="mt-6 pt-4 border-t border-dashed border-slate-200 text-[11px] text-slate-500 space-y-1">
+          <div className="mt-5 pt-4 border-t border-dashed border-slate-200 text-[11px] text-slate-500 space-y-1">
             <div className="flex items-start gap-1.5 text-slate-700">
               <ShieldCheck className="w-3.5 h-3.5 mt-0.5 text-slate-400 shrink-0" />
               <span>{settings.invoiceDisclaimer}</span>

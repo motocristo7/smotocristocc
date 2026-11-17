@@ -1,7 +1,13 @@
 import React, { useState, useMemo } from 'react';
 import { useApp } from '../../context/AppContext';
 import { Sale, PaymentMethod, SalePaymentType, SaleCreditStatus } from '../../types';
-import { formatUSD, formatBs, buildInvoiceWhatsAppMessage, buildCreditReminderWhatsAppMessage } from '../../utils/whatsapp';
+import {
+  formatUSD,
+  formatBs,
+  buildInvoiceWhatsAppMessage,
+  buildCreditReminderWhatsAppMessage,
+  buildCreditPaymentReceiptWhatsAppMessage,
+} from '../../utils/whatsapp';
 import { downloadInvoicePDF } from '../../utils/pdfInvoice';
 import {
   FileText,
@@ -64,6 +70,7 @@ export const SalesDatabaseView: React.FC = () => {
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('Pago Móvil');
   const [paymentRef, setPaymentRef] = useState('');
   const [paymentNotes, setPaymentNotes] = useState('');
+  const [sendWhatsAppOnPayment, setSendWhatsAppOnPayment] = useState(true);
 
   // Modal para editar cliente / datos de factura
   const [editSaleModal, setEditSaleModal] = useState<Sale | null>(null);
@@ -234,6 +241,7 @@ export const SalesDatabaseView: React.FC = () => {
     setPaymentMethod('Pago Móvil');
     setPaymentRef('');
     setPaymentNotes('');
+    setSendWhatsAppOnPayment(true);
   };
 
   const handleSavePayment = (e: React.FormEvent) => {
@@ -241,11 +249,11 @@ export const SalesDatabaseView: React.FC = () => {
     if (!paymentModalSale) return;
     const amount = Number(paymentAmountUSD);
     if (isNaN(amount) || amount <= 0) {
-      alert('Ingresa un monto válido para el abono');
+      showToast('Ingresa un monto válido para el abono');
       return;
     }
 
-    recordCreditPayment(paymentModalSale.id, {
+    const result = recordCreditPayment(paymentModalSale.id, {
       amountUSD: amount,
       paymentMethod,
       reference: paymentRef.trim() || undefined,
@@ -254,6 +262,23 @@ export const SalesDatabaseView: React.FC = () => {
 
     showToast(`¡Abono de ${formatUSD(amount)} registrado con éxito!`);
     setPaymentModalSale(null);
+
+    if (result && sendWhatsAppOnPayment) {
+      const { message, url } = buildCreditPaymentReceiptWhatsAppMessage(
+        result.updatedSale,
+        result.paymentRecord,
+        settings,
+        result.totalCustomerDebtAfterUSD
+      );
+      setWhatsappModalData({
+        title: `Comprobante de Abono - Factura ${result.updatedSale.invoiceNumber}`,
+        message,
+        url,
+        phone: result.updatedSale.customerPhone,
+        recipientName: result.updatedSale.customerName,
+        sale: result.updatedSale,
+      });
+    }
   };
 
   const handleOpenEditSaleModal = (sale: Sale, e?: React.MouseEvent) => {
@@ -1246,6 +1271,29 @@ export const SalesDatabaseView: React.FC = () => {
                 <span className="text-[10px] text-emerald-700 font-mono block mt-1">
                   Equivalente: {paymentAmountUSD ? formatBs(Number(paymentAmountUSD) * rate) : 'Bs. 0,00'} al BCV
                 </span>
+                {(() => {
+                  const currentPending = Math.max(
+                    0,
+                    paymentModalSale.total - (paymentModalSale.creditPaidAmount || 0)
+                  );
+                  const abono = Number(paymentAmountUSD) || 0;
+                  const newRemaining = Math.max(0, Math.round((currentPending - abono) * 100) / 100);
+                  return (
+                    <div className="mt-2 p-2.5 rounded-xl bg-slate-900 text-white flex items-center justify-between text-[11px]">
+                      <span className="text-slate-300 font-medium">
+                        Saldo restante tras aplicar abono:
+                      </span>
+                      <div className="text-right font-mono font-bold">
+                        <span className={newRemaining <= 0.01 ? 'text-emerald-400' : 'text-amber-400'}>
+                          {formatUSD(newRemaining)}
+                        </span>
+                        <span className="text-[10px] text-slate-300 block font-normal">
+                          {formatBs(newRemaining * rate)}
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })()}
               </div>
 
               <div>
@@ -1278,6 +1326,19 @@ export const SalesDatabaseView: React.FC = () => {
                 />
               </div>
 
+              <label className="flex items-center gap-2 p-2.5 bg-emerald-50 border border-emerald-200 rounded-xl cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={sendWhatsAppOnPayment}
+                  onChange={(e) => setSendWhatsAppOnPayment(e.target.checked)}
+                  className="rounded border-emerald-400 text-emerald-600 focus:ring-emerald-500 cursor-pointer w-4 h-4"
+                />
+                <span className="text-[11px] font-semibold text-emerald-950 flex items-center gap-1.5">
+                  <MessageSquare className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                  <span>Enviar comprobante del abono y saldo actual al WhatsApp del cliente</span>
+                </span>
+              </label>
+
               <div className="pt-2 flex items-center justify-end gap-2 border-t border-slate-200">
                 <button
                   type="button"
@@ -1291,7 +1352,7 @@ export const SalesDatabaseView: React.FC = () => {
                   className="px-5 py-2.5 bg-amber-600 hover:bg-amber-700 text-white font-bold rounded-xl shadow-xs cursor-pointer flex items-center gap-1.5"
                 >
                   <CheckCircle2 className="w-4 h-4" />
-                  <span>Guardar Abono</span>
+                  <span>Guardar Abono y Notificar</span>
                 </button>
               </div>
             </form>

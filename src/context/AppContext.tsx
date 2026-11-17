@@ -21,6 +21,7 @@ import {
   TechnicianPayout,
   TechnicianPayoutItem,
   PaymentMethod,
+  CreditPaymentRecord,
 } from '../types';
 import {
   INITIAL_SETTINGS,
@@ -232,7 +233,11 @@ interface AppContextType {
       reference?: string;
       notes?: string;
     }
-  ) => void;
+  ) => {
+    updatedSale: Sale;
+    paymentRecord: CreditPaymentRecord;
+    totalCustomerDebtAfterUSD: number;
+  } | null;
   deleteSale: (saleId: string, restoreStock?: boolean) => Promise<boolean>;
   voidSale: (saleId: string, reason?: string, restoreStock?: boolean) => Promise<boolean>;
   reactivateSale: (saleId: string) => Promise<boolean>;
@@ -3046,13 +3051,13 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
   ) => {
     const rate = settingsRef.current.bcvRate;
     const existingSale = salesRef.current.find((s) => s.id === saleId);
-    if (!existingSale) return;
+    if (!existingSale) return null;
 
     const currentPaid = existingSale.creditPaidAmount || 0;
     const newPaid = Math.round((currentPaid + payment.amountUSD) * 100) / 100;
     const isPaidFull = newPaid >= existingSale.total - 0.01;
 
-    const paymentRecord = {
+    const paymentRecord: CreditPaymentRecord = {
       id: `pay-${Date.now()}`,
       date: new Date().toISOString(),
       amountUSD: payment.amountUSD,
@@ -3069,14 +3074,43 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       creditPayments: [...(existingSale.creditPayments || []), paymentRecord],
     };
 
-    setSales((prev) => {
-      const next = prev.map((s) => (s.id === saleId ? updatedSale : s));
-      salesRef.current = next;
-      try {
-        localStorage.setItem(STORAGE_KEYS.SALES, JSON.stringify(next));
-      } catch {}
-      return next;
-    });
+    const nextSalesList = salesRef.current.map((s) => (s.id === saleId ? updatedSale : s));
+    salesRef.current = nextSalesList;
+
+    setSales(nextSalesList);
+    try {
+      localStorage.setItem(STORAGE_KEYS.SALES, JSON.stringify(nextSalesList));
+    } catch {}
+
+    // Compute total remaining debt across all active pending accounts of this customer after applying the payment
+    const normDoc = (d?: string) => (d || '').replace(/\D/g, '');
+    const normPhone = (p?: string) => {
+      const digits = (p || '').replace(/\D/g, '');
+      return digits.length >= 7 ? digits.slice(-10) : '';
+    };
+    const normName = (n?: string) => (n || '').trim().toLowerCase();
+
+    const targetDoc = normDoc(updatedSale.customerDocument);
+    const targetPhone = normPhone(updatedSale.customerPhone);
+    const targetName = normName(updatedSale.customerName);
+
+    const totalCustomerDebtAfterUSD = Math.round(
+      nextSalesList
+        .filter((s) => {
+          if (s.paymentType !== 'CREDITO' && s.paymentType !== 'APARTADO') return false;
+          if (s.isVoided || s.creditStatus === 'ANULADO' || s.creditStatus === 'PAGADO') return false;
+          const matchesId = Boolean(updatedSale.customerId && s.customerId === updatedSale.customerId);
+          const matchesDoc = Boolean(targetDoc.length >= 5 && normDoc(s.customerDocument) === targetDoc);
+          const matchesPhone = Boolean(targetPhone && normPhone(s.customerPhone) === targetPhone);
+          const matchesName = Boolean(
+            targetName &&
+              targetName !== 'cliente mostrador' &&
+              normName(s.customerName) === targetName
+          );
+          return matchesId || matchesDoc || matchesPhone || matchesName;
+        })
+        .reduce((sum, s) => sum + Math.max(0, s.total - (s.creditPaidAmount || 0)), 0) * 100
+    ) / 100;
 
     fetch(`/api/sales/${saleId}`, {
       method: 'PUT',
@@ -3087,6 +3121,8 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       console.warn('Error registrando abono en servidor:', err);
     });
     syncSaleWithRetry(updatedSale);
+
+    return { updatedSale, paymentRecord, totalCustomerDebtAfterUSD };
   };
 
   const deleteSale = async (saleId: string, restoreStock: boolean = false): Promise<boolean> => {

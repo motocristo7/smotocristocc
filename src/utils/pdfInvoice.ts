@@ -1,7 +1,7 @@
 import { jsPDF } from 'jspdf';
 import QRCode from 'qrcode';
 import { Sale, BusinessSettings, Product, ServiceOrder, TechnicianPayout } from '../types';
-import { formatUSD, formatBs } from './whatsapp';
+import { formatUSD, formatBs, getPublicAppOrigin } from './whatsapp';
 
 /**
  * Draws a sharp, vector QR code directly into jsPDF synchronously without external images
@@ -578,6 +578,75 @@ export function generateInvoicePDF(
 
     y += boxHeight + 6;
   }
+
+  // --- PROMINENT ONLINE STORE PROMO BANNER (CALL TO ACTION + CLICKABLE LINK + QR) ---
+  const storeUrl = `${getPublicAppOrigin().replace(/\/+$/, '')}/`;
+  const storeBannerHeight = 32;
+  ensureSpace(storeBannerHeight + 22);
+
+  // Dark slate background card with thick amber frame
+  doc.setFillColor(15, 23, 42); // slate-900
+  doc.setDrawColor(245, 158, 11); // amber-500
+  doc.setLineWidth(1.1);
+  doc.roundedRect(margin, y, contentWidth, storeBannerHeight, 2.5, 2.5, 'FD');
+
+  // Top amber ribbon inside card
+  doc.setFillColor(245, 158, 11);
+  doc.rect(margin + 0.5, y + 0.5, contentWidth - 1, 5.5, 'F');
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(7.5);
+  doc.setTextColor(15, 23, 42);
+  const storeBrandUpper = (settings.onlineStoreName || 'MERCADO MOTO CC').toUpperCase();
+  doc.text(
+    `${storeBrandUpper} · TIENDA ONLINE OFICIAL · STOCK EN TIEMPO REAL`,
+    margin + 4,
+    y + 4.3
+  );
+
+  // Big inviting headline
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(12);
+  doc.setTextColor(255, 255, 255);
+  doc.text('¡ENTRA EN NUESTRA TIENDA PARA MÁS REPUESTOS Y OFERTAS!', margin + 4, y + 12.2);
+
+  // Subtitle
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(8);
+  doc.setTextColor(203, 213, 225); // slate-300
+  doc.text(
+    'Explora todo el catálogo, precios a tasa BCV y consulta tus cuentas pendientes aquí:',
+    margin + 4,
+    y + 17.2
+  );
+
+  // Large bright amber URL button box
+  const urlBtnX = margin + 4;
+  const urlBtnY = y + 19.5;
+  const urlBtnW = contentWidth - 36;
+  const urlBtnH = 9.5;
+  doc.setFillColor(245, 158, 11); // amber-500
+  doc.roundedRect(urlBtnX, urlBtnY, urlBtnW, urlBtnH, 1.5, 1.5, 'F');
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(11);
+  doc.setTextColor(15, 23, 42);
+  doc.text(storeUrl, urlBtnX + urlBtnW / 2, urlBtnY + 6.4, { align: 'center' });
+
+  // QR Code on the right inside banner
+  const bannerQrSize = 20;
+  const bannerQrX = margin + contentWidth - bannerQrSize - 5.5;
+  const bannerQrY = y + 7.5;
+  doc.setFillColor(255, 255, 255);
+  doc.roundedRect(bannerQrX - 1.5, bannerQrY - 1, bannerQrSize + 3, bannerQrSize + 2, 1, 1, 'F');
+  drawVectorQRCode(doc, storeUrl, bannerQrX, bannerQrY, bannerQrSize);
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(5.8);
+  doc.setTextColor(251, 191, 36); // amber-400
+  doc.text('ESCANEA Y ENTRA', bannerQrX + bannerQrSize / 2, y + 30.8, { align: 'center' });
+
+  // Make the entire banner clickable in PDF viewers
+  doc.link(margin, y, contentWidth, storeBannerHeight, { url: storeUrl });
+
+  y += storeBannerHeight + 5;
 
   // --- LEGAL NOTICE (EXACT MATCH FROM SAMPLE) ---
   ensureSpace(18);

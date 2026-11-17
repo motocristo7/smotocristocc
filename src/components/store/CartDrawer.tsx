@@ -24,7 +24,11 @@ import {
   AlertCircle,
   User,
 } from 'lucide-react';
-import { normalizeImageUrl, PRESET_PRODUCT_IMAGES } from '../../utils/imageUrl';
+import {
+  normalizeImageUrl,
+  getFallbackProductImage,
+  handleProductImageError,
+} from '../../utils/imageUrl';
 
 interface CartDrawerProps {
   isOpen: boolean;
@@ -251,18 +255,14 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({ isOpen, onClose, initial
                       >
                         <div className="w-20 h-20 rounded-lg bg-slate-100 overflow-hidden shrink-0 border border-slate-200">
                           <img
-                            src={normalizeImageUrl(item.product.imageUrl)}
+                            src={
+                              normalizeImageUrl(item.product.imageUrl) ||
+                              getFallbackProductImage(item.product.name, item.product.category)
+                            }
                             alt={item.product.name}
                             className="w-full h-full object-cover"
                             referrerPolicy="no-referrer"
-                            onError={(e) => {
-                              const target = e.currentTarget;
-                              if (item.product.name.toLowerCase().includes('maleta')) {
-                                target.src = PRESET_PRODUCT_IMAGES.maletaParaMoto;
-                              } else {
-                                target.src = PRESET_PRODUCT_IMAGES.brakeKit;
-                              }
-                            }}
+                            onError={(e) => handleProductImageError(e, item.product)}
                           />
                         </div>
 

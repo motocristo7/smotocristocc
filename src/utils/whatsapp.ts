@@ -1,4 +1,13 @@
-import { Sale, ServiceOrder, OnlineOrder, BusinessSettings, MercadoLibreEntry, TechnicianPayout, Technician } from '../types';
+import {
+  Sale,
+  ServiceOrder,
+  OnlineOrder,
+  BusinessSettings,
+  MercadoLibreEntry,
+  TechnicianPayout,
+  Technician,
+  CreditPaymentRecord,
+} from '../types';
 
 export function formatUSD(amount: number): string {
   return new Intl.NumberFormat('en-US', {
@@ -95,8 +104,13 @@ export function buildInvoiceWhatsAppMessage(sale: Sale, settings: BusinessSettin
     .map(item => `▪ ${item.quantity}x ${item.name} (${formatUSD(item.total)})`)
     .join('\n');
 
-  const appOrigin = getPublicAppOrigin();
+  const appOrigin = getPublicAppOrigin().replace(/\/+$/, '');
   const qrImageLink = `${appOrigin}${settings.bankDetails.pagoMovilQrUrl || '/assets/pagomovil_qr.jpeg'}`;
+  const storePromoFooter = `
+───────────────────────
+🔥🛵 *¡ENTRA EN NUESTRA TIENDA ONLINE PARA MÁS REPUESTOS, ACCESORIOS Y OFERTAS!* 🛒💨
+✨ *Explora todo nuestro catálogo en vivo aquí:*
+👉 *${appOrigin}/* 👈`;
 
   const isCredit = sale.paymentType === 'CREDITO';
   const isApartado = sale.paymentType === 'APARTADO';
@@ -125,7 +139,7 @@ ${(sale.creditPaidAmount || 0) > 0 ? `💵 Abono Inicial / Reserva: ${formatUSD(
 🆔 CI/RIF: ${settings.bankDetails.pagoMovilId || 'V-19996141'}
 🖼️ QR: ${qrImageLink}
 
-📎 Le adjuntamos su Comprobante de Apartado en PDF.`;
+📎 Le adjuntamos su Comprobante de Apartado en PDF.${storePromoFooter}`;
   } else if (isCredit) {
     // Venta a Crédito: Nota de Crédito con saldo pendiente y datos para el pago
     message = `📋 *NOTA DE CRÉDITO #${sale.invoiceNumber}* - *${businessName}*
@@ -144,7 +158,7 @@ ${(sale.creditPaidAmount || 0) > 0 ? `💵 Abono Inicial: ${formatUSD(sale.credi
 🆔 CI/RIF: ${settings.bankDetails.pagoMovilId || 'V-19996141'}
 🖼️ QR: ${qrImageLink}
 
-📎 Le adjuntamos su Nota de Crédito en PDF.`;
+📎 Le adjuntamos su Nota de Crédito en PDF.${storePromoFooter}`;
   } else {
     // Venta de Contado o MercadoLibre: Factura de compra limpia (sin datos de pago porque ya pagó)
     const conditionText = isMercadoLibre
@@ -160,7 +174,7 @@ ${itemsText}
 ${conditionText}
 
 📎 Le adjuntamos su Factura de Compra en PDF.
-¡Muchas gracias por su compra en ${settings.commercialName || settings.name}!`;
+¡Muchas gracias por su compra en ${settings.commercialName || settings.name}!${storePromoFooter}`;
   }
 
   const url = buildWhatsAppSendUrl(sale.customerPhone, message);
@@ -417,6 +431,82 @@ ${(sale.creditPaidAmount || 0) > 0 ? `✅ *Monto Abonado:* ${formatUSD(sale.cred
 ${settings.bankDetails.binancePayId ? `🟡 *Binance Pay ID:* ${settings.bankDetails.binancePayId}\n` : ''}🖼️ *QR Pago Móvil:* ${qrImageLink}
 
 Por favor, una vez realice su abono o pago, envíenos el capture o número de referencia por este medio para registrarlo en su estado de cuenta. ¡Muchas gracias por su preferencia!`;
+
+  const url = buildWhatsAppSendUrl(sale.customerPhone, message);
+
+  return { message, url };
+}
+
+/**
+ * Builds WhatsApp notification receipt when a customer makes an abono/payment toward a credit or apartado account,
+ * clearly displaying both the payment amount and the current remaining debt after applying the payment.
+ */
+export function buildCreditPaymentReceiptWhatsAppMessage(
+  sale: Sale,
+  payment: CreditPaymentRecord,
+  settings: BusinessSettings,
+  totalCustomerDebtAfterUSD?: number
+): { message: string; url: string } {
+  const rate = settings.bcvRate || sale.bcvRate;
+  const businessName = (settings.commercialName || settings.name || 'MotoCristoc').toUpperCase();
+  const isApartado = sale.paymentType === 'APARTADO';
+
+  const totalPaidAfterUSD = Math.round((sale.creditPaidAmount || 0) * 100) / 100;
+  const remainingInvoiceUSD = Math.max(0, Math.round((sale.total - totalPaidAfterUSD) * 100) / 100);
+  const remainingInvoiceBs = remainingInvoiceUSD * rate;
+
+  const totalDebtAfterUSD =
+    totalCustomerDebtAfterUSD !== undefined
+      ? Math.max(0, Math.round(totalCustomerDebtAfterUSD * 100) / 100)
+      : remainingInvoiceUSD;
+  const totalDebtAfterBs = totalDebtAfterUSD * rate;
+
+  const dateStr = new Date(payment.date).toLocaleString('es-VE', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+
+  const appOrigin = getPublicAppOrigin().replace(/\/+$/, '');
+  const hasOtherPendingAccounts = Math.abs(totalDebtAfterUSD - remainingInvoiceUSD) > 0.01;
+
+  const balanceSection =
+    remainingInvoiceUSD <= 0.01
+      ? `🎉 *ESTADO DE ESTA ${isApartado ? 'NOTA DE APARTADO' : 'FACTURA'}: PAGADA AL 100% ($0.00 pendiente)*`
+      : `🚨 *MONTO ACTUAL QUE DEBE EN ESTA ${isApartado ? 'NOTA' : 'FACTURA'}:* *${formatUSD(remainingInvoiceUSD)}* | *${formatBs(remainingInvoiceBs)}*`;
+
+  const consolidatedDebtLine = hasOtherPendingAccounts
+    ? `\n📌 *DEUDA TOTAL ACTUAL QUE DEBE (TODAS SUS CUENTAS):* *${formatUSD(totalDebtAfterUSD)}* | *${formatBs(totalDebtAfterBs)}*`
+    : totalDebtAfterUSD <= 0.01
+    ? `\n🟢 *SALDO TOTAL ACTUAL DE SU CUENTA:* *$0.00 (AL DÍA)* 🙌`
+    : '';
+
+  const paymentAccountsBlock =
+    totalDebtAfterUSD > 0.01
+      ? `\n\n📲 *Datos para sus próximos abonos:*\n🏦 *Banco:* ${settings.bankDetails.pagoMovilBank || '0134 - Banesco'}\n📱 *Pago Móvil:* ${settings.bankDetails.pagoMovilPhone || '0412-2242450'}\n🆔 *C.I. / RIF:* ${settings.bankDetails.pagoMovilId || 'V-19996141'}`
+      : '';
+
+  const message = `✅ *COMPROBANTE DE ABONO RECIBIDO* - *${businessName}*
+───────────────────────
+Hola estimado(a) *${sale.customerName}*, hemos aplicado exitosamente su abono en su cuenta:
+
+📋 *${isApartado ? 'Comprobante de Apartado' : 'Factura'}:* #${sale.invoiceNumber}
+📅 *Fecha del Abono:* ${dateStr}
+💵 *MONTO ABONADO HOY:* *${formatUSD(payment.amountUSD)}* | *${formatBs(payment.amountBs || payment.amountUSD * rate)}*
+💳 *Método:* ${payment.paymentMethod}
+${payment.reference ? `🔖 *Referencia:* ${payment.reference}\n` : ''}${payment.notes ? `📝 *Nota:* ${payment.notes}\n` : ''}───────────────────────
+📊 *Total de la ${isApartado ? 'nota' : 'factura'}:* ${formatUSD(sale.total)}
+✅ *Total abonado acumulado:* ${formatUSD(totalPaidAfterUSD)}
+${balanceSection}${consolidatedDebtLine}
+_(Calculado a Tasa Oficial BCV: Bs. ${rate.toFixed(2)})_${paymentAccountsBlock}
+
+───────────────────────
+🔥🛵 *¡ENTRA EN NUESTRA TIENDA ONLINE PARA MÁS REPUESTOS Y OFERTAS!*
+👉 *${appOrigin}/* 👈
+
+¡Muchas gracias por su pago y confianza! 🔧`;
 
   const url = buildWhatsAppSendUrl(sale.customerPhone, message);
 

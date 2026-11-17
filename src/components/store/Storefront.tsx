@@ -20,7 +20,12 @@ import {
   X,
   Share2,
 } from 'lucide-react';
-import { normalizeImageUrl, PRESET_PRODUCT_IMAGES } from '../../utils/imageUrl';
+import {
+  normalizeImageUrl,
+  PRESET_PRODUCT_IMAGES,
+  getFallbackProductImage,
+  handleProductImageError,
+} from '../../utils/imageUrl';
 import { CustomerPendingAccountsModal } from '../modals/CustomerPendingAccountsModal';
 
 interface StorefrontProps {
@@ -134,10 +139,9 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
       <section className="relative bg-slate-950 text-white overflow-hidden border-b border-slate-800">
         <div className="absolute inset-0 z-0">
           <img
-            src="/src/assets/images/hero_moto_workshop_1793482050114.jpg"
+            src={PRESET_PRODUCT_IMAGES.heroWorkshop}
             alt="Taller y Tienda de Repuestos Servimotos Cristo Centro"
             className="w-full h-full object-cover opacity-35"
-            referrerPolicy="no-referrer"
           />
           <div className="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-950/60 to-transparent" />
         </div>
@@ -345,18 +349,14 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
                   {/* Product Image */}
                   <div className="relative aspect-4/3 bg-slate-100 overflow-hidden">
                     <img
-                      src={normalizeImageUrl(product.imageUrl)}
+                      src={
+                        normalizeImageUrl(product.imageUrl) ||
+                        getFallbackProductImage(product.name, product.category)
+                      }
                       alt={product.name}
                       className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                       referrerPolicy="no-referrer"
-                      onError={(e) => {
-                        const target = e.currentTarget;
-                        if (product.name.toLowerCase().includes('maleta')) {
-                          target.src = PRESET_PRODUCT_IMAGES.maletaParaMoto;
-                        } else {
-                          target.src = PRESET_PRODUCT_IMAGES.brakeKit;
-                        }
-                      }}
+                      onError={(e) => handleProductImageError(e, product)}
                     />
                     <div className="absolute top-2.5 left-2.5 bg-slate-900/80 backdrop-blur-xs text-white text-[10px] font-semibold px-2 py-0.5 rounded">
                       {product.category}
@@ -609,10 +609,9 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
 
             <div className="relative min-h-[280px] lg:min-h-full">
               <img
-                src="/src/assets/images/moto_upholstery_seat_1793482052580.jpg"
+                src={PRESET_PRODUCT_IMAGES.upholsterySeat}
                 alt="Tapicería de motos y asientos custom"
                 className="w-full h-full object-cover"
-                referrerPolicy="no-referrer"
               />
               <div className="absolute inset-0 bg-gradient-to-t from-slate-900/80 via-transparent to-transparent lg:hidden" />
             </div>
@@ -647,18 +646,15 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
               <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-6">
                 <div className="aspect-4/3 rounded-xl overflow-hidden bg-slate-100 border border-slate-200">
                   <img
-                    src={normalizeImageUrl(selectedProduct.imageUrl)}
+                    key={selectedProduct.id}
+                    src={
+                      normalizeImageUrl(selectedProduct.imageUrl) ||
+                      getFallbackProductImage(selectedProduct.name, selectedProduct.category)
+                    }
                     alt={selectedProduct.name}
                     className="w-full h-full object-cover"
                     referrerPolicy="no-referrer"
-                    onError={(e) => {
-                      const target = e.currentTarget;
-                      if (selectedProduct.name.toLowerCase().includes('maleta')) {
-                        target.src = PRESET_PRODUCT_IMAGES.maletaParaMoto;
-                      } else {
-                        target.src = PRESET_PRODUCT_IMAGES.brakeKit;
-                      }
-                    }}
+                    onError={(e) => handleProductImageError(e, selectedProduct)}
                   />
                 </div>
 

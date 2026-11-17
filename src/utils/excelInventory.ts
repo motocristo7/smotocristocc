@@ -167,7 +167,7 @@ export function downloadInventoryTemplate() {
     { Campo: 'stock_minimo', Obligatorio: 'OPCIONAL', Descripción: 'Punto de reorden / alerta de stock bajo (por defecto: 2).' },
     { Campo: 'ubicacion_almacen', Obligatorio: 'OPCIONAL', Descripción: 'Ubicación física dentro del almacén o tienda (ej: Estante A-1, Pasillo 2, Gaveta 4).' },
     { Campo: 'descripcion', Obligatorio: 'OPCIONAL', Descripción: 'Detalles técnicos o características adicionales del repuesto.' },
-    { Campo: 'url_imagen', Obligatorio: 'OPCIONAL', Descripción: 'Enlace web directo o enlace público de Google Drive a la foto del repuesto.' },
+    { Campo: 'url_imagen', Obligatorio: 'OPCIONAL', Descripción: 'Opcional: puedes dejarlo vacío y subir la foto de cada repuesto directamente en el módulo de Inventario.' },
   ];
 
   const wsInstructions = XLSX.utils.json_to_sheet(instructionsData);

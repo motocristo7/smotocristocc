@@ -1,0 +1,603 @@
+import { Sale, ServiceOrder, OnlineOrder, BusinessSettings, MercadoLibreEntry, TechnicianPayout, Technician } from '../types';
+
+export function formatUSD(amount: number): string {
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(amount);
+}
+
+export function formatBs(amountBs: number): string {
+  return `Bs. ${new Intl.NumberFormat('es-VE', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(amountBs)}`;
+}
+
+export function formatDualPrice(amountUSD: number, bcvRate: number): string {
+  const usdText = formatUSD(amountUSD);
+  const bsAmount = amountUSD * bcvRate;
+  const bsText = formatBs(bsAmount);
+  return `${usdText} · ${bsText}`;
+}
+
+export function sanitizePhone(phone: string): string {
+  const cleaned = phone.replace(/\D/g, '');
+
+  // Venezuelan numbers: 0414..., 0424..., 0412..., 0416..., 0426... (11 digits)
+  if (cleaned.length === 11 && cleaned.startsWith('0')) {
+    return `58${cleaned.slice(1)}`;
+  }
+  // Venezuelan without leading 0: 4141234567 (10 digits)
+  if (cleaned.length === 10 && (cleaned.startsWith('414') || cleaned.startsWith('424') || cleaned.startsWith('412') || cleaned.startsWith('416') || cleaned.startsWith('426'))) {
+    return `58${cleaned}`;
+  }
+  // Already with Venezuelan country code 58
+  if (cleaned.startsWith('58') && cleaned.length >= 12) {
+    return cleaned;
+  }
+  // Colombian fallback if still used
+  if (cleaned.length === 10 && cleaned.startsWith('3')) {
+    return `57${cleaned}`;
+  }
+  return cleaned;
+}
+
+export function hasValidWhatsAppPhone(phone?: string): boolean {
+  if (!phone) return false;
+  const trimmed = phone.trim().toUpperCase();
+  if (!trimmed || trimmed === 'N/A' || trimmed === 'NA' || trimmed === 'SIN TELEFONO' || trimmed === 'SIN TELÉFONO') {
+    return false;
+  }
+  const digits = trimmed.replace(/\D/g, '');
+  if (digits.length < 7) return false;
+  if (/^0+$/.test(digits)) return false;
+  return true;
+}
+
+export function buildWhatsAppSendUrl(rawPhone: string | undefined, message: string): string {
+  const encodedText = encodeURIComponent(message);
+  if (hasValidWhatsAppPhone(rawPhone)) {
+    const phone = sanitizePhone(rawPhone!);
+    if (phone && phone.length >= 7 && !/^0+$/.test(phone)) {
+      return `https://api.whatsapp.com/send?phone=${phone}&text=${encodedText}`;
+    }
+  }
+  return `https://api.whatsapp.com/send?text=${encodedText}`;
+}
+
+export const PUBLIC_APP_ORIGIN = 'https://ais-pre-flhofni32tpb4dwfwnak7d-506340403707.us-west1.run.app';
+
+export function getPublicAppOrigin(): string {
+  if (typeof window !== 'undefined' && window.location?.origin) {
+    const origin = window.location.origin;
+    if (origin.includes('localhost')) {
+      return origin;
+    }
+    if (origin.includes('ais-dev-')) {
+      return origin.replace('ais-dev-', 'ais-pre-');
+    }
+    return origin;
+  }
+  return PUBLIC_APP_ORIGIN;
+}
+
+/**
+ * Builds the WhatsApp message and direct URL for a purchase invoice receipt (in USD & Bs a Tasa BCV)
+ * Ultra-compact: only what was bought, condition (contado/crédito/mercadolibre), and payment details.
+ */
+export function buildInvoiceWhatsAppMessage(sale: Sale, settings: BusinessSettings): { message: string; url: string } {
+  const rate = sale.bcvRate || settings.bcvRate;
+  const itemsText = sale.items
+    .map(item => `▪ ${item.quantity}x ${item.name} (${formatUSD(item.total)})`)
+    .join('\n');
+
+  const appOrigin = getPublicAppOrigin();
+  const qrImageLink = `${appOrigin}${settings.bankDetails.pagoMovilQrUrl || '/assets/pagomovil_qr.jpeg'}`;
+
+  const isCredit = sale.paymentType === 'CREDITO';
+  const isApartado = sale.paymentType === 'APARTADO';
+  const isMercadoLibre = sale.paymentType === 'MERCADOLIBRE';
+  const pendingBalanceUSD = Math.max(0, sale.total - (sale.creditPaidAmount || 0));
+  const pendingBalanceBs = pendingBalanceUSD * rate;
+  const businessName = (settings.commercialName || settings.name || 'MotoCristoc').toUpperCase();
+
+  let message = '';
+
+  if (isApartado) {
+    // Sistema de Apartado: Comprobante con abono inicial, saldo para retirar y datos para futuros abonos
+    message = `🔒 *COMPROBANTE DE APARTADO #${sale.invoiceNumber}* - *${businessName}*
+
+🛒 *Mercancía Apartada:*
+${itemsText}
+
+💰 *Total del Apartado:* *${formatUSD(sale.total)}* | *${formatBs(sale.totalBs || sale.total * rate)}*
+📌 Condición: *SISTEMA DE APARTADO* (${sale.creditDays || 15} días para retirar)
+⏳ Fecha Límite de Retiro: *${sale.creditDueDate || 'A convenir'}*
+${(sale.creditPaidAmount || 0) > 0 ? `💵 Abono Inicial / Reserva: ${formatUSD(sale.creditPaidAmount || 0)}\n` : ''}⚠️ *Saldo Restante para Retirar:* *${formatUSD(pendingBalanceUSD)}* | *${formatBs(pendingBalanceBs)}* (Tasa BCV: ${rate.toFixed(2)})
+
+📲 *Datos para abonos / liquidación:*
+🏦 Banco: ${settings.bankDetails.pagoMovilBank || '0134 - Banesco'}
+📱 Pago Móvil: ${settings.bankDetails.pagoMovilPhone || '0412-2242450'}
+🆔 CI/RIF: ${settings.bankDetails.pagoMovilId || 'V-19996141'}
+🖼️ QR: ${qrImageLink}
+
+📎 Le adjuntamos su Comprobante de Apartado en PDF.`;
+  } else if (isCredit) {
+    // Venta a Crédito: Nota de Crédito con saldo pendiente y datos para el pago
+    message = `📋 *NOTA DE CRÉDITO #${sale.invoiceNumber}* - *${businessName}*
+
+🛒 *Detalle de compra:*
+${itemsText}
+
+💰 *Monto Total:* *${formatUSD(sale.total)}* | *${formatBs(sale.totalBs || sale.total * rate)}*
+📌 Condición: *A CRÉDITO* (${sale.creditDays || 15} días)
+⏳ Fecha de Vencimiento: *${sale.creditDueDate || 'A convenir'}*
+${(sale.creditPaidAmount || 0) > 0 ? `💵 Abono Inicial: ${formatUSD(sale.creditPaidAmount || 0)}\n` : ''}⚠️ *Saldo Pendiente por Pagar:* *${formatUSD(pendingBalanceUSD)}* | *${formatBs(pendingBalanceBs)}* (Tasa BCV: ${rate.toFixed(2)})
+
+📲 *Datos para el pago:*
+🏦 Banco: ${settings.bankDetails.pagoMovilBank || '0134 - Banesco'}
+📱 Pago Móvil: ${settings.bankDetails.pagoMovilPhone || '0412-2242450'}
+🆔 CI/RIF: ${settings.bankDetails.pagoMovilId || 'V-19996141'}
+🖼️ QR: ${qrImageLink}
+
+📎 Le adjuntamos su Nota de Crédito en PDF.`;
+  } else {
+    // Venta de Contado o MercadoLibre: Factura de compra limpia (sin datos de pago porque ya pagó)
+    const conditionText = isMercadoLibre
+      ? `📌 Condición: *MERCADOLIBRE* 📦 (Pagado)`
+      : `📌 Condición: *DE CONTADO (PAGADO)* ✅\n💳 Método: ${sale.paymentMethod || 'Pago Móvil / Divisas'}`;
+
+    message = `📄 *FACTURA DE COMPRA #${sale.invoiceNumber}* - *${businessName}*
+
+🛒 *Detalle de compra:*
+${itemsText}
+
+💰 *Total Pagado:* *${formatUSD(sale.total)}* | *${formatBs(sale.totalBs || sale.total * rate)}* (Tasa BCV: ${rate.toFixed(2)})
+${conditionText}
+
+📎 Le adjuntamos su Factura de Compra en PDF.
+¡Muchas gracias por su compra en ${settings.commercialName || settings.name}!`;
+  }
+
+  const url = buildWhatsAppSendUrl(sale.customerPhone, message);
+
+  return { message, url };
+}
+
+/**
+ * Builds the WhatsApp notification message sent to the OWNER with accumulated MercadoLibre debt
+ */
+export function buildMercadoLibreDebtWhatsAppMessage(
+  pendingSales: Sale[],
+  totalDebtUSD: number,
+  settings: BusinessSettings,
+  latestSale?: Sale,
+  recentManualEntry?: MercadoLibreEntry,
+  pendingManualEntries?: MercadoLibreEntry[]
+): { message: string; url: string } {
+  const rate = settings.bcvRate;
+  const totalDebtBs = totalDebtUSD * rate;
+
+  let header = `🔔 *CONTROL DE DEUDA MERCADOLIBRE* 📦\n`;
+  if (latestSale) {
+    header += `\n🚨 *Nueva venta registrada en MercadoLibre:*
+▪ Factura: #${latestSale.invoiceNumber}
+▪ Cliente: ${latestSale.customerName}
+▪ Monto venta: ${formatUSD(latestSale.total)}
+▪ Comisión venta: *${formatUSD(latestSale.mercadolibreCommissionUSD || 0)}* (${formatBs((latestSale.mercadolibreCommissionUSD || 0) * rate)})
+───────────────────────\n`;
+  } else if (recentManualEntry) {
+    const isPay = recentManualEntry.type === 'ABONO_PAGO';
+    header += `\n📝 *${isPay ? 'Pago / Abono realizado a MercadoLibre registrado:' : 'Comisión adicional / Cargo manual registrado:'}*
+▪ Detalle: ${recentManualEntry.description}
+▪ Monto: *${isPay ? '-' : '+'}${formatUSD(Math.abs(recentManualEntry.amountUSD))}* (${formatBs(Math.abs(recentManualEntry.amountUSD) * rate)})
+───────────────────────\n`;
+  }
+
+  const listPending = pendingSales.length > 0
+    ? pendingSales.slice(0, 8).map((s) =>
+        `▪ #${s.invoiceNumber} (${s.customerName}): ${formatUSD(s.mercadolibreCommissionUSD || 0)}`
+      ).join('\n')
+    : '';
+
+  const listManual = (pendingManualEntries && pendingManualEntries.length > 0)
+    ? pendingManualEntries.slice(0, 5).map((e) =>
+        `▪ ${e.type === 'ABONO_PAGO' ? 'Abono/Pago' : 'Cargo'}: ${e.description} (${formatUSD(e.amountUSD)})`
+      ).join('\n')
+    : '';
+
+  let detailSection = '';
+  if (listPending) {
+    detailSection += `📋 *Ventas pendientes (${pendingSales.length}):*\n${listPending}\n`;
+  }
+  if (listManual) {
+    detailSection += `📋 *Ajustes y pagos manuales (${pendingManualEntries?.length}):*\n${listManual}\n`;
+  }
+  if (!listPending && !listManual) {
+    detailSection = `✅ Sin comisiones ni cargos pendientes de pago.\n`;
+  }
+
+  const message = `${header}💰 *DEUDA TOTAL ACUMULADA A MERCADOLIBRE:*
+💵 *${formatUSD(totalDebtUSD)} USD*
+🇻🇪 *Bs. ${formatBs(totalDebtBs)}* (Tasa BCV: ${rate.toFixed(2)})
+
+${detailSection}Recuerda mantener al día los pagos a MercadoLibre para conservar la reputación de tu cuenta. 🛵💨`;
+
+  const targetPhone = settings.whatsapp || settings.phone || '04127860509';
+  const url = buildWhatsAppSendUrl(targetPhone, message);
+
+  return { message, url };
+}
+
+/**
+ * Builds the WhatsApp message and direct URL for Workshop Service Order notifications
+ */
+export function buildServiceStatusWhatsAppMessage(order: ServiceOrder, settings: BusinessSettings): { message: string; url: string } {
+  const moto = order.motorcycle;
+  const rate = order.bcvRate || settings.bcvRate;
+  const totalBs = order.totalCostBs || order.totalCost * rate;
+  const appOrigin = getPublicAppOrigin();
+  const trackingLink = `${appOrigin}/?trackPhone=${encodeURIComponent(order.customerPhone)}`;
+  const qrImageLink = `${appOrigin}${settings.bankDetails.pagoMovilQrUrl || '/assets/pagomovil_qr.jpeg'}`;
+
+  let statusHeader = '';
+
+  switch (order.status) {
+    case 'CREADA':
+      statusHeader = '📋 *ORDEN DE SERVICIO REGISTRADA (EN ESPERA)*';
+      break;
+    case 'EN_PROCESO':
+      statusHeader = '🔧 *TU MOTO ESTÁ EN PROCESO DE SERVICIO*';
+      break;
+    case 'CULMINADA':
+      statusHeader = '✅ *¡TRABAJO CULMINADO - LISTA PARA ENTREGA!*';
+      break;
+    case 'ENTREGADA':
+      statusHeader = '🏁 *VEHÍCULO ENTREGADO AL CLIENTE*';
+      break;
+  }
+
+  const servicesText = order.servicesList && order.servicesList.length > 0
+    ? `\n🛠️ *Servicios y Mano de Obra:*\n` + order.servicesList.map(s => `▪ ${s.name} (${formatUSD(s.cost)} / ${formatBs(s.cost * rate)})`).join('\n')
+    : (order.laborCost > 0 ? `\n🛠️ *Mano de Obra / Servicio:* ${formatUSD(order.laborCost)} (${formatBs(order.laborCost * rate)})` : '');
+
+  const partsText = order.partsUsed.length > 0
+    ? `\n🔩 *Repuestos e insumos utilizados:*\n` + order.partsUsed.map(p => `▪ ${p.quantity}x ${p.name} (${formatUSD(p.total)} / ${formatBs(p.total * rate)})`).join('\n')
+    : '';
+
+  const message = `🏍️ *${settings.name.toUpperCase()}* 🏍️
+───────────────────────
+${statusHeader}
+🔖 *Orden:* #${order.orderNumber}
+👤 Cliente: *${order.customerName}*
+🛵 *MOTO:* ${moto.brand} ${moto.model} · Placa: *${moto.plate.toUpperCase()}*
+🎨 Color: ${moto.color} | 🧭 Km: ${moto.mileage.toLocaleString()} km
+🛠️ Tipo de Servicio: *${order.serviceType}*
+───────────────────────
+📝 *Trabajo Solicitado / Falla:*
+${order.reportedIssue}
+${order.diagnosis ? `\n🔍 *Diagnóstico Técnico:* ${order.diagnosis}` : ''}
+${servicesText}
+${partsText}
+───────────────────────
+💵 *Mano de Obra + Repuestos:* ${formatUSD(order.totalCost)}
+📊 *Tasa BCV del día:* Bs. ${rate.toFixed(2)}
+🇻🇪 *Total en Bolívares:* ${formatBs(totalBs)}
+${order.estimatedDelivery ? `⏰ Entrega estimada: ${order.estimatedDelivery}\n` : ''}
+📲 *DATOS PAGO MÓVIL:*
+🏦 Banco: ${settings.bankDetails.pagoMovilBank || '0134 - Banesco'}
+📱 Celular: ${settings.bankDetails.pagoMovilPhone || '0412-2242450'}
+🆔 Cédula: ${settings.bankDetails.pagoMovilId || 'V-19996141'}
+🖼️ Escanea el código QR para pagar:
+👉 ${qrImageLink}
+───────────────────────
+🔎 *Consulta en tiempo real el historial y estado de tu moto:*
+🔗 ${trackingLink}
+
+¡Estamos para brindarte la mejor calidad y seguridad sobre dos ruedas! 🔧🛡️`;
+
+  const url = buildWhatsAppSendUrl(order.customerPhone, message);
+
+  return { message, url };
+}
+
+/**
+ * Builds WhatsApp message when customer places an order from the online store
+ */
+export function buildStoreOrderWhatsAppMessage(order: OnlineOrder, settings: BusinessSettings): { message: string; url: string } {
+  const rate = order.bcvRate || settings.bcvRate;
+  const itemsText = order.items
+    .map(item => `▪ ${item.quantity}x ${item.name} - ${formatUSD(item.total)} (${formatBs(item.total * rate)})`)
+    .join('\n');
+
+  let deliverySection = '';
+  if (order.deliveryType === 'ENVIO_NACIONAL') {
+    deliverySection = `📦 *MODALIDAD: ENVÍO NACIONAL (${order.shippingAgency || 'MRW / ZOOM / TEALCA'})*
+🏢 *Agencia:* ${order.agencyAddress || 'Dirección de agencia'}, ${order.customerCity || ''} - ${order.customerState || ''}
+👤 *Destinatario:* ${order.recipientName || order.customerName}
+🆔 *Cédula:* ${order.recipientDocument || 'No especificada'}
+📱 *Teléfono de Retiro:* ${order.recipientPhone || order.customerPhone}`;
+  } else if (order.deliveryType === 'DOMICILIO') {
+    deliverySection = `🛵 *MODALIDAD: DELIVERY LOCAL (MÉRIDA)*
+📍 *Dirección:* ${order.customerAddress || 'No especificada'}, ${order.customerCity || ''} - ${order.customerState || ''}`;
+  } else {
+    deliverySection = `🏬 *MODALIDAD: RETIRO EN TIENDA / SEDE*
+📍 *Sede:* ${settings.city} - ${settings.address}`;
+  }
+
+  const storeBrand = settings.onlineStoreName || 'Mercado Moto CC';
+  const message = `🛍️ *NUEVO PEDIDO - ${storeBrand.toUpperCase()} #${order.orderCode}*
+───────────────────────
+Hola *${settings.commercialName}*, acabo de realizar una compra desde su tienda online *${storeBrand}*:
+
+👤 *Cliente:* ${order.customerName}
+📱 *Teléfono:* ${order.customerPhone}
+${deliverySection}
+
+📦 *PRODUCTOS:*
+${itemsText}
+───────────────────────
+💵 *TOTAL A PAGAR (USD): ${formatUSD(order.total)}*
+📊 *Tasa BCV:* Bs. ${rate.toFixed(2)}
+🇻🇪 *TOTAL EN BOLÍVARES: ${formatBs(order.totalBs || order.total * rate)}*
+───────────────────────
+💳 *Método seleccionado:* ${order.paymentMethod}
+${order.paymentProofReference ? `🧾 Ref. / Comprobante: ${order.paymentProofReference}\n` : ''}${order.notes ? `📝 Notas: ${order.notes}\n` : ''}
+Quedo atento a la confirmación y guía de envío de mi pedido. ¡Muchas gracias!`;
+
+  const url = buildWhatsAppSendUrl(settings.whatsapp, message);
+
+  return { message, url };
+}
+
+/**
+ * Builds WhatsApp message for single credit invoice debt reminder
+ */
+export function buildCreditReminderWhatsAppMessage(
+  sale: Sale,
+  settings: BusinessSettings
+): { message: string; url: string } {
+  const rate = sale.bcvRate || settings.bcvRate;
+  const businessName = (settings.commercialName || settings.name || 'MotoCristoc').toUpperCase();
+  const pendingUSD = Math.max(0, sale.total - (sale.creditPaidAmount || 0));
+  const pendingBs = pendingUSD * rate;
+
+  // Calculate overdue status
+  let dueDateText = sale.creditDueDate || 'A convenir';
+  let statusAlert = '';
+  if (sale.creditDueDate) {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const due = new Date(sale.creditDueDate);
+    due.setHours(0, 0, 0, 0);
+    const diffTime = due.getTime() - today.getTime();
+    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+
+    if (diffDays < 0) {
+      statusAlert = `⚠️ *ESTADO: VENCIDO HACE ${Math.abs(diffDays)} DÍA(S)*`;
+    } else if (diffDays === 0) {
+      statusAlert = `⚠️ *ESTADO: VENCE HOY*`;
+    } else {
+      statusAlert = `⏳ *Vence en:* ${diffDays} día(s) (${dueDateText})`;
+    }
+  }
+
+  const itemsText = sale.items
+    .map((item) => `▪ ${item.quantity}x ${item.name} (${formatUSD(item.total)})`)
+    .join('\n');
+
+  const appOrigin = getPublicAppOrigin();
+  const qrImageLink = `${appOrigin}${settings.bankDetails.pagoMovilQrUrl || '/assets/pagomovil_qr.jpeg'}`;
+
+  const isApartadoSale = sale.paymentType === 'APARTADO';
+  const message = `🏍️ *${businessName}* - Recordatorio de ${isApartadoSale ? 'Apartado' : 'Pago'}
+Hola estimado(a) *${sale.customerName}*, un cordial saludo.
+
+${isApartadoSale ? 'Le escribimos para recordarle amablemente el saldo pendiente de su *Sistema de Apartado* para completar el retiro de su mercancía:' : 'Le escribimos para recordarle amablemente el saldo pendiente de su compra a crédito:'}
+
+📋 *${isApartadoSale ? 'Comprobante de Apartado' : 'Factura / Nota de Crédito'}:* #${sale.invoiceNumber}
+📅 *Fecha de Emisión:* ${new Date(sale.createdAt).toLocaleDateString('es-VE')}
+${statusAlert ? `${statusAlert}\n` : ''}
+🛒 *Repuestos / Servicios:*
+${itemsText}
+
+💵 *Total de la Factura:* ${formatUSD(sale.total)}
+${(sale.creditPaidAmount || 0) > 0 ? `✅ *Monto Abonado:* ${formatUSD(sale.creditPaidAmount || 0)}\n` : ''}🚨 *SALDO PENDIENTE:* *${formatUSD(pendingUSD)}*
+📊 *Equivalente en Bolívares:* *${formatBs(pendingBs)}* (Tasa BCV: ${rate.toFixed(2)})
+
+📲 *Datos para realizar su pago:*
+🏦 *Banco:* ${settings.bankDetails.pagoMovilBank || '0134 - Banesco'}
+📱 *Pago Móvil:* ${settings.bankDetails.pagoMovilPhone || '0412-2242450'}
+🆔 *C.I. / RIF:* ${settings.bankDetails.pagoMovilId || 'V-19996141'}
+🏛️ *Transferencia Banesco:* ${settings.bankDetails.bankTransferAccount || '0134-0030-08-0301034334'} (${settings.bankDetails.bankTransferRif || settings.rif})
+${settings.bankDetails.binancePayId ? `🟡 *Binance Pay ID:* ${settings.bankDetails.binancePayId}\n` : ''}🖼️ *QR Pago Móvil:* ${qrImageLink}
+
+Por favor, una vez realice su abono o pago, envíenos el capture o número de referencia por este medio para registrarlo en su estado de cuenta. ¡Muchas gracias por su preferencia!`;
+
+  const url = buildWhatsAppSendUrl(sale.customerPhone, message);
+
+  return { message, url };
+}
+
+/**
+ * Builds comprehensive account statement WhatsApp message for customer with all pending credit invoices
+ */
+export function buildCustomerAccountStatementWhatsAppMessage(
+  customerName: string,
+  customerPhone: string,
+  pendingSales: Sale[],
+  settings: BusinessSettings
+): { message: string; url: string } {
+  const rate = settings.bcvRate;
+  const businessName = (settings.commercialName || settings.name || 'MotoCristoc').toUpperCase();
+
+  const totalDebtUSD = pendingSales.reduce((sum, s) => {
+    return sum + Math.max(0, s.total - (s.creditPaidAmount || 0));
+  }, 0);
+  const totalDebtBs = totalDebtUSD * rate;
+
+  const invoicesList = pendingSales
+    .map((s) => {
+      const pendingThis = Math.max(0, s.total - (s.creditPaidAmount || 0));
+      const label = s.paymentType === 'APARTADO' ? 'Apartado' : 'Factura';
+      return `▪ *${label} #${s.invoiceNumber}* (${s.paymentType === 'APARTADO' ? 'Retiro límite' : 'Vence'}: ${s.creditDueDate || 'Pendiente'})\n  Saldo: *${formatUSD(pendingThis)}* (${formatBs(pendingThis * rate)})`;
+    })
+    .join('\n\n');
+
+  const appOrigin = getPublicAppOrigin();
+  const qrImageLink = `${appOrigin}${settings.bankDetails.pagoMovilQrUrl || '/assets/pagomovil_qr.jpeg'}`;
+
+  const message = `📋 *ESTADO DE CUENTA DE CRÉDITO* - *${businessName}*
+Estimado(a) *${customerName}*, le enviamos el resumen consolidado de sus cuentas pendientes:
+
+📑 *Facturas por Cobrar (${pendingSales.length}):*
+${invoicesList}
+
+───────────────────────
+🚨 *TOTAL GENERAL PENDIENTE: ${formatUSD(totalDebtUSD)}*
+🇻🇪 *TOTAL EN BOLÍVARES: ${formatBs(totalDebtBs)}*
+(Calculado a Tasa Oficial BCV: Bs. ${rate.toFixed(2)})
+───────────────────────
+
+📲 *Cuentas para su pago:*
+🏦 *Banco:* ${settings.bankDetails.pagoMovilBank || '0134 - Banesco'}
+📱 *Pago Móvil:* ${settings.bankDetails.pagoMovilPhone || '0412-2242450'}
+🆔 *C.I./RIF:* ${settings.bankDetails.pagoMovilId || 'V-19996141'}
+🏛️ *Transferencia:* ${settings.bankDetails.bankTransferAccount || '0134-0030-08-0301034334'} (${settings.bankDetails.bankTransferRif || settings.rif})
+${settings.bankDetails.binancePayId ? `🟡 *Binance Pay ID:* ${settings.bankDetails.binancePayId}\n` : ''}🖼️ *QR Pago Móvil:* ${qrImageLink}
+
+Agradecemos reportar su comprobante de pago por este medio. ¡Estamos a su entera orden!`;
+
+  const url = buildWhatsAppSendUrl(customerPhone, message);
+
+  return { message, url };
+}
+
+/**
+ * Builds WhatsApp notification for technician when a commission payout is registered,
+ * including both the amount just paid AND the total remaining balance owed to the technician.
+ */
+export function buildTechnicianPayoutWhatsAppMessage(
+  payout: TechnicianPayout,
+  settings: BusinessSettings
+): { message: string; url: string } {
+  const rate = payout.bcvRate || settings.bcvRate;
+  const businessName = (settings.commercialName || settings.name || 'MotoCristoc').toUpperCase();
+  const dateStr = new Date(payout.createdAt).toLocaleString('es-VE', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+
+  const ordersText =
+    payout.commissionItems.length > 0
+      ? payout.commissionItems
+          .map(
+            (item) =>
+              `▪ *${item.orderNumber}* (${item.motorcycleLabel || 'Taller'}) — ${item.commissionRate}%: *${formatUSD(item.amountPaidInThisPayoutUSD)}*`
+          )
+          .join('\n')
+      : '▪ Abono general a cuenta de comisiones';
+
+  const hasDebt = payout.remainingDebtUSD > 0.009;
+  const debtSection = hasDebt
+    ? `⏳ *TOTAL QUE SE LE DEBE PENDIENTE:* *${formatUSD(payout.remainingDebtUSD)}* (${formatBs(payout.remainingDebtBs)})`
+    : `🎉 *SALDO PENDIENTE QUE SE LE DEBE:* *$0.00 (CUENTA AL DÍA)*`;
+
+  const message = `🔧 *${businessName}* · NOTIFICACIÓN DE PAGO DE COMISIÓN
+───────────────────────
+Hola *${payout.technicianName}*, se ha registrado un pago a tu favor:
+
+🧾 *Comprobante / Factura:* #${payout.payoutNumber}
+📅 *Fecha:* ${dateStr}
+💳 *Método de Pago:* ${payout.paymentMethod}
+${payout.reference ? `🔖 *Referencia:* ${payout.reference}\n` : ''}
+💵 *MONTO PAGADO HOY:* *${formatUSD(payout.amountUSD)}*
+🇻🇪 *Equivalente en Bs (BCV ${rate.toFixed(2)}):* *${formatBs(payout.amountBs)}*
+
+📋 *Órdenes / Trabajos Liquidados:*
+${ordersText}
+
+───────────────────────
+${debtSection}
+───────────────────────
+${payout.notes ? `📝 Notas: ${payout.notes}\n` : ''}Adjunto te enviamos tu factura en PDF con el desglose completo. ¡Gracias por tu excelente trabajo en el taller! 🏍️`;
+
+  const url = buildWhatsAppSendUrl(payout.technicianPhone || '', message);
+
+  return { message, url };
+}
+
+/**
+ * Builds WhatsApp notification sent to the ASSIGNED TECHNICIAN when a workshop service order is created or updated
+ */
+export function buildTechnicianAssignedOrderWhatsAppMessage(
+  order: ServiceOrder,
+  technician: Pick<Technician, 'name' | 'phone' | 'commissionRate' | 'specialty'>,
+  settings: BusinessSettings
+): { message: string; url: string } {
+  const moto = order.motorcycle;
+  const rate = order.bcvRate || settings.bcvRate;
+  const businessName = (settings.commercialName || settings.name || 'MotoCristoc').toUpperCase();
+
+  const laborBaseUSD = Math.max(
+    Number(order.laborCost) || 0,
+    Array.isArray(order.servicesList)
+      ? order.servicesList.reduce((acc, s) => acc + (Number(s.cost) || 0), 0)
+      : 0
+  );
+  const commissionRate = Number(technician.commissionRate) || 0;
+  const estimatedCommissionUSD =
+    commissionRate > 0 ? Math.round(((laborBaseUSD * commissionRate) / 100) * 100) / 100 : 0;
+
+  const servicesText =
+    order.servicesList && order.servicesList.length > 0
+      ? `\n🛠️ *Servicios asignados:*\n` +
+        order.servicesList
+          .map((s) => `▪ ${s.name} (${formatUSD(s.cost)})`)
+          .join('\n')
+      : '';
+
+  const partsText =
+    order.partsUsed.length > 0
+      ? `\n🔩 *Repuestos asignados (${order.partsUsed.length}):*\n` +
+        order.partsUsed
+          .map((p) => `▪ ${p.quantity}x ${p.name}${p.productId ? '' : ' (Externo)'}`)
+          .join('\n')
+      : '\n🔩 *Repuestos:* Sin repuestos asignados aún.';
+
+  const commissionLine =
+    commissionRate > 0
+      ? `\n💼 *Tu Comisión (${commissionRate}%):* *${formatUSD(estimatedCommissionUSD)}* (${formatBs(estimatedCommissionUSD * rate)})`
+      : '';
+
+  const message = `🔧 *${businessName}* · NUEVA ORDEN ASIGNADA
+───────────────────────
+Hola *${technician.name}*, se te ha asignado un nuevo trabajo en el taller:
+
+🔖 *Orden:* #${order.orderNumber}
+🛠️ *Tipo de Servicio:* *${order.serviceType}*
+🛵 *Moto:* ${moto.brand} ${moto.model}${moto.year ? ` (${moto.year})` : ''}
+🪪 *Placa:* *${moto.plate.toUpperCase()}*
+🎨 Color: ${moto.color || 'N/A'} | 🧭 Km: ${moto.mileage.toLocaleString()} | ⛽ Gas: ${order.fuelLevel}
+👤 *Cliente:* ${order.customerName} (${order.customerPhone})
+───────────────────────
+📝 *Falla / Trabajo a Realizar:*
+${order.reportedIssue}
+${order.diagnosis ? `\n🔍 *Diagnóstico Inicial:*\n${order.diagnosis}` : ''}${servicesText}${partsText}
+───────────────────────
+💵 *Mano de Obra:* ${formatUSD(laborBaseUSD)} (${formatBs(laborBaseUSD * rate)})${commissionLine}
+${order.estimatedDelivery ? `⏰ *Entrega Estimada:* ${order.estimatedDelivery}\n` : ''}
+Por favor revisar e iniciar el servicio. ¡Gracias por tu compromiso! 🏍️`;
+
+  const targetPhone = technician.phone || order.assignedTechnicianPhone || '';
+  const url = buildWhatsAppSendUrl(targetPhone, message);
+
+  return { message, url };
+}
+

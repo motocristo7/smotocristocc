@@ -1,0 +1,6 @@
+{
+  "name": "Servimotos Cristo Centro - Gestión y Tienda de Repuestos",
+  "description": "Sistema integral de gestión de ventas, inventario, órdenes de servicio mecánico y tapicería, tienda online y facturación por WhatsApp para Servimotos Cristo Centro.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

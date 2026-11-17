@@ -1,0 +1,271 @@
+{
+  "entities": {
+    "Product": {
+      "title": "Product",
+      "description": "Repuesto o accesorio para motocicleta en inventario de Servimotos Cristo Centro",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Identificador único del producto" },
+        "sku": { "type": "string", "description": "Código SKU del repuesto" },
+        "name": { "type": "string", "description": "Nombre comercial del repuesto" },
+        "category": { "type": "string", "description": "Categoría (Frenos, Motor, Transmisión, etc.)" },
+        "description": { "type": "string", "description": "Descripción y detalles técnicos" },
+        "costPrice": { "type": "number", "description": "Costo en USD" },
+        "salePrice": { "type": "number", "description": "Precio de venta en USD" },
+        "stock": { "type": "number", "description": "Cantidad disponible en inventario" },
+        "minStock": { "type": "number", "description": "Stock mínimo de alerta" },
+        "brand": { "type": "string", "description": "Marca del repuesto o genérico" },
+        "compatibility": { "type": "string", "description": "Modelos de motos compatibles" },
+        "imageUrl": { "type": "string", "description": "URL directa de la imagen" },
+        "barcode": { "type": "string", "description": "Código de barras o EAN" },
+        "warehouseLocation": { "type": "string", "description": "Ubicación física del repuesto en el almacén (ej. Estante A-3, Gaveta 2)" },
+        "featured": { "type": "boolean", "description": "Indica si se destaca en la tienda online" }
+      },
+      "required": ["id", "sku", "name", "category", "salePrice", "stock"]
+    },
+    "BusinessSettings": {
+      "title": "BusinessSettings",
+      "description": "Configuración del negocio, datos bancarios y tasa BCV oficial",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "description": "Razón social del negocio" },
+        "commercialName": { "type": "string", "description": "Nombre comercial de la tienda" },
+        "onlineStoreName": { "type": "string", "description": "Nombre de la tienda online pública (Mercado Moto CC)" },
+        "rif": { "type": "string", "description": "RIF o Cédula fiscal" },
+        "phone": { "type": "string", "description": "Teléfono de contacto" },
+        "whatsapp": { "type": "string", "description": "WhatsApp para pedidos" },
+        "email": { "type": "string", "description": "Correo electrónico del negocio" },
+        "address": { "type": "string", "description": "Dirección física en Mérida" },
+        "state": { "type": "string", "description": "Estado" },
+        "city": { "type": "string", "description": "Ciudad" },
+        "bcvRate": { "type": "number", "description": "Tasa oficial del BCV en Bs./USD" },
+        "currencySymbol": { "type": "string", "description": "Símbolo moneda base ($)" },
+        "secondaryCurrencySymbol": { "type": "string", "description": "Símbolo moneda secundaria (Bs.)" },
+        "bcvOfficialDate": { "type": "string", "description": "Fecha valor oficial BCV" },
+        "bcvSource": { "type": "string", "description": "Fuente de la tasa" },
+        "bcvLastUpdated": { "type": "string", "description": "Hora de actualización" },
+        "customCategories": { "type": "array", "description": "Categorías personalizadas de inventario" }
+      },
+      "required": ["commercialName", "rif", "phone", "bcvRate"]
+    },
+    "Customer": {
+      "title": "Customer",
+      "description": "Ficha de cliente registrada para compras y taller",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "ID del cliente" },
+        "name": { "type": "string", "description": "Nombre completo" },
+        "phone": { "type": "string", "description": "Teléfono de contacto / WhatsApp" },
+        "email": { "type": "string", "description": "Correo electrónico" },
+        "documentId": { "type": "string", "description": "Cédula o RIF" },
+        "state": { "type": "string", "description": "Estado" },
+        "city": { "type": "string", "description": "Ciudad" },
+        "address": { "type": "string", "description": "Dirección de residencia o entrega" },
+        "createdAt": { "type": "string", "description": "Fecha de registro ISO" },
+        "notes": { "type": "string", "description": "Observaciones del cliente" }
+      },
+      "required": ["id", "name", "phone"]
+    },
+    "Sale": {
+      "title": "Sale",
+      "description": "Factura o venta realizada en tienda física o online",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "ID de la venta" },
+        "invoiceNumber": { "type": "string", "description": "Número correlativo de factura" },
+        "customerId": { "type": "string", "description": "ID del cliente" },
+        "customerName": { "type": "string", "description": "Nombre del cliente" },
+        "customerPhone": { "type": "string", "description": "Teléfono del cliente" },
+        "customerDocument": { "type": "string", "description": "Cédula o RIF" },
+        "subtotal": { "type": "number", "description": "Subtotal en USD" },
+        "total": { "type": "number", "description": "Total en USD" },
+        "bcvRate": { "type": "number", "description": "Tasa BCV aplicada" },
+        "totalBs": { "type": "number", "description": "Total equivalente en Bs." },
+        "paymentMethod": { "type": "string", "description": "Forma de pago utilizada" },
+        "paymentType": { "type": "string", "description": "CONTADO, CREDITO, APARTADO o MERCADOLIBRE" },
+        "creditStatus": { "type": "string", "description": "PENDIENTE, PAGADO o ANULADO" },
+        "createdAt": { "type": "string", "description": "Fecha de creación ISO" },
+        "source": { "type": "string", "description": "POS o TIENDA_ONLINE" }
+      },
+      "required": ["id", "invoiceNumber", "customerName", "total", "bcvRate", "createdAt"]
+    },
+    "ServiceOrder": {
+      "title": "ServiceOrder",
+      "description": "Orden de servicio mecánico o tapicería en el taller",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "ID de la orden" },
+        "orderNumber": { "type": "string", "description": "Número correlativo de orden" },
+        "customerId": { "type": "string", "description": "ID del cliente" },
+        "customerName": { "type": "string", "description": "Nombre del cliente" },
+        "customerPhone": { "type": "string", "description": "Teléfono del cliente" },
+        "customerDocument": { "type": "string", "description": "Cédula o RIF" },
+        "serviceType": { "type": "string", "description": "Tipo de servicio (Mecánica, Tapicería, etc.)" },
+        "fuelLevel": { "type": "string", "description": "Nivel de gasolina al ingresar" },
+        "reportedIssue": { "type": "string", "description": "Falla o solicitud del cliente" },
+        "totalCost": { "type": "number", "description": "Costo total en USD" },
+        "totalCostBs": { "type": "number", "description": "Costo total en Bs." },
+        "status": { "type": "string", "description": "CREADA, EN_PROCESO, CULMINADA o ENTREGADA" },
+        "assignedTechnician": { "type": "string", "description": "Nombre del técnico asignado" },
+        "assignedTechnicianId": { "type": "string", "description": "ID del técnico preguardado asignado" },
+        "assignedTechnicianPhone": { "type": "string", "description": "Teléfono WhatsApp del técnico asignado" },
+        "skipCommissionSync": { "type": "boolean", "description": "Evita re-importar órdenes históricas previas a un reinicio de cuentas" },
+        "createdAt": { "type": "string", "description": "Fecha de ingreso ISO" },
+        "updatedAt": { "type": "string", "description": "Fecha de actualización ISO" }
+      },
+      "required": ["id", "orderNumber", "customerName", "customerPhone", "serviceType", "status", "createdAt"]
+    },
+    "OnlineOrder": {
+      "title": "OnlineOrder",
+      "description": "Pedido online recibido desde la tienda web Mercado Moto CC",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "ID del pedido" },
+        "orderCode": { "type": "string", "description": "Código de pedido (ej: PED-1234)" },
+        "customerId": { "type": "string", "description": "ID del cliente" },
+        "customerName": { "type": "string", "description": "Nombre de quien realiza el pedido" },
+        "customerPhone": { "type": "string", "description": "Teléfono o WhatsApp" },
+        "customerDocument": { "type": "string", "description": "Cédula o RIF" },
+        "deliveryType": { "type": "string", "description": "DOMICILIO, RETIRO_TIENDA o ENVIO_NACIONAL" },
+        "total": { "type": "number", "description": "Total en USD" },
+        "bcvRate": { "type": "number", "description": "Tasa BCV aplicada" },
+        "totalBs": { "type": "number", "description": "Total en Bs." },
+        "paymentMethod": { "type": "string", "description": "Método de pago" },
+        "status": { "type": "string", "description": "Estado del pedido" },
+        "createdAt": { "type": "string", "description": "Fecha de creación ISO" }
+      },
+      "required": ["id", "orderCode", "customerName", "customerPhone", "total", "bcvRate", "status", "createdAt"]
+    },
+    "AppUser": {
+      "title": "AppUser",
+      "description": "Usuario registrado del sistema o cliente autenticado",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "UID de usuario" },
+        "name": { "type": "string", "description": "Nombre completo" },
+        "documentId": { "type": "string", "description": "Cédula o RIF" },
+        "phone": { "type": "string", "description": "Teléfono móvil / WhatsApp" },
+        "email": { "type": "string", "description": "Correo electrónico" },
+        "role": { "type": "string", "description": "Rol: ADMIN o CLIENTE", "enum": ["ADMIN", "CLIENTE"] },
+        "createdAt": { "type": "string", "description": "Fecha de registro ISO" }
+      },
+      "required": ["id", "name", "role", "createdAt"]
+    },
+    "DeletedIds": {
+      "title": "DeletedIds",
+      "description": "Registro de identificadores eliminados permanentemente para evitar resurrección",
+      "type": "object",
+      "properties": {
+        "sales": { "type": "array", "description": "IDs de ventas eliminadas" },
+        "products": { "type": "array", "description": "IDs de productos eliminados" },
+        "customers": { "type": "array", "description": "IDs de clientes eliminados" },
+        "serviceOrders": { "type": "array", "description": "IDs de órdenes eliminadas" },
+        "onlineOrders": { "type": "array", "description": "IDs de pedidos eliminados" },
+        "technicians": { "type": "array", "description": "IDs de técnicos eliminados" },
+        "serviceCommissions": { "type": "array", "description": "IDs de comisiones eliminadas" },
+        "technicianPayouts": { "type": "array", "description": "IDs de liquidaciones eliminadas" }
+      }
+    },
+    "Technician": {
+      "title": "Technician",
+      "description": "Técnico o mecánico del taller con porcentaje de comisión asignado",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "ID único del técnico" },
+        "name": { "type": "string", "description": "Nombre completo del técnico" },
+        "phone": { "type": "string", "description": "Teléfono WhatsApp para notificaciones de pago" },
+        "documentId": { "type": "string", "description": "Cédula de identidad" },
+        "specialty": { "type": "string", "description": "Especialidad en taller" },
+        "commissionRate": { "type": "number", "description": "Porcentaje de comisión asignado (0-100)" },
+        "active": { "type": "boolean", "description": "Indica si el técnico está activo" },
+        "createdAt": { "type": "string", "description": "Fecha de registro ISO" }
+      },
+      "required": ["id", "name", "commissionRate", "active", "createdAt"]
+    },
+    "ServiceCommission": {
+      "title": "ServiceCommission",
+      "description": "Comisión generada por orden de servicio o reparación de taller para un técnico",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "ID único de la comisión" },
+        "serviceOrderId": { "type": "string", "description": "ID de orden de servicio vinculada" },
+        "orderNumber": { "type": "string", "description": "Número correlativo de la orden" },
+        "technicianId": { "type": "string", "description": "ID del técnico" },
+        "technicianName": { "type": "string", "description": "Nombre del técnico" },
+        "baseAmountUSD": { "type": "number", "description": "Monto base comisionable en USD" },
+        "commissionRate": { "type": "number", "description": "Porcentaje aplicado" },
+        "commissionAmountUSD": { "type": "number", "description": "Monto total de comisión en USD" },
+        "paidAmountUSD": { "type": "number", "description": "Monto pagado acumulado en USD" },
+        "status": { "type": "string", "description": "PENDIENTE, PARCIAL o PAGADO" },
+        "workDate": { "type": "string", "description": "Fecha del trabajo ISO" },
+        "createdAt": { "type": "string", "description": "Fecha de creación ISO" }
+      },
+      "required": ["id", "orderNumber", "technicianId", "technicianName", "baseAmountUSD", "commissionRate", "commissionAmountUSD", "paidAmountUSD", "status", "createdAt"]
+    },
+    "TechnicianPayout": {
+      "title": "TechnicianPayout",
+      "description": "Comprobante / factura de pago de comisiones realizado a un técnico",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "ID del comprobante de pago" },
+        "payoutNumber": { "type": "string", "description": "Correlativo LIQ-YYYY-XXXX" },
+        "technicianId": { "type": "string", "description": "ID del técnico" },
+        "technicianName": { "type": "string", "description": "Nombre del técnico" },
+        "amountUSD": { "type": "number", "description": "Monto pagado en USD" },
+        "bcvRate": { "type": "number", "description": "Tasa BCV aplicada" },
+        "amountBs": { "type": "number", "description": "Monto pagado en Bs" },
+        "paymentMethod": { "type": "string", "description": "Método de pago" },
+        "remainingDebtUSD": { "type": "number", "description": "Saldo total restante adeudado tras este pago en USD" },
+        "remainingDebtBs": { "type": "number", "description": "Saldo total restante adeudado tras este pago en Bs" },
+        "createdAt": { "type": "string", "description": "Fecha y hora del pago ISO" }
+      },
+      "required": ["id", "payoutNumber", "technicianId", "technicianName", "amountUSD", "bcvRate", "amountBs", "paymentMethod", "remainingDebtUSD", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/products/{productId}": {
+      "schema": { "$ref": "#/entities/Product" },
+      "description": "Catálogo de repuestos e inventario compartido en tiempo real"
+    },
+    "/settings/{settingsId}": {
+      "schema": { "$ref": "#/entities/BusinessSettings" },
+      "description": "Ajustes de la empresa, datos bancarios y tasa BCV"
+    },
+    "/customers/{customerId}": {
+      "schema": { "$ref": "#/entities/Customer" },
+      "description": "Directorio de clientes para POS, pedidos y servicios"
+    },
+    "/sales/{saleId}": {
+      "schema": { "$ref": "#/entities/Sale" },
+      "description": "Facturación y ventas de mostrador y online"
+    },
+    "/serviceOrders/{serviceOrderId}": {
+      "schema": { "$ref": "#/entities/ServiceOrder" },
+      "description": "Órdenes de servicio y reparación de motos"
+    },
+    "/onlineOrders/{orderId}": {
+      "schema": { "$ref": "#/entities/OnlineOrder" },
+      "description": "Pedidos de la tienda online Mercado Moto CC"
+    },
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/AppUser" },
+      "description": "Perfiles de usuarios y roles"
+    },
+    "/deletedIds/{docId}": {
+      "schema": { "$ref": "#/entities/DeletedIds" },
+      "description": "Registro persistente de IDs eliminados"
+    },
+    "/technicians/{technicianId}": {
+      "schema": { "$ref": "#/entities/Technician" },
+      "description": "Técnicos de taller y porcentajes de comisión asignados"
+    },
+    "/serviceCommissions/{commissionId}": {
+      "schema": { "$ref": "#/entities/ServiceCommission" },
+      "description": "Comisiones generadas por órdenes de servicio y reparación"
+    },
+    "/technicianPayouts/{payoutId}": {
+      "schema": { "$ref": "#/entities/TechnicianPayout" },
+      "description": "Historial de pagos y facturas de liquidación de comisiones a técnicos"
+    }
+  }
+}

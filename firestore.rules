@@ -1,0 +1,84 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    // Default deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Catálogo de Productos y Repuestos (Lectura pública para sincronización en tiempo real con la tienda online)
+    match /products/{productId} {
+      allow list: if true;
+      allow get, create, update, delete: if isValidId(productId);
+    }
+
+    // Configuración del Negocio y Tasa BCV (Lectura pública para sincronizar tasa y datos)
+    match /settings/{settingsId} {
+      allow list: if true;
+      allow get, create, update, delete: if isValidId(settingsId);
+    }
+
+    // Directorio de Clientes
+    match /customers/{customerId} {
+      allow list: if true;
+      allow get, create, update, delete: if isValidId(customerId);
+    }
+
+    // Facturación y Ventas
+    match /sales/{saleId} {
+      allow list: if true;
+      allow get, create, update, delete: if isValidId(saleId);
+    }
+
+    // Órdenes de Servicio de Taller
+    match /serviceOrders/{serviceOrderId} {
+      allow list: if true;
+      allow get, create, update, delete: if isValidId(serviceOrderId);
+    }
+
+    // Pedidos Online de Mercado Moto CC
+    match /onlineOrders/{orderId} {
+      allow list: if true;
+      allow get, create, update, delete: if isValidId(orderId);
+    }
+
+    // Usuarios del Sistema y Roles
+    match /users/{userId} {
+      allow list: if true;
+      allow get, create, update, delete: if isValidId(userId);
+    }
+
+    // Registro de IDs eliminados (tombstones) para evitar que registros borrados reaparezcan
+    match /deletedIds/{docId} {
+      allow list: if true;
+      allow get, create, update, delete: if isValidId(docId);
+    }
+
+    // Técnicos del Taller y Porcentajes de Comisión
+    match /technicians/{technicianId} {
+      allow list: if true;
+      allow get, create, update, delete: if isValidId(technicianId);
+    }
+
+    // Comisiones generadas por Órdenes de Servicio y Reparación
+    match /serviceCommissions/{commissionId} {
+      allow list: if true;
+      allow get, create, update, delete: if isValidId(commissionId);
+    }
+
+    // Liquidaciones y Pagos de Comisiones a Técnicos
+    match /technicianPayouts/{payoutId} {
+      allow list: if true;
+      allow get, create, update, delete: if isValidId(payoutId);
+    }
+  }
+}

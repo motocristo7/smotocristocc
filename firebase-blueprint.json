@@ -170,7 +170,10 @@
         "technicianPayouts": { "type": "array", "description": "IDs de liquidaciones eliminadas" },
         "suppliers": { "type": "array", "description": "IDs de proveedores eliminados" },
         "purchaseOrders": { "type": "array", "description": "IDs de órdenes de compra eliminadas" },
-        "expenses": { "type": "array", "description": "IDs de gastos del negocio eliminados" }
+        "expenses": { "type": "array", "description": "IDs de gastos del negocio eliminados" },
+        "treasuryAccounts": { "type": "array", "description": "IDs de cuentas de tesorería eliminadas" },
+        "treasuryCommitments": { "type": "array", "description": "IDs de compromisos de pago eliminados" },
+        "treasuryMovements": { "type": "array", "description": "IDs de movimientos de tesorería eliminados" }
       }
     },
     "Technician": {
@@ -245,7 +248,7 @@
     },
     "PurchaseOrder": {
       "title": "PurchaseOrder",
-      "description": "Orden de compra a proveedor (contado/crédito, recepción, abonos en divisas/USDT/Bs)",
+      "description": "Orden de compra a proveedor con ingreso directo al inventario (precio de venta, stock, costos), control de crédito, recepción y abonos en divisas/USDT/Bs",
       "type": "object",
       "properties": {
         "id": { "type": "string", "description": "ID único de la orden de compra" },
@@ -260,6 +263,7 @@
         "bcvRate": { "type": "number", "description": "Tasa BCV aplicada" },
         "totalBs": { "type": "number", "description": "Total equivalente en Bs" },
         "paymentType": { "type": "string", "description": "CONTADO o CREDITO" },
+        "paymentCurrencyCondition": { "type": "string", "description": "Condición de liquidación de pago: DIVISAS o BS_BCV (Bolívares a tasa BCV del día de pago)" },
         "creditDays": { "type": "number", "description": "Días de crédito otorgados" },
         "creditDueDate": { "type": "string", "description": "Fecha de vencimiento del crédito" },
         "paymentStatus": { "type": "string", "description": "PENDIENTE, PARCIAL o PAGADO" },
@@ -290,6 +294,60 @@
         "createdAt": { "type": "string", "description": "Fecha de registro ISO" }
       },
       "required": ["id", "expenseNumber", "date", "category", "description", "amountUSD", "bcvRate", "amountBs", "paymentCurrencyType", "paymentMethod", "createdAt"]
+    },
+    "TreasuryAccount": {
+      "title": "TreasuryAccount",
+      "description": "Cuenta de tesorería (Efectivo, Bancos Nacionales o Billeteras Digitales/Divisas)",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "ID único de la cuenta" },
+        "name": { "type": "string", "description": "Nombre de la cuenta" },
+        "group": { "type": "string", "description": "EFECTIVO, BANCO_NACIONAL o BILLETERA_DIVISAS" },
+        "currency": { "type": "string", "description": "USD, BS o USDT" },
+        "balanceUSD": { "type": "number", "description": "Saldo equivalente en USD" },
+        "nativeBalance": { "type": "number", "description": "Saldo en moneda nativa" },
+        "createdAt": { "type": "string", "description": "Fecha de creación ISO" }
+      },
+      "required": ["id", "name", "group", "currency", "balanceUSD", "nativeBalance", "createdAt"]
+    },
+    "TreasuryCommitment": {
+      "title": "TreasuryCommitment",
+      "description": "Compromiso o pago planificado (Gastos Fijos, Nómina/Sueldos, Proveedores)",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "ID único del compromiso" },
+        "title": { "type": "string", "description": "Concepto del pago programado" },
+        "category": { "type": "string", "description": "GASTOS_FIJOS, NOMINA_SUELDOS o PROVEEDORES" },
+        "dueDate": { "type": "string", "description": "Fecha límite YYYY-MM-DD" },
+        "amountUSD": { "type": "number", "description": "Monto en USD" },
+        "bcvRate": { "type": "number", "description": "Tasa BCV" },
+        "amountBs": { "type": "number", "description": "Monto en Bolívares" },
+        "reservedUSD": { "type": "number", "description": "Monto apartado en USD" },
+        "isPaid": { "type": "boolean", "description": "Estado pagado" },
+        "createdAt": { "type": "string", "description": "Fecha de creación ISO" }
+      },
+      "required": ["id", "title", "category", "dueDate", "amountUSD", "isPaid", "createdAt"]
+    },
+    "TreasuryMovement": {
+      "title": "TreasuryMovement",
+      "description": "Movimiento de caja o banco en Tesorería y Finanzas",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "ID del movimiento" },
+        "movementNumber": { "type": "string", "description": "Correlativo MOV-YYYY-XXXX" },
+        "date": { "type": "string", "description": "Fecha YYYY-MM-DD" },
+        "type": { "type": "string", "description": "INGRESO, GASTO o PAGO_PLANIFICADO" },
+        "accountId": { "type": "string", "description": "ID de cuenta afectada" },
+        "accountName": { "type": "string", "description": "Nombre de cuenta afectada" },
+        "accountGroup": { "type": "string", "description": "Grupo de cuenta" },
+        "category": { "type": "string", "description": "Categoría" },
+        "description": { "type": "string", "description": "Descripción" },
+        "amountUSD": { "type": "number", "description": "Monto en USD" },
+        "bcvRate": { "type": "number", "description": "Tasa BCV" },
+        "amountBs": { "type": "number", "description": "Monto en Bolívares" },
+        "createdAt": { "type": "string", "description": "Fecha de creación ISO" }
+      },
+      "required": ["id", "movementNumber", "date", "type", "accountId", "description", "amountUSD", "createdAt"]
     }
   },
   "firestore": {
@@ -348,6 +406,18 @@
     "/expenses/{expenseId}": {
       "schema": { "$ref": "#/entities/BusinessExpense" },
       "description": "Gastos operativos del negocio por categoría y forma de pago"
+    },
+    "/treasuryAccounts/{accountId}": {
+      "schema": { "$ref": "#/entities/TreasuryAccount" },
+      "description": "Cuentas financieras de tesorería (Efectivo, Bancos Nacionales, Billeteras Digitales/Divisas)"
+    },
+    "/treasuryCommitments/{commitmentId}": {
+      "schema": { "$ref": "#/entities/TreasuryCommitment" },
+      "description": "Planificación de pagos y gastos fijos, nómina y proveedores"
+    },
+    "/treasuryMovements/{movementId}": {
+      "schema": { "$ref": "#/entities/TreasuryMovement" },
+      "description": "Historial de ingresos, egresos y pagos ejecutados en tesorería"
     }
   }
 }

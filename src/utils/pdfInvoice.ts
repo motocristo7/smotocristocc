@@ -1782,13 +1782,11 @@ export function generatePurchaseOrderPDF(
     format: 'a4',
   });
 
-  const rate = settings.bcvRate || order.bcvRate || 1;
   const totalUSD = Number(order.totalUSD || 0);
   const paidUSD = Number(order.paidAmountUSD || 0);
   const remainingUSD = Math.max(0, Math.round((totalUSD - paidUSD) * 100) / 100);
-  const totalBs = totalUSD * rate;
-  const remainingBs = remainingUSD * rate;
   const isCredit = order.paymentType === 'CREDITO';
+  const isBsBcv = order.paymentCurrencyCondition === 'BS_BCV';
 
   const pageWidth = 210;
   const pageHeight = 297;
@@ -1944,7 +1942,12 @@ export function generatePurchaseOrderPDF(
       ? `Mercancía: RECIBIDA${order.receivedDate ? ` (Llegó: ${order.receivedDate})` : ''}`
       : 'Mercancía: PENDIENTE POR LLEGAR';
   doc.text(receptionText, rightX, y + 20.5);
-  doc.text(`Tasa BCV Referencia: Bs. ${rate.toFixed(2)} / USD`, rightX, y + 25.2);
+  doc.setFont('helvetica', 'bold');
+  doc.text(
+    `Moneda de Pago: ${isBsBcv ? 'Bs a Tasa BCV (día de pago)' : 'Divisas ($ USD)'}`,
+    rightX,
+    y + 25.2
+  );
 
   y += infoBoxH + 6;
 
@@ -2028,7 +2031,7 @@ export function generatePurchaseOrderPDF(
     doc.text('FORMA DE PAGO (DIVISAS / USDT / BS)', margin + 38, y + 4.7);
     doc.text('REFERENCIA', margin + 115, y + 4.7);
     doc.text('MONTO ($)', margin + 150, y + 4.7, { align: 'right' });
-    doc.text('EQUIV. (BS)', pageWidth - margin - 3, y + 4.7, { align: 'right' });
+    doc.text('BS PAGADOS', pageWidth - margin - 3, y + 4.7, { align: 'right' });
     y += 7;
 
     order.payments.forEach((pay, idx) => {
@@ -2055,7 +2058,13 @@ export function generatePurchaseOrderPDF(
       doc.setTextColor(5, 150, 105);
       doc.text(formatUSD(pay.amountUSD), margin + 150, y + 4.8, { align: 'right' });
       doc.setFont('helvetica', 'normal');
-      doc.text(formatBs(pay.amountBs || pay.amountUSD * rate), pageWidth - margin - 3, y + 4.8, { align: 'right' });
+      doc.setTextColor(71, 85, 105);
+      doc.text(
+        pay.currencyCategory === 'BS' && pay.amountBs ? formatBs(pay.amountBs) : '—',
+        pageWidth - margin - 3,
+        y + 4.8,
+        { align: 'right' }
+      );
       y += rowH;
     });
 
@@ -2086,7 +2095,7 @@ export function generatePurchaseOrderPDF(
   doc.text('TOTAL DE LA COMPRA:', sumX + 4, y + 6);
   doc.setFontSize(11);
   doc.setTextColor(15, 23, 42);
-  doc.text(`${formatUSD(totalUSD)} (${formatBs(totalBs)})`, sumX + sumW - 4, y + 6.3, { align: 'right' });
+  doc.text(formatUSD(totalUSD), sumX + sumW - 4, y + 6.3, { align: 'right' });
 
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(8);
@@ -2126,7 +2135,9 @@ export function generatePurchaseOrderPDF(
   doc.setTextColor(71, 85, 105);
   doc.text(
     hasDebt
-      ? `Equivalente pendiente (BCV Bs. ${rate.toFixed(2)}): ${formatBs(remainingBs)}`
+      ? isBsBcv
+        ? 'Pago pactado en Bs a la tasa BCV vigente el día que se realice el pago.'
+        : 'Pago pactado en Divisas ($ USD).'
       : 'Factura cancelada en su totalidad.',
     sumX + sumW - 4,
     debtY + 12.5,

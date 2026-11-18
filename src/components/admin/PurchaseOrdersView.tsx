@@ -5,6 +5,7 @@ import {
   PurchaseOrder,
   PurchaseOrderItem,
   PurchasePaymentCurrency,
+  PurchaseOrderCurrencyCondition,
 } from '../../types';
 import {
   formatUSD,
@@ -13,6 +14,7 @@ import {
   buildPurchaseOrderPaymentWhatsAppMessage,
 } from '../../utils/whatsapp';
 import { downloadPurchaseOrderPDF } from '../../utils/pdfInvoice';
+import { compressImageFileToDataUrl, normalizeImageUrl } from '../../utils/imageUrl';
 import {
   Truck,
   Plus,
@@ -40,6 +42,12 @@ import {
   Eye,
   Check,
   Boxes,
+  MapPin,
+  Barcode,
+  Upload,
+  Image as ImageIcon,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react';
 
 type ActiveTab = 'ordenes' | 'proveedores';
@@ -50,7 +58,9 @@ type OrderFilterMode =
   | 'POR_RECIBIR'
   | 'RECIBIDAS'
   | 'CREDITO'
-  | 'CONTADO';
+  | 'CONTADO'
+  | 'DIVISAS'
+  | 'BS_BCV';
 
 const PAYMENT_CURRENCY_OPTIONS: Array<{
   currency: PurchasePaymentCurrency;
@@ -88,6 +98,8 @@ export const PurchaseOrdersView: React.FC = () => {
   const {
     settings,
     products,
+    categories,
+    addCategory,
     suppliers,
     addSupplier,
     updateSupplier,
@@ -99,7 +111,6 @@ export const PurchaseOrdersView: React.FC = () => {
     markPurchaseOrderReceived,
     recordPurchaseOrderPayment,
     totalSupplierDebtUSD,
-    totalSupplierDebtBs,
     pendingReceptionOrdersCount,
     setWhatsappModalData,
   } = useApp();
@@ -132,6 +143,7 @@ export const PurchaseOrdersView: React.FC = () => {
   const [ordSupplierInvoice, setOrdSupplierInvoice] = useState('');
   const [ordItems, setOrdItems] = useState<PurchaseOrderItem[]>([]);
   const [ordPaymentType, setOrdPaymentType] = useState<'CONTADO' | 'CREDITO'>('CREDITO');
+  const [ordCurrencyCondition, setOrdCurrencyCondition] = useState<PurchaseOrderCurrencyCondition>('DIVISAS');
   const [ordCreditDays, setOrdCreditDays] = useState<number>(15);
   const [ordCreditDueDate, setOrdCreditDueDate] = useState<string>('');
   const [ordReceivedStatus, setOrdReceivedStatus] = useState<'PENDIENTE' | 'RECIBIDA'>('PENDIENTE');
@@ -153,8 +165,21 @@ export const PurchaseOrdersView: React.FC = () => {
   const [showCustomPartForm, setShowCustomPartForm] = useState(false);
   const [customPartName, setCustomPartName] = useState('');
   const [customPartSku, setCustomPartSku] = useState('');
+  const [customPartBarcode, setCustomPartBarcode] = useState('');
+  const [customPartCategory, setCustomPartCategory] = useState<string>('Frenos');
+  const [isAddingCustomCategory, setIsAddingCustomCategory] = useState(false);
+  const [newCustomCategoryName, setNewCustomCategoryName] = useState('');
+  const [customPartBrand, setCustomPartBrand] = useState('');
+  const [customPartCompatibility, setCustomPartCompatibility] = useState('');
+  const [customPartLocation, setCustomPartLocation] = useState('');
   const [customPartQty, setCustomPartQty] = useState('1');
   const [customPartCost, setCustomPartCost] = useState('');
+  const [customPartSalePrice, setCustomPartSalePrice] = useState('');
+  const [customPartMinStock, setCustomPartMinStock] = useState('2');
+  const [customPartDescription, setCustomPartDescription] = useState('');
+  const [customPartImageUrl, setCustomPartImageUrl] = useState('');
+  const [customPartError, setCustomPartError] = useState<string | null>(null);
+  const [expandedItemIdx, setExpandedItemIdx] = useState<number | null>(null);
 
   // Inline quick supplier creation inside Order Modal
   const [showQuickSupplierForm, setShowQuickSupplierForm] = useState(false);
@@ -243,6 +268,8 @@ export const PurchaseOrdersView: React.FC = () => {
       if (filterMode === 'RECIBIDAS' && po.receivedStatus !== 'RECIBIDA') return false;
       if (filterMode === 'CREDITO' && po.paymentType !== 'CREDITO') return false;
       if (filterMode === 'CONTADO' && po.paymentType !== 'CONTADO') return false;
+      if (filterMode === 'DIVISAS' && (po.paymentCurrencyCondition || 'DIVISAS') !== 'DIVISAS') return false;
+      if (filterMode === 'BS_BCV' && po.paymentCurrencyCondition !== 'BS_BCV') return false;
 
       if (!q) return true;
       const inItems = po.items.some(
@@ -376,6 +403,7 @@ export const PurchaseOrdersView: React.FC = () => {
     setOrdSupplierInvoice('');
     setOrdItems([]);
     setOrdPaymentType('CREDITO');
+    setOrdCurrencyCondition('DIVISAS');
     setOrdCreditDays(15);
     setOrdCreditDueDate(computeSuggestedDueDate(15));
     setOrdReceivedStatus('PENDIENTE');
@@ -391,6 +419,10 @@ export const PurchaseOrdersView: React.FC = () => {
     setOrdError(null);
     setPartSearch('');
     setShowCustomPartForm(false);
+    setCustomPartError(null);
+    setExpandedItemIdx(null);
+    setIsAddingCustomCategory(false);
+    setNewCustomCategoryName('');
     setShowQuickSupplierForm(suppliers.length === 0);
     setQSupCode(suggestNextSupplierCode());
     setQSupName('');
@@ -405,6 +437,7 @@ export const PurchaseOrdersView: React.FC = () => {
     setOrdSupplierInvoice(po.supplierInvoiceNumber || '');
     setOrdItems(po.items.map((it) => ({ ...it })));
     setOrdPaymentType(po.paymentType);
+    setOrdCurrencyCondition(po.paymentCurrencyCondition || 'DIVISAS');
     setOrdCreditDays(po.creditDays || 15);
     setOrdCreditDueDate(po.creditDueDate || computeSuggestedDueDate(po.creditDays || 15));
     setOrdReceivedStatus(po.receivedStatus);
@@ -426,6 +459,10 @@ export const PurchaseOrdersView: React.FC = () => {
     setOrdError(null);
     setPartSearch('');
     setShowCustomPartForm(false);
+    setCustomPartError(null);
+    setExpandedItemIdx(null);
+    setIsAddingCustomCategory(false);
+    setNewCustomCategoryName('');
     setShowQuickSupplierForm(false);
     setIsOrderModalOpen(true);
   };
@@ -451,10 +488,18 @@ export const PurchaseOrdersView: React.FC = () => {
           id: `poi-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
           productId: prod.id,
           sku: prod.sku,
+          barcode: prod.barcode || '',
           name: prod.name,
           category: String(prod.category),
+          description: prod.description || '',
+          brand: prod.brand || '',
+          compatibility: prod.compatibility || '',
+          warehouseLocation: prod.warehouseLocation || '',
+          imageUrl: prod.imageUrl || '',
           quantity: 1,
           unitCostUSD: unitCost,
+          salePriceUSD: Number(prod.salePrice) || 0,
+          minStock: prod.minStock ?? 2,
           totalCostUSD: unitCost,
           isNewProduct: false,
         },
@@ -462,46 +507,146 @@ export const PurchaseOrdersView: React.FC = () => {
     });
   };
 
+  const resetCustomPartForm = () => {
+    setCustomPartName('');
+    setCustomPartSku('');
+    setCustomPartBarcode('');
+    setCustomPartCategory(categories[0] || 'Frenos');
+    setIsAddingCustomCategory(false);
+    setNewCustomCategoryName('');
+    setCustomPartBrand('');
+    setCustomPartCompatibility('');
+    setCustomPartLocation('');
+    setCustomPartQty('1');
+    setCustomPartCost('');
+    setCustomPartSalePrice('');
+    setCustomPartMinStock('2');
+    setCustomPartDescription('');
+    setCustomPartImageUrl('');
+    setCustomPartError(null);
+  };
+
+  const handleCustomPartImageUpload = async (
+    e: React.ChangeEvent<HTMLInputElement>,
+    targetItemIdx?: number
+  ) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file || !file.type.startsWith('image/')) return;
+    try {
+      const compressed = await compressImageFileToDataUrl(file, 720, 0.82);
+      if (targetItemIdx !== undefined) {
+        setOrdItems((prev) =>
+          prev.map((it, i) => (i === targetItemIdx ? { ...it, imageUrl: compressed } : it))
+        );
+      } else {
+        setCustomPartImageUrl(compressed);
+      }
+    } catch {
+      // Ignore upload error silently
+    }
+  };
+
   const handleAddCustomPartToOrder = () => {
+    setCustomPartError(null);
     const name = customPartName.trim();
-    if (!name) return;
+    if (!name) {
+      setCustomPartError('Ingresa el nombre del repuesto.');
+      return;
+    }
     const qty = Math.max(1, parseInt(customPartQty, 10) || 1);
     const cost = Math.max(0, parseFloat(customPartCost) || 0);
+    const salePrice = parseFloat(customPartSalePrice);
+    if (isNaN(salePrice) || salePrice <= 0) {
+      setCustomPartError('Ingresa el Precio de Venta ($ USD) para registrarlo en el inventario.');
+      return;
+    }
+
+    let finalCategory = customPartCategory || categories[0] || 'Accesorios';
+    if (isAddingCustomCategory && newCustomCategoryName.trim()) {
+      const res = addCategory(newCustomCategoryName.trim());
+      finalCategory = res.category;
+    }
+
+    const rawSku = customPartSku.trim().toUpperCase();
+    const finalSku =
+      rawSku || `REP-${String(Date.now()).slice(-4)}${Math.floor(Math.random() * 90 + 10)}`;
+
+    const minStockNum = Math.max(0, parseInt(customPartMinStock, 10) || 2);
+
     setOrdItems((prev) => [
       ...prev,
       {
         id: `poi-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
-        sku: customPartSku.trim().toUpperCase() || 'NUEVO',
+        sku: finalSku,
+        barcode: customPartBarcode.trim() || undefined,
         name,
+        category: finalCategory,
+        description: customPartDescription.trim() || '',
+        brand: customPartBrand.trim() || 'Genérico',
+        compatibility: customPartCompatibility.trim() || 'Universal',
+        warehouseLocation: customPartLocation.trim() || undefined,
+        imageUrl: normalizeImageUrl(customPartImageUrl) || undefined,
         quantity: qty,
         unitCostUSD: Math.round(cost * 100) / 100,
+        salePriceUSD: Math.round(salePrice * 100) / 100,
+        minStock: minStockNum,
         totalCostUSD: Math.round(qty * cost * 100) / 100,
         isNewProduct: true,
       },
     ]);
-    setCustomPartName('');
-    setCustomPartSku('');
-    setCustomPartQty('1');
-    setCustomPartCost('');
+    resetCustomPartForm();
     setShowCustomPartForm(false);
   };
 
   const handleUpdateOrderItem = (
     idx: number,
-    field: 'quantity' | 'unitCostUSD',
+    field:
+      | 'quantity'
+      | 'unitCostUSD'
+      | 'salePriceUSD'
+      | 'name'
+      | 'sku'
+      | 'barcode'
+      | 'category'
+      | 'brand'
+      | 'compatibility'
+      | 'warehouseLocation'
+      | 'minStock'
+      | 'description',
     rawValue: string
   ) => {
-    const num = parseFloat(rawValue);
     setOrdItems((prev) =>
       prev.map((it, i) => {
         if (i !== idx) return it;
-        const qty = field === 'quantity' ? Math.max(1, Math.round(num || 1)) : it.quantity;
-        const cost = field === 'unitCostUSD' ? Math.max(0, num || 0) : it.unitCostUSD;
+        if (field === 'quantity' || field === 'unitCostUSD') {
+          const num = parseFloat(rawValue);
+          const qty = field === 'quantity' ? Math.max(1, Math.round(num || 1)) : it.quantity;
+          const cost = field === 'unitCostUSD' ? Math.max(0, num || 0) : it.unitCostUSD;
+          return {
+            ...it,
+            quantity: qty,
+            unitCostUSD: cost,
+            totalCostUSD: Math.round(qty * cost * 100) / 100,
+          };
+        }
+        if (field === 'salePriceUSD') {
+          const num = parseFloat(rawValue);
+          return {
+            ...it,
+            salePriceUSD: isNaN(num) ? 0 : Math.max(0, num),
+          };
+        }
+        if (field === 'minStock') {
+          const num = parseInt(rawValue, 10);
+          return {
+            ...it,
+            minStock: isNaN(num) ? 0 : Math.max(0, num),
+          };
+        }
         return {
           ...it,
-          quantity: qty,
-          unitCostUSD: cost,
-          totalCostUSD: Math.round(qty * cost * 100) / 100,
+          [field]: rawValue,
         };
       })
     );
@@ -542,6 +687,17 @@ export const PurchaseOrdersView: React.FC = () => {
       setOrdError('Agrega al menos un repuesto a la orden de compra.');
       return;
     }
+    if (ordApplyStock && (!editingOrder || !editingOrder.stockApplied)) {
+      const missingSalePrice = ordItems.find(
+        (it) => it.salePriceUSD === undefined || Number(it.salePriceUSD) <= 0
+      );
+      if (missingSalePrice) {
+        setOrdError(
+          `Ingresa un Precio de Venta ($ USD) mayor a $0.00 para "${missingSalePrice.name}" antes de ingresarlo al inventario.`
+        );
+        return;
+      }
+    }
 
     const paidAmount =
       ordPaymentOption === 'PAGADO'
@@ -556,6 +712,7 @@ export const PurchaseOrdersView: React.FC = () => {
         supplierInvoiceNumber: ordSupplierInvoice.trim() || undefined,
         items: ordItems,
         paymentType: ordPaymentType,
+        paymentCurrencyCondition: ordCurrencyCondition,
         creditDays: ordPaymentType === 'CREDITO' ? ordCreditDays : undefined,
         creditDueDate: ordPaymentType === 'CREDITO' ? ordCreditDueDate : undefined,
         receivedStatus: ordReceivedStatus,
@@ -577,6 +734,7 @@ export const PurchaseOrdersView: React.FC = () => {
       supplierInvoiceNumber: ordSupplierInvoice.trim() || undefined,
       items: ordItems,
       paymentType: ordPaymentType,
+      paymentCurrencyCondition: ordCurrencyCondition,
       creditDays: ordPaymentType === 'CREDITO' ? ordCreditDays : undefined,
       creditDueDate: ordPaymentType === 'CREDITO' ? ordCreditDueDate : undefined,
       isPaidImmediately: ordPaymentOption === 'PAGADO',
@@ -617,10 +775,11 @@ export const PurchaseOrdersView: React.FC = () => {
   // --- ABONO MODAL HANDLERS ---
   const openPaymentModal = (order: PurchaseOrder) => {
     const remaining = Math.max(0, Math.round((order.totalUSD - (order.paidAmountUSD || 0)) * 100) / 100);
+    const defaultIsBs = order.paymentCurrencyCondition === 'BS_BCV';
     setPaymentModalOrder(order);
     setAbonoAmountUSD(remaining > 0 ? remaining.toFixed(2) : '');
-    setAbonoCurrency('DIVISAS');
-    setAbonoMethod('Divisas ($ Efectivo)');
+    setAbonoCurrency(defaultIsBs ? 'BS' : 'DIVISAS');
+    setAbonoMethod(defaultIsBs ? 'Bolívares (Pago Móvil)' : 'Divisas ($ Efectivo)');
     setAbonoReference('');
     setAbonoNotes('');
     setAbonoNotifyVendor(true);
@@ -760,8 +919,8 @@ export const PurchaseOrdersView: React.FC = () => {
           <p className="text-2xl font-bold font-mono text-slate-900 mt-2">
             {formatUSD(totalSupplierDebtUSD)}
           </p>
-          <p className="text-xs font-mono text-emerald-700 font-semibold mt-0.5">
-            {formatBs(totalSupplierDebtBs)}
+          <p className="text-xs text-slate-500 mt-0.5">
+            Saldo pendiente en órdenes activas
           </p>
         </div>
 
@@ -888,6 +1047,8 @@ export const PurchaseOrdersView: React.FC = () => {
                 <option value="RECIBIDAS">Mercancía Recibida</option>
                 <option value="CREDITO">Solo A Crédito</option>
                 <option value="CONTADO">Solo De Contado</option>
+                <option value="DIVISAS">Pago en Divisas ($)</option>
+                <option value="BS_BCV">Pago en Bs a BCV</option>
               </select>
             </div>
           </div>
@@ -924,7 +1085,7 @@ export const PurchaseOrdersView: React.FC = () => {
                   0,
                   Math.round((po.totalUSD - (po.paidAmountUSD || 0)) * 100) / 100
                 );
-                const remainingBs = remainingUSD * bcvRate;
+                const isBsBcv = po.paymentCurrencyCondition === 'BS_BCV';
                 const dueInfo =
                   po.paymentType === 'CREDITO' && remainingUSD > 0.01
                     ? getDaysUntilDue(po.creditDueDate)
@@ -957,6 +1118,15 @@ export const PurchaseOrdersView: React.FC = () => {
                             {po.paymentType === 'CREDITO'
                               ? `A CRÉDITO (${po.creditDays || 15} días)`
                               : 'DE CONTADO'}
+                          </span>
+                          <span
+                            className={`text-[11px] font-bold px-2.5 py-0.5 rounded-md ${
+                              isBsBcv
+                                ? 'bg-blue-100 text-blue-800'
+                                : 'bg-emerald-100 text-emerald-800'
+                            }`}
+                          >
+                            {isBsBcv ? 'Pago: Bs a BCV' : 'Pago: Divisas ($)'}
                           </span>
                           {dueInfo && (
                             <span
@@ -1095,9 +1265,11 @@ export const PurchaseOrdersView: React.FC = () => {
                                 <span className="font-mono font-extrabold text-base text-amber-700 block">
                                   {formatUSD(remainingUSD)}
                                 </span>
-                                <span className="font-mono text-[11px] font-semibold text-slate-500">
-                                  {formatBs(remainingBs)}
-                                </span>
+                                {isBsBcv && (
+                                  <span className="text-[10px] font-semibold text-blue-700 block">
+                                    Bs a BCV del día de pago
+                                  </span>
+                                )}
                               </div>
                             ) : (
                               <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-100 text-emerald-800 text-xs font-bold">
@@ -1706,63 +1878,295 @@ export const PurchaseOrdersView: React.FC = () => {
                   </div>
                 </div>
 
-                {/* Custom / New Part Quick Add */}
+                {/* Custom / New Part Full Inventory Form */}
                 {showCustomPartForm && (
-                  <div className="bg-white rounded-xl border border-amber-300 p-3 grid grid-cols-1 sm:grid-cols-5 gap-2 items-end">
-                    <div className="sm:col-span-2">
+                  <div className="bg-white rounded-xl border-2 border-amber-300 p-4 space-y-3 shadow-2xs">
+                    <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+                      <div>
+                        <h5 className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
+                          <PackagePlus className="w-4 h-4 text-amber-600" />
+                          <span>Ficha Completa de Repuesto Nuevo para Inventario y Orden</span>
+                        </h5>
+                        <p className="text-[11px] text-slate-500">
+                          Se agregará a esta orden por su <strong>Costo ($)</strong> y se creará directamente en el Inventario con su <strong>Precio de Venta ($)</strong> y datos completos.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowCustomPartForm(false);
+                          setCustomPartError(null);
+                        }}
+                        className="p-1 text-slate-400 hover:text-slate-700 cursor-pointer"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
+
+                    {customPartError && (
+                      <div className="p-2.5 rounded-lg bg-rose-50 border border-rose-200 text-rose-700 text-[11px] font-semibold flex items-center gap-1.5">
+                        <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                        <span>{customPartError}</span>
+                      </div>
+                    )}
+
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                      <div>
+                        <div className="flex items-center justify-between mb-1">
+                          <label className="block text-[10px] font-bold text-slate-600">
+                            Código SKU
+                          </label>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setCustomPartSku(`REP-${String(Date.now()).slice(-5)}`)
+                            }
+                            className="text-[10px] font-bold text-amber-700 hover:text-amber-800 cursor-pointer"
+                          >
+                            Auto
+                          </button>
+                        </div>
+                        <input
+                          type="text"
+                          value={customPartSku}
+                          onChange={(e) => setCustomPartSku(e.target.value.toUpperCase())}
+                          placeholder="Ej: KIT-1542 (o Auto)"
+                          className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-mono font-bold"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-600 mb-1 flex items-center gap-1">
+                          <Barcode className="w-3 h-3 text-slate-400" />
+                          <span>Código de Barras (Opcional)</span>
+                        </label>
+                        <input
+                          type="text"
+                          value={customPartBarcode}
+                          onChange={(e) => setCustomPartBarcode(e.target.value)}
+                          placeholder="EAN / UPC"
+                          className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-mono"
+                        />
+                      </div>
+
+                      <div>
+                        <div className="flex items-center justify-between mb-1">
+                          <label className="block text-[10px] font-bold text-slate-600">
+                            Categoría *
+                          </label>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setIsAddingCustomCategory((prev) => !prev);
+                              setNewCustomCategoryName('');
+                            }}
+                            className="text-[10px] font-bold text-amber-700 hover:text-amber-800 cursor-pointer"
+                          >
+                            {isAddingCustomCategory ? 'Lista' : '+ Nueva'}
+                          </button>
+                        </div>
+                        {isAddingCustomCategory ? (
+                          <input
+                            type="text"
+                            value={newCustomCategoryName}
+                            onChange={(e) => setNewCustomCategoryName(e.target.value)}
+                            placeholder="Nombre nueva categoría..."
+                            className="w-full px-2.5 py-1.5 bg-amber-50 border border-amber-300 rounded-lg text-xs"
+                          />
+                        ) : (
+                          <select
+                            value={customPartCategory}
+                            onChange={(e) => setCustomPartCategory(e.target.value)}
+                            className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-medium"
+                          >
+                            {categories.map((cat) => (
+                              <option key={cat} value={cat}>
+                                {cat}
+                              </option>
+                            ))}
+                          </select>
+                        )}
+                      </div>
+                    </div>
+
+                    <div>
                       <label className="block text-[10px] font-bold text-slate-600 mb-1">
-                        Nombre del repuesto *
+                        Nombre del Repuesto *
                       </label>
                       <input
                         type="text"
                         value={customPartName}
                         onChange={(e) => setCustomPartName(e.target.value)}
-                        placeholder="Ej: Kit de arrastre 15/42"
-                        className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs"
+                        placeholder="Ej: Kit de arrastre reforzado 15/42 Bera SBR"
+                        className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-medium"
                       />
                     </div>
-                    <div>
-                      <label className="block text-[10px] font-bold text-slate-600 mb-1">
-                        SKU / Cód.
-                      </label>
-                      <input
-                        type="text"
-                        value={customPartSku}
-                        onChange={(e) => setCustomPartSku(e.target.value)}
-                        placeholder="Opcional"
-                        className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-mono"
-                      />
+
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-600 mb-1">
+                          Marca
+                        </label>
+                        <input
+                          type="text"
+                          value={customPartBrand}
+                          onChange={(e) => setCustomPartBrand(e.target.value)}
+                          placeholder="Ej: Empire, Bera, Brembo"
+                          className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-600 mb-1">
+                          Motos Compatibles
+                        </label>
+                        <input
+                          type="text"
+                          value={customPartCompatibility}
+                          onChange={(e) => setCustomPartCompatibility(e.target.value)}
+                          placeholder="Ej: Bera SBR 150, Horse, Universal"
+                          className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-600 mb-1 flex items-center gap-1">
+                          <MapPin className="w-3 h-3 text-amber-600" />
+                          <span>Ubicación en Almacén</span>
+                        </label>
+                        <input
+                          type="text"
+                          value={customPartLocation}
+                          onChange={(e) => setCustomPartLocation(e.target.value)}
+                          placeholder="Ej: Estante A-3, Gaveta 2"
+                          className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs"
+                        />
+                      </div>
                     </div>
-                    <div>
-                      <label className="block text-[10px] font-bold text-slate-600 mb-1">
-                        Cant. &amp; Costo ($)
-                      </label>
-                      <div className="flex gap-1">
+
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-600 mb-1">
+                          Cantidad Comprada *
+                        </label>
                         <input
                           type="number"
                           min={1}
                           value={customPartQty}
                           onChange={(e) => setCustomPartQty(e.target.value)}
-                          className="w-14 px-2 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-mono"
+                          className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-mono font-bold"
                         />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-600 mb-1">
+                          Costo Unit. ($ USD) *
+                        </label>
                         <input
                           type="number"
                           step="0.01"
                           min={0}
                           value={customPartCost}
                           onChange={(e) => setCustomPartCost(e.target.value)}
-                          placeholder="$"
-                          className="w-full px-2 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-mono"
+                          placeholder="0.00"
+                          className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-mono font-bold"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] font-bold text-emerald-700 mb-1">
+                          Precio Venta ($ USD) *
+                        </label>
+                        <input
+                          type="number"
+                          step="0.01"
+                          min={0.01}
+                          value={customPartSalePrice}
+                          onChange={(e) => setCustomPartSalePrice(e.target.value)}
+                          placeholder="0.00"
+                          className="w-full px-2.5 py-1.5 bg-emerald-50 border border-emerald-300 rounded-lg text-xs font-mono font-bold text-emerald-950"
+                        />
+                        {parseFloat(customPartCost) > 0 && parseFloat(customPartSalePrice) > 0 && (
+                          <span className="text-[10px] font-mono text-emerald-700 block mt-0.5">
+                            Margen:{' '}
+                            {Math.round(
+                              ((parseFloat(customPartSalePrice) - parseFloat(customPartCost)) /
+                                parseFloat(customPartCost)) *
+                                100
+                            )}
+                            %
+                          </span>
+                        )}
+                      </div>
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-600 mb-1">
+                          Stock Mínimo
+                        </label>
+                        <input
+                          type="number"
+                          min={0}
+                          value={customPartMinStock}
+                          onChange={(e) => setCustomPartMinStock(e.target.value)}
+                          className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs font-mono"
                         />
                       </div>
                     </div>
-                    <button
-                      type="button"
-                      onClick={handleAddCustomPartToOrder}
-                      className="px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold rounded-lg cursor-pointer"
-                    >
-                      Agregar
-                    </button>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 items-center">
+                      <div className="sm:col-span-2">
+                        <label className="block text-[10px] font-bold text-slate-600 mb-1">
+                          Descripción / Detalles (Opcional)
+                        </label>
+                        <input
+                          type="text"
+                          value={customPartDescription}
+                          onChange={(e) => setCustomPartDescription(e.target.value)}
+                          placeholder="Especificaciones, medidas o detalles para la tienda..."
+                          className="w-full px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-600 mb-1">
+                          Foto (Opcional)
+                        </label>
+                        <div className="flex items-center gap-2">
+                          {customPartImageUrl && (
+                            <img
+                              src={customPartImageUrl}
+                              alt="Vista previa"
+                              className="w-8 h-8 rounded object-cover border border-slate-200 shrink-0"
+                            />
+                          )}
+                          <label className="flex-1 inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 rounded-lg text-[11px] font-semibold cursor-pointer">
+                            <Upload className="w-3.5 h-3.5" />
+                            <span>{customPartImageUrl ? 'Cambiar' : 'Subir foto'}</span>
+                            <input
+                              type="file"
+                              accept="image/*"
+                              onChange={(e) => void handleCustomPartImageUpload(e)}
+                              className="hidden"
+                            />
+                          </label>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          resetCustomPartForm();
+                          setShowCustomPartForm(false);
+                        }}
+                        className="px-3 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-lg cursor-pointer"
+                      >
+                        Cancelar
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleAddCustomPartToOrder}
+                        className="px-4 py-1.5 bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold rounded-lg cursor-pointer inline-flex items-center gap-1.5"
+                      >
+                        <Plus className="w-3.5 h-3.5 text-amber-400" />
+                        <span>Agregar a Orden e Inventario</span>
+                      </button>
+                    </div>
                   </div>
                 )}
 
@@ -1770,76 +2174,317 @@ export const PurchaseOrdersView: React.FC = () => {
                 {ordItems.length > 0 && (
                   <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
                     <div className="divide-y divide-slate-200">
-                      {ordItems.map((it, idx) => (
-                        <div
-                          key={it.id || idx}
-                          className="p-2.5 flex flex-wrap sm:flex-nowrap items-center justify-between gap-2 text-xs"
-                        >
-                          <div className="flex-1 min-w-44">
-                            <span className="font-semibold text-slate-900 block break-words">
-                              {it.name}
-                            </span>
-                            <span className="text-[10px] font-mono text-slate-500">
-                              SKU: {it.sku || 'EXT'}
-                            </span>
-                          </div>
+                      {ordItems.map((it, idx) => {
+                        const isExpanded = expandedItemIdx === idx;
+                        const marginPct =
+                          it.unitCostUSD > 0 && it.salePriceUSD && it.salePriceUSD > 0
+                            ? Math.round(((it.salePriceUSD - it.unitCostUSD) / it.unitCostUSD) * 100)
+                            : null;
+                        return (
+                          <div key={it.id || idx} className="p-3 space-y-2.5 text-xs">
+                            <div className="flex flex-wrap lg:flex-nowrap items-center justify-between gap-2.5">
+                              <div className="flex-1 min-w-44">
+                                <div className="flex flex-wrap items-center gap-1.5">
+                                  <span className="font-semibold text-slate-900 break-words">
+                                    {it.name}
+                                  </span>
+                                  {!it.productId && (
+                                    <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-900 text-[10px] font-bold">
+                                      Nuevo
+                                    </span>
+                                  )}
+                                  {it.category && (
+                                    <span className="px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 text-[10px] font-medium">
+                                      {it.category}
+                                    </span>
+                                  )}
+                                </div>
+                                <span className="text-[10px] font-mono text-slate-500">
+                                  SKU: {it.sku || 'AUTO'}
+                                  {it.warehouseLocation ? ` · Ubic: ${it.warehouseLocation}` : ''}
+                                </span>
+                              </div>
 
-                          <div className="flex items-center gap-2 shrink-0">
-                            <div>
-                              <span className="text-[10px] text-slate-400 block">Cant.</span>
-                              <input
-                                type="number"
-                                min={1}
-                                value={it.quantity}
-                                onChange={(e) =>
-                                  handleUpdateOrderItem(idx, 'quantity', e.target.value)
-                                }
-                                className="w-16 px-2 py-1 bg-slate-50 border border-slate-300 rounded-lg font-mono text-xs text-center"
-                              />
+                              <div className="flex flex-wrap items-center gap-2 shrink-0">
+                                <div>
+                                  <span className="text-[10px] text-slate-400 block">Cant.</span>
+                                  <input
+                                    type="number"
+                                    min={1}
+                                    value={it.quantity}
+                                    onChange={(e) =>
+                                      handleUpdateOrderItem(idx, 'quantity', e.target.value)
+                                    }
+                                    className="w-14 px-2 py-1 bg-slate-50 border border-slate-300 rounded-lg font-mono text-xs text-center"
+                                  />
+                                </div>
+                                <div>
+                                  <span className="text-[10px] text-slate-500 font-semibold block">
+                                    Costo Unit $
+                                  </span>
+                                  <input
+                                    type="number"
+                                    step="0.01"
+                                    min={0}
+                                    value={it.unitCostUSD}
+                                    onChange={(e) =>
+                                      handleUpdateOrderItem(idx, 'unitCostUSD', e.target.value)
+                                    }
+                                    className="w-22 px-2 py-1 bg-slate-50 border border-slate-300 rounded-lg font-mono text-xs text-right"
+                                  />
+                                </div>
+                                <div>
+                                  <span className="text-[10px] text-emerald-700 font-bold block">
+                                    P. Venta $ {marginPct !== null ? `(+${marginPct}%)` : ''}
+                                  </span>
+                                  <input
+                                    type="number"
+                                    step="0.01"
+                                    min={0}
+                                    value={it.salePriceUSD ?? ''}
+                                    onChange={(e) =>
+                                      handleUpdateOrderItem(idx, 'salePriceUSD', e.target.value)
+                                    }
+                                    placeholder="0.00"
+                                    className="w-22 px-2 py-1 bg-emerald-50 border border-emerald-300 rounded-lg font-mono font-bold text-xs text-right text-emerald-950"
+                                  />
+                                </div>
+                                <div className="w-22 text-right">
+                                  <span className="text-[10px] text-slate-400 block">
+                                    Subt. Costo
+                                  </span>
+                                  <span className="font-mono font-bold text-slate-900">
+                                    {formatUSD(it.totalCostUSD)}
+                                  </span>
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setExpandedItemIdx(isExpanded ? null : idx)
+                                  }
+                                  className="px-2 py-1 mt-3 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-[10px] font-bold inline-flex items-center gap-0.5 cursor-pointer"
+                                  title="Editar ficha completa para inventario"
+                                >
+                                  <span>Ficha</span>
+                                  {isExpanded ? (
+                                    <ChevronUp className="w-3 h-3" />
+                                  ) : (
+                                    <ChevronDown className="w-3 h-3" />
+                                  )}
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setOrdItems((prev) => prev.filter((_, i) => i !== idx));
+                                    if (expandedItemIdx === idx) setExpandedItemIdx(null);
+                                  }}
+                                  className="p-1.5 text-rose-500 hover:bg-rose-50 rounded-lg cursor-pointer mt-3"
+                                >
+                                  <X className="w-4 h-4" />
+                                </button>
+                              </div>
                             </div>
-                            <div>
-                              <span className="text-[10px] text-slate-400 block">Costo Unit $</span>
-                              <input
-                                type="number"
-                                step="0.01"
-                                min={0}
-                                value={it.unitCostUSD}
-                                onChange={(e) =>
-                                  handleUpdateOrderItem(idx, 'unitCostUSD', e.target.value)
-                                }
-                                className="w-24 px-2 py-1 bg-slate-50 border border-slate-300 rounded-lg font-mono text-xs text-right"
-                              />
-                            </div>
-                            <div className="w-24 text-right">
-                              <span className="text-[10px] text-slate-400 block">Subtotal</span>
-                              <span className="font-mono font-bold text-slate-900">
-                                {formatUSD(it.totalCostUSD)}
-                              </span>
-                            </div>
-                            <button
-                              type="button"
-                              onClick={() =>
-                                setOrdItems((prev) => prev.filter((_, i) => i !== idx))
-                              }
-                              className="p-1.5 text-rose-500 hover:bg-rose-50 rounded-lg cursor-pointer mt-3"
-                            >
-                              <X className="w-4 h-4" />
-                            </button>
+
+                            {/* Expandable full inventory details per item */}
+                            {isExpanded && (
+                              <div className="bg-slate-50 rounded-xl border border-slate-200 p-3 space-y-2.5">
+                                <div className="grid grid-cols-1 sm:grid-cols-4 gap-2">
+                                  <div className="sm:col-span-2">
+                                    <label className="block text-[10px] font-bold text-slate-600 mb-0.5">
+                                      Nombre en Inventario
+                                    </label>
+                                    <input
+                                      type="text"
+                                      value={it.name}
+                                      onChange={(e) =>
+                                        handleUpdateOrderItem(idx, 'name', e.target.value)
+                                      }
+                                      className="w-full px-2 py-1 bg-white border border-slate-200 rounded text-xs"
+                                    />
+                                  </div>
+                                  <div>
+                                    <label className="block text-[10px] font-bold text-slate-600 mb-0.5">
+                                      SKU / Código
+                                    </label>
+                                    <input
+                                      type="text"
+                                      value={it.sku || ''}
+                                      onChange={(e) =>
+                                        handleUpdateOrderItem(idx, 'sku', e.target.value.toUpperCase())
+                                      }
+                                      className="w-full px-2 py-1 bg-white border border-slate-200 rounded text-xs font-mono"
+                                    />
+                                  </div>
+                                  <div>
+                                    <label className="block text-[10px] font-bold text-slate-600 mb-0.5">
+                                      Categoría
+                                    </label>
+                                    <select
+                                      value={it.category || categories[0] || 'Accesorios'}
+                                      onChange={(e) =>
+                                        handleUpdateOrderItem(idx, 'category', e.target.value)
+                                      }
+                                      className="w-full px-2 py-1 bg-white border border-slate-200 rounded text-xs"
+                                    >
+                                      {categories.map((cat) => (
+                                        <option key={cat} value={cat}>
+                                          {cat}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </div>
+                                </div>
+
+                                <div className="grid grid-cols-1 sm:grid-cols-4 gap-2">
+                                  <div>
+                                    <label className="block text-[10px] font-bold text-slate-600 mb-0.5">
+                                      Marca
+                                    </label>
+                                    <input
+                                      type="text"
+                                      value={it.brand || ''}
+                                      onChange={(e) =>
+                                        handleUpdateOrderItem(idx, 'brand', e.target.value)
+                                      }
+                                      placeholder="Ej: Bera, Empire"
+                                      className="w-full px-2 py-1 bg-white border border-slate-200 rounded text-xs"
+                                    />
+                                  </div>
+                                  <div>
+                                    <label className="block text-[10px] font-bold text-slate-600 mb-0.5">
+                                      Compatibilidad
+                                    </label>
+                                    <input
+                                      type="text"
+                                      value={it.compatibility || ''}
+                                      onChange={(e) =>
+                                        handleUpdateOrderItem(idx, 'compatibility', e.target.value)
+                                      }
+                                      placeholder="Motos compatibles"
+                                      className="w-full px-2 py-1 bg-white border border-slate-200 rounded text-xs"
+                                    />
+                                  </div>
+                                  <div>
+                                    <label className="block text-[10px] font-bold text-slate-600 mb-0.5">
+                                      Ubicación Almacén
+                                    </label>
+                                    <input
+                                      type="text"
+                                      value={it.warehouseLocation || ''}
+                                      onChange={(e) =>
+                                        handleUpdateOrderItem(idx, 'warehouseLocation', e.target.value)
+                                      }
+                                      placeholder="Ej: Estante A-3"
+                                      className="w-full px-2 py-1 bg-white border border-slate-200 rounded text-xs"
+                                    />
+                                  </div>
+                                  <div>
+                                    <label className="block text-[10px] font-bold text-slate-600 mb-0.5">
+                                      Stock Mín. / Barras
+                                    </label>
+                                    <div className="flex gap-1">
+                                      <input
+                                        type="number"
+                                        min={0}
+                                        value={it.minStock ?? 2}
+                                        onChange={(e) =>
+                                          handleUpdateOrderItem(idx, 'minStock', e.target.value)
+                                        }
+                                        className="w-14 px-2 py-1 bg-white border border-slate-200 rounded text-xs font-mono"
+                                        title="Stock mínimo"
+                                      />
+                                      <input
+                                        type="text"
+                                        value={it.barcode || ''}
+                                        onChange={(e) =>
+                                          handleUpdateOrderItem(idx, 'barcode', e.target.value)
+                                        }
+                                        placeholder="Cód. Barras"
+                                        className="w-full px-2 py-1 bg-white border border-slate-200 rounded text-xs font-mono"
+                                      />
+                                    </div>
+                                  </div>
+                                </div>
+
+                                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 items-center">
+                                  <div className="sm:col-span-2">
+                                    <input
+                                      type="text"
+                                      value={it.description || ''}
+                                      onChange={(e) =>
+                                        handleUpdateOrderItem(idx, 'description', e.target.value)
+                                      }
+                                      placeholder="Descripción técnica para inventario / tienda..."
+                                      className="w-full px-2 py-1 bg-white border border-slate-200 rounded text-xs"
+                                    />
+                                  </div>
+                                  <div className="flex items-center gap-2">
+                                    {it.imageUrl ? (
+                                      <img
+                                        src={it.imageUrl}
+                                        alt={it.name}
+                                        className="w-7 h-7 rounded object-cover border border-slate-200 shrink-0"
+                                      />
+                                    ) : (
+                                      <ImageIcon className="w-5 h-5 text-slate-400 shrink-0" />
+                                    )}
+                                    <label className="flex-1 inline-flex items-center justify-center gap-1 px-2 py-1 bg-white hover:bg-slate-100 border border-slate-200 rounded text-[11px] font-semibold cursor-pointer">
+                                      <Upload className="w-3 h-3" />
+                                      <span>{it.imageUrl ? 'Cambiar foto' : 'Subir foto'}</span>
+                                      <input
+                                        type="file"
+                                        accept="image/*"
+                                        onChange={(e) => void handleCustomPartImageUpload(e, idx)}
+                                        className="hidden"
+                                      />
+                                    </label>
+                                  </div>
+                                </div>
+                              </div>
+                            )}
                           </div>
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
-                    <div className="px-4 py-2.5 bg-slate-900 text-white flex items-center justify-between text-xs">
-                      <span className="font-semibold text-slate-300">TOTAL ORDEN DE COMPRA:</span>
-                      <div className="text-right font-mono">
-                        <span className="text-base font-extrabold text-amber-400 mr-3">
-                          {formatUSD(ordTotalUSD)}
+                    <div className="px-4 py-2.5 bg-slate-900 text-white flex flex-wrap items-center justify-between gap-2 text-xs">
+                      <div>
+                        <span className="font-semibold text-slate-300 block">
+                          TOTAL FACTURA DE COMPRA (SOLO COSTOS):
                         </span>
-                        <span className="text-emerald-400 font-semibold">
-                          {formatBs(ordTotalUSD * bcvRate)}
+                        <span className="text-[10px] text-slate-400">
+                          El precio de venta solo se aplica al inventario y no altera el total de compra.
                         </span>
                       </div>
+                      <div className="text-right font-mono">
+                        <span className="text-base font-extrabold text-amber-400">
+                          {formatUSD(ordTotalUSD)}
+                        </span>
+                        {ordCurrencyCondition === 'BS_BCV' && (
+                          <span className="ml-2 text-[11px] font-sans text-blue-300">
+                            (En Bs a tasa BCV del día de pago)
+                          </span>
+                        )}
+                      </div>
                     </div>
+                  </div>
+                )}
+
+                {(!editingOrder || !editingOrder.stockApplied) && (
+                  <label className="flex items-start gap-2.5 text-xs text-slate-800 cursor-pointer bg-emerald-50 p-3 rounded-xl border border-emerald-200">
+                    <input
+                      type="checkbox"
+                      checked={ordApplyStock}
+                      onChange={(e) => setOrdApplyStock(e.target.checked)}
+                      className="mt-0.5 rounded text-emerald-600 focus:ring-emerald-500"
+                    />
+                    <span>
+                      <strong>Ingresar directamente al Inventario al guardar:</strong> crea los repuestos nuevos con su precio de venta, categoría y ubicación, suma las cantidades compradas al stock y actualiza costo y precio de venta.
+                    </span>
+                  </label>
+                )}
+                {editingOrder?.stockApplied && (
+                  <div className="text-xs font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 px-3 py-2 rounded-xl">
+                    ✓ Los repuestos de esta orden ya ingresaron al inventario.
                   </div>
                 )}
               </div>
@@ -1882,6 +2527,56 @@ export const PurchaseOrdersView: React.FC = () => {
                     >
                       De Contado
                     </button>
+                  </div>
+
+                  {/* Condición de Pago: Divisas vs Bs a BCV */}
+                  <div className="pt-2 border-t border-slate-200/80 space-y-2">
+                    <label className="block text-[11px] font-bold uppercase tracking-wider text-slate-700">
+                      Moneda / Condición de Pago:
+                    </label>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setOrdCurrencyCondition('DIVISAS');
+                          if (!editingOrder) {
+                            setOrdPayCurrency('DIVISAS');
+                            setOrdPayMethod('Divisas ($ Efectivo)');
+                          }
+                        }}
+                        className={`py-2 px-3 rounded-xl border text-xs font-bold transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
+                          ordCurrencyCondition === 'DIVISAS'
+                            ? 'bg-emerald-600 border-emerald-700 text-white shadow-xs'
+                            : 'bg-white border-slate-200 text-slate-600'
+                        }`}
+                      >
+                        <Banknote className="w-3.5 h-3.5" />
+                        <span>En Divisas ($)</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setOrdCurrencyCondition('BS_BCV');
+                          if (!editingOrder) {
+                            setOrdPayCurrency('BS');
+                            setOrdPayMethod('Bolívares (Pago Móvil)');
+                          }
+                        }}
+                        className={`py-2 px-3 rounded-xl border text-xs font-bold transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
+                          ordCurrencyCondition === 'BS_BCV'
+                            ? 'bg-blue-600 border-blue-700 text-white shadow-xs'
+                            : 'bg-white border-slate-200 text-slate-600'
+                        }`}
+                      >
+                        <CreditCard className="w-3.5 h-3.5" />
+                        <span>En Bs a BCV</span>
+                      </button>
+                    </div>
+                    <p className="text-[11px] text-slate-500 leading-snug">
+                      {ordCurrencyCondition === 'BS_BCV'
+                        ? 'No se fija monto en Bs en la orden; el total en bolívares se calculará a la tasa BCV del día en que se realice el pago.'
+                        : 'La orden se liquida en Divisas ($ USD / USDT).'}
+                    </p>
                   </div>
 
                   {ordPaymentType === 'CREDITO' && (
@@ -1968,7 +2663,7 @@ export const PurchaseOrdersView: React.FC = () => {
                     </button>
                   </div>
 
-                  {ordReceivedStatus === 'RECIBIDA' && (
+                      {ordReceivedStatus === 'RECIBIDA' && (
                     <div className="space-y-2.5 pt-1">
                       <div>
                         <label className="block text-[11px] font-bold text-slate-700 mb-1">
@@ -1982,26 +2677,15 @@ export const PurchaseOrdersView: React.FC = () => {
                           className="w-full px-3 py-1.5 bg-white border border-slate-300 rounded-xl text-xs font-mono"
                         />
                       </div>
-                      {(!editingOrder || !editingOrder.stockApplied) && (
-                        <label className="flex items-start gap-2 text-xs text-slate-700 cursor-pointer bg-white p-2.5 rounded-xl border border-emerald-200">
-                          <input
-                            type="checkbox"
-                            checked={ordApplyStock}
-                            onChange={(e) => setOrdApplyStock(e.target.checked)}
-                            className="mt-0.5 rounded text-emerald-600 focus:ring-emerald-500"
-                          />
-                          <span>
-                            Sumar cantidades recibidas al <strong>Inventario</strong> y actualizar precio de costo ($) automáticamente.
-                          </span>
-                        </label>
-                      )}
-                      {editingOrder?.stockApplied && (
-                        <p className="text-[11px] font-semibold text-emerald-700">
-                          ✓ Las cantidades de esta orden ya fueron sumadas al inventario.
-                        </p>
-                      )}
                     </div>
                   )}
+                  <p className="text-[11px] text-slate-500 leading-snug">
+                    {editingOrder?.stockApplied
+                      ? '✓ El stock de esta orden ya fue ingresado al inventario.'
+                      : ordApplyStock
+                      ? '✓ Los repuestos se ingresarán al inventario inmediatamente al guardar.'
+                      : 'Si no activas el ingreso directo arriba, el stock se sumará cuando marques la mercancía como recibida.'}
+                  </p>
                 </div>
               </div>
 
@@ -2067,8 +2751,10 @@ export const PurchaseOrdersView: React.FC = () => {
                               placeholder="0.00"
                               className="w-40 px-3 py-2 bg-slate-50 border border-slate-300 rounded-xl text-sm font-mono font-bold text-slate-900"
                             />
-                            <span className="text-xs font-mono text-emerald-700 font-semibold">
-                              Equiv: {formatBs((parseFloat(ordInitialPaidUSD) || 0) * bcvRate)}
+                            <span className="text-xs text-slate-500">
+                              {ordCurrencyCondition === 'BS_BCV'
+                                ? 'Referencia USD (pago en Bs según tasa BCV del día)'
+                                : 'Monto en USD ($)'}
                             </span>
                           </div>
                         </div>
@@ -2243,8 +2929,10 @@ export const PurchaseOrdersView: React.FC = () => {
                       <span className="font-mono font-extrabold text-lg text-amber-900 block">
                         {formatUSD(rem)}
                       </span>
-                      <span className="font-mono text-xs text-amber-700 font-semibold">
-                        {formatBs(rem * bcvRate)}
+                      <span className="text-[11px] font-semibold text-amber-800">
+                        {paymentModalOrder.paymentCurrencyCondition === 'BS_BCV'
+                          ? 'Condición: Bs a Tasa BCV (día de pago)'
+                          : 'Condición: Divisas ($)'}
                       </span>
                     </div>
                   </div>
@@ -2284,10 +2972,12 @@ export const PurchaseOrdersView: React.FC = () => {
                   onChange={(e) => setAbonoAmountUSD(e.target.value)}
                   className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-300 rounded-xl text-base font-mono font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500"
                 />
-                <p className="text-xs font-mono text-emerald-700 font-semibold mt-1">
-                  Equivalente en Bolívares (BCV {bcvRate.toFixed(2)}):{' '}
-                  {formatBs((parseFloat(abonoAmountUSD) || 0) * bcvRate)}
-                </p>
+                {abonoCurrency === 'BS' && (
+                  <p className="text-xs font-mono text-emerald-700 font-semibold mt-1">
+                    Monto a transferir hoy en Bs (BCV {bcvRate.toFixed(2)}):{' '}
+                    {formatBs((parseFloat(abonoAmountUSD) || 0) * bcvRate)}
+                  </p>
+                )}
               </div>
 
               <div>
@@ -2527,6 +3217,23 @@ export const PurchaseOrdersView: React.FC = () => {
                 </div>
               </div>
 
+              <div className="flex flex-wrap items-center justify-between gap-2 bg-slate-50 px-3.5 py-2.5 rounded-xl border border-slate-200">
+                <span className="text-slate-600 font-semibold">
+                  Condición: <strong className="text-slate-900">{detailOrder.paymentType === 'CREDITO' ? `A Crédito (${detailOrder.creditDays || 15} días)` : 'De Contado'}</strong>
+                </span>
+                <span
+                  className={`font-bold px-2.5 py-0.5 rounded-md ${
+                    detailOrder.paymentCurrencyCondition === 'BS_BCV'
+                      ? 'bg-blue-100 text-blue-800'
+                      : 'bg-emerald-100 text-emerald-800'
+                  }`}
+                >
+                  {detailOrder.paymentCurrencyCondition === 'BS_BCV'
+                    ? 'Moneda de Pago: Bs a Tasa BCV (según día de pago)'
+                    : 'Moneda de Pago: Divisas ($ USD)'}
+                </span>
+              </div>
+
               <div>
                 <h4 className="font-bold text-slate-800 mb-2">
                   Historial de Pagos y Abonos ({detailOrder.payments?.length || 0})
@@ -2561,9 +3268,11 @@ export const PurchaseOrdersView: React.FC = () => {
                           <span className="font-bold text-emerald-700 block">
                             {formatUSD(pay.amountUSD)}
                           </span>
-                          <span className="text-[10px] text-slate-500">
-                            {formatBs(pay.amountBs)}
-                          </span>
+                          {pay.currencyCategory === 'BS' && pay.amountBs > 0 && (
+                            <span className="text-[10px] text-slate-500">
+                              {formatBs(pay.amountBs)}
+                            </span>
+                          )}
                         </div>
                       </div>
                     ))}

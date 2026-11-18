@@ -377,10 +377,18 @@ export interface PurchaseOrderItem {
   id?: string;
   productId?: string;
   sku?: string;
+  barcode?: string;
   name: string;
   category?: string;
+  description?: string;
+  brand?: string;
+  compatibility?: string;
+  warehouseLocation?: string;
+  imageUrl?: string;
   quantity: number;
   unitCostUSD: number;
+  salePriceUSD?: number; // Precio de venta para inventario ($) — no se suma al total de la orden de compra
+  minStock?: number;
   totalCostUSD: number;
   isNewProduct?: boolean;
 }
@@ -399,6 +407,7 @@ export interface PurchasePaymentRecord {
 
 export type PurchaseOrderPaymentStatus = 'PENDIENTE' | 'PARCIAL' | 'PAGADO';
 export type PurchaseOrderReceivedStatus = 'PENDIENTE' | 'RECIBIDA';
+export type PurchaseOrderCurrencyCondition = 'DIVISAS' | 'BS_BCV';
 
 export interface PurchaseOrder {
   id: string;
@@ -414,6 +423,7 @@ export interface PurchaseOrder {
   bcvRate: number;
   totalBs: number;
   paymentType: 'CONTADO' | 'CREDITO';
+  paymentCurrencyCondition?: PurchaseOrderCurrencyCondition; // 'DIVISAS' | 'BS_BCV'
   creditDays?: number; // Días de crédito si paymentType === 'CREDITO'
   creditDueDate?: string; // Fecha de vencimiento YYYY-MM-DD
   paymentStatus: PurchaseOrderPaymentStatus; // 'PENDIENTE' | 'PARCIAL' | 'PAGADO'
@@ -463,6 +473,69 @@ export interface BusinessExpense {
   paymentCurrencyType: ExpensePaymentCurrency; // 'BS' | 'USDT' | 'EFECTIVO_BS' | 'EFECTIVO_USD'
   paymentMethod: ExpensePaymentMethod;
   reference?: string; // Número de referencia o comprobante
+  notes?: string;
+  createdAt: string;
+  updatedAt?: string;
+}
+
+export type TreasuryAccountGroup = 'EFECTIVO' | 'BANCO_NACIONAL' | 'BILLETERA_DIVISAS';
+
+export interface TreasuryAccount {
+  id: string;
+  name: string; // Ej: Caja Efectivo USD, Banco Mercantil Bs, Binance USDT
+  group: TreasuryAccountGroup;
+  currency: 'USD' | 'BS' | 'USDT';
+  balanceUSD: number; // Saldo actual equivalente en USD
+  nativeBalance: number; // Saldo en moneda nativa de la cuenta (Bs o USD/USDT)
+  institution?: string; // Ej: Banesco, Mercantil, Binance, Caja Mostrador
+  accountNumber?: string; // Últimos dígitos o identificador opcional
+  notes?: string;
+  createdAt: string;
+  updatedAt?: string;
+}
+
+export type TreasuryCommitmentCategory = 'GASTOS_FIJOS' | 'NOMINA_SUELDOS' | 'PROVEEDORES';
+
+export type TreasuryCommitmentDisplayStatus = 'PAGADO' | 'PENDIENTE' | 'PROXIMO_VENCER';
+
+export interface TreasuryCommitment {
+  id: string;
+  title: string; // Ej: Alquiler local, Sueldo mecánico, Factura proveedor X
+  category: TreasuryCommitmentCategory;
+  dueDate: string; // Fecha límite YYYY-MM-DD
+  amountUSD: number;
+  bcvRate: number;
+  amountBs: number;
+  reservedUSD?: number; // Monto apartado para cobertura
+  isPaid: boolean;
+  paidAt?: string;
+  paidAccountId?: string;
+  paidAccountName?: string;
+  linkedPurchaseOrderId?: string;
+  isRecurringMonthly?: boolean;
+  notes?: string;
+  createdAt: string;
+  updatedAt?: string;
+}
+
+export type TreasuryMovementType = 'INGRESO' | 'GASTO' | 'PAGO_PLANIFICADO';
+
+export interface TreasuryMovement {
+  id: string;
+  movementNumber: string; // MOV-2026-0001
+  date: string; // YYYY-MM-DD
+  type: TreasuryMovementType;
+  accountId: string;
+  accountName: string;
+  accountGroup: TreasuryAccountGroup;
+  category: string;
+  description: string;
+  amountUSD: number;
+  bcvRate: number;
+  amountBs: number;
+  reference?: string;
+  commitmentId?: string;
+  expenseId?: string;
   notes?: string;
   createdAt: string;
   updatedAt?: string;

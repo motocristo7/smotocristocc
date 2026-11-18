@@ -23,6 +23,9 @@ import {
   Supplier,
   PurchaseOrder,
   BusinessExpense,
+  TreasuryAccount,
+  TreasuryCommitment,
+  TreasuryMovement,
 } from '../types';
 
 export interface SnapshotSyncMeta {
@@ -42,6 +45,9 @@ export interface DeletedIdsMap {
   suppliers: string[];
   purchaseOrders: string[];
   expenses: string[];
+  treasuryAccounts: string[];
+  treasuryCommitments: string[];
+  treasuryMovements: string[];
 }
 
 export const EMPTY_DELETED_IDS: DeletedIdsMap = {
@@ -56,6 +62,9 @@ export const EMPTY_DELETED_IDS: DeletedIdsMap = {
   suppliers: [],
   purchaseOrders: [],
   expenses: [],
+  treasuryAccounts: [],
+  treasuryCommitments: [],
+  treasuryMovements: [],
 };
 
 // Recursively remove undefined values because Firestore throws on undefined fields
@@ -408,6 +417,84 @@ export function subscribeToExpenses(callback: (expenses: BusinessExpense[], meta
   }
 }
 
+// Real-time listener for treasury accounts
+export function subscribeToTreasuryAccounts(callback: (accounts: TreasuryAccount[], meta: SnapshotSyncMeta) => void) {
+  try {
+    const colRef = collection(db, 'treasuryAccounts');
+    return onSnapshot(
+      colRef,
+      (snapshot) => {
+        const list: TreasuryAccount[] = [];
+        snapshot.forEach((docSnap) => {
+          list.push({ ...(docSnap.data() as TreasuryAccount), id: docSnap.id });
+        });
+        callback(list, {
+          hasPendingWrites: snapshot.metadata.hasPendingWrites,
+          fromCache: snapshot.metadata.fromCache,
+        });
+      },
+      (error) => {
+        logFirestoreError(error, OperationType.GET, 'treasuryAccounts');
+      }
+    );
+  } catch (error) {
+    console.warn('Error starting treasuryAccounts listener:', error);
+    return () => {};
+  }
+}
+
+// Real-time listener for treasury commitments
+export function subscribeToTreasuryCommitments(callback: (commitments: TreasuryCommitment[], meta: SnapshotSyncMeta) => void) {
+  try {
+    const colRef = collection(db, 'treasuryCommitments');
+    return onSnapshot(
+      colRef,
+      (snapshot) => {
+        const list: TreasuryCommitment[] = [];
+        snapshot.forEach((docSnap) => {
+          list.push({ ...(docSnap.data() as TreasuryCommitment), id: docSnap.id });
+        });
+        callback(list, {
+          hasPendingWrites: snapshot.metadata.hasPendingWrites,
+          fromCache: snapshot.metadata.fromCache,
+        });
+      },
+      (error) => {
+        logFirestoreError(error, OperationType.GET, 'treasuryCommitments');
+      }
+    );
+  } catch (error) {
+    console.warn('Error starting treasuryCommitments listener:', error);
+    return () => {};
+  }
+}
+
+// Real-time listener for treasury movements
+export function subscribeToTreasuryMovements(callback: (movements: TreasuryMovement[], meta: SnapshotSyncMeta) => void) {
+  try {
+    const colRef = collection(db, 'treasuryMovements');
+    return onSnapshot(
+      colRef,
+      (snapshot) => {
+        const list: TreasuryMovement[] = [];
+        snapshot.forEach((docSnap) => {
+          list.push({ ...(docSnap.data() as TreasuryMovement), id: docSnap.id });
+        });
+        callback(list, {
+          hasPendingWrites: snapshot.metadata.hasPendingWrites,
+          fromCache: snapshot.metadata.fromCache,
+        });
+      },
+      (error) => {
+        logFirestoreError(error, OperationType.GET, 'treasuryMovements');
+      }
+    );
+  } catch (error) {
+    console.warn('Error starting treasuryMovements listener:', error);
+    return () => {};
+  }
+}
+
 // One-shot fetch for deleted IDs tombstones before starting collection listeners
 export async function fetchDeletedIdsFromFirestore(): Promise<DeletedIdsMap | null> {
   try {
@@ -427,6 +514,9 @@ export async function fetchDeletedIdsFromFirestore(): Promise<DeletedIdsMap | nu
       suppliers: Array.isArray(data.suppliers) ? data.suppliers : [],
       purchaseOrders: Array.isArray(data.purchaseOrders) ? data.purchaseOrders : [],
       expenses: Array.isArray(data.expenses) ? data.expenses : [],
+      treasuryAccounts: Array.isArray(data.treasuryAccounts) ? data.treasuryAccounts : [],
+      treasuryCommitments: Array.isArray(data.treasuryCommitments) ? data.treasuryCommitments : [],
+      treasuryMovements: Array.isArray(data.treasuryMovements) ? data.treasuryMovements : [],
     };
   } catch (error) {
     console.warn('Error fetching deletedIds registry:', error);
@@ -455,6 +545,9 @@ export function subscribeToDeletedIds(callback: (deletedIds: DeletedIdsMap) => v
             suppliers: Array.isArray(data.suppliers) ? data.suppliers : [],
             purchaseOrders: Array.isArray(data.purchaseOrders) ? data.purchaseOrders : [],
             expenses: Array.isArray(data.expenses) ? data.expenses : [],
+            treasuryAccounts: Array.isArray(data.treasuryAccounts) ? data.treasuryAccounts : [],
+            treasuryCommitments: Array.isArray(data.treasuryCommitments) ? data.treasuryCommitments : [],
+            treasuryMovements: Array.isArray(data.treasuryMovements) ? data.treasuryMovements : [],
           });
         }
       },
@@ -684,6 +777,54 @@ export async function removeExpenseFromFirestore(expenseId: string): Promise<voi
   }
 }
 
+export async function syncTreasuryAccountToFirestore(account: TreasuryAccount): Promise<void> {
+  try {
+    await setDoc(doc(db, 'treasuryAccounts', account.id), stripUndefined(account));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, `treasuryAccounts/${account.id}`);
+  }
+}
+
+export async function removeTreasuryAccountFromFirestore(accountId: string): Promise<void> {
+  try {
+    await deleteDoc(doc(db, 'treasuryAccounts', accountId));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, `treasuryAccounts/${accountId}`);
+  }
+}
+
+export async function syncTreasuryCommitmentToFirestore(commitment: TreasuryCommitment): Promise<void> {
+  try {
+    await setDoc(doc(db, 'treasuryCommitments', commitment.id), stripUndefined(commitment));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, `treasuryCommitments/${commitment.id}`);
+  }
+}
+
+export async function removeTreasuryCommitmentFromFirestore(commitmentId: string): Promise<void> {
+  try {
+    await deleteDoc(doc(db, 'treasuryCommitments', commitmentId));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, `treasuryCommitments/${commitmentId}`);
+  }
+}
+
+export async function syncTreasuryMovementToFirestore(movement: TreasuryMovement): Promise<void> {
+  try {
+    await setDoc(doc(db, 'treasuryMovements', movement.id), stripUndefined(movement));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, `treasuryMovements/${movement.id}`);
+  }
+}
+
+export async function removeTreasuryMovementFromFirestore(movementId: string): Promise<void> {
+  try {
+    await deleteDoc(doc(db, 'treasuryMovements', movementId));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, `treasuryMovements/${movementId}`);
+  }
+}
+
 export async function recordDeletedIdsInFirestore(
   category: keyof DeletedIdsMap,
   ids: string[]
@@ -722,6 +863,9 @@ export async function uploadAllToFirestore(data: {
   suppliers?: Supplier[];
   purchaseOrders?: PurchaseOrder[];
   expenses?: BusinessExpense[];
+  treasuryAccounts?: TreasuryAccount[];
+  treasuryCommitments?: TreasuryCommitment[];
+  treasuryMovements?: TreasuryMovement[];
   users?: AppUser[];
   deletedIds?: DeletedIdsMap;
 }): Promise<{ success: boolean; count: number }> {
@@ -769,6 +913,15 @@ export async function uploadAllToFirestore(data: {
       }
       for (const id of data.deletedIds.expenses || []) {
         await deleteDoc(doc(db, 'expenses', id)).catch(() => {});
+      }
+      for (const id of data.deletedIds.treasuryAccounts || []) {
+        await deleteDoc(doc(db, 'treasuryAccounts', id)).catch(() => {});
+      }
+      for (const id of data.deletedIds.treasuryCommitments || []) {
+        await deleteDoc(doc(db, 'treasuryCommitments', id)).catch(() => {});
+      }
+      for (const id of data.deletedIds.treasuryMovements || []) {
+        await deleteDoc(doc(db, 'treasuryMovements', id)).catch(() => {});
       }
     }
 
@@ -853,6 +1006,28 @@ export async function uploadAllToFirestore(data: {
     if (Array.isArray(data.expenses) && data.expenses.length > 0) {
       for (const exp of data.expenses) {
         await setDoc(doc(db, 'expenses', exp.id), stripUndefined(exp));
+        totalCount++;
+      }
+    }
+
+    // 11. Treasury Accounts, Commitments & Movements
+    if (Array.isArray(data.treasuryAccounts) && data.treasuryAccounts.length > 0) {
+      for (const acc of data.treasuryAccounts) {
+        await setDoc(doc(db, 'treasuryAccounts', acc.id), stripUndefined(acc));
+        totalCount++;
+      }
+    }
+
+    if (Array.isArray(data.treasuryCommitments) && data.treasuryCommitments.length > 0) {
+      for (const cm of data.treasuryCommitments) {
+        await setDoc(doc(db, 'treasuryCommitments', cm.id), stripUndefined(cm));
+        totalCount++;
+      }
+    }
+
+    if (Array.isArray(data.treasuryMovements) && data.treasuryMovements.length > 0) {
+      for (const mv of data.treasuryMovements) {
+        await setDoc(doc(db, 'treasuryMovements', mv.id), stripUndefined(mv));
         totalCount++;
       }
     }

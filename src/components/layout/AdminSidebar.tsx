@@ -21,6 +21,7 @@ import {
   BadgePercent,
   Truck,
   Receipt,
+  Landmark,
 } from 'lucide-react';
 
 interface NavItem {
@@ -46,6 +47,7 @@ export const AdminSidebar: React.FC = () => {
     pendingCreditSales,
     purchaseOrders,
     pendingReceptionOrdersCount,
+    treasuryCommitments,
     enterPublicStore,
     onlineStoreBrand,
   } = useApp();
@@ -68,6 +70,8 @@ export const AdminSidebar: React.FC = () => {
     (po) => Math.max(0, po.totalUSD - (po.paidAmountUSD || 0)) > 0.01
   ).length;
   const purchaseBadgeCount = Math.max(pendingPurchasePayCount, pendingReceptionOrdersCount);
+
+  const pendingTreasuryCount = treasuryCommitments.filter((c) => !c.isPaid).length;
 
   const pendingCreditCount = pendingCreditSales.length;
 
@@ -109,6 +113,13 @@ export const AdminSidebar: React.FC = () => {
       label: 'Gastos del Negocio',
       shortLabel: 'Gastos',
       icon: Receipt,
+    },
+    {
+      view: 'admin_tesoreria',
+      label: 'Tesorería y Finanzas',
+      shortLabel: 'Tesorería',
+      icon: Landmark,
+      badge: pendingTreasuryCount > 0 ? pendingTreasuryCount : undefined,
     },
     {
       view: 'admin_inventario',

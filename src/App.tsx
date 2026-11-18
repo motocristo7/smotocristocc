@@ -10,6 +10,7 @@ import { SalesDatabaseView } from './components/admin/SalesDatabaseView';
 import { AccountsReceivableView } from './components/admin/AccountsReceivableView';
 import { PurchaseOrdersView } from './components/admin/PurchaseOrdersView';
 import { ExpensesView } from './components/admin/ExpensesView';
+import { TreasuryFinanceView } from './components/admin/TreasuryFinanceView';
 import { InventoryView } from './components/admin/InventoryView';
 import { ServiceOrdersView } from './components/admin/ServiceOrdersView';
 import { CommissionsView } from './components/admin/CommissionsView';
@@ -77,6 +78,7 @@ const AppContent: React.FC = () => {
               {currentView === 'admin_cuentas_cobrar' && <AccountsReceivableView />}
               {currentView === 'admin_compras' && <PurchaseOrdersView />}
               {currentView === 'admin_gastos' && <ExpensesView />}
+              {currentView === 'admin_tesoreria' && <TreasuryFinanceView />}
               {currentView === 'admin_inventario' && <InventoryView />}
               {currentView === 'admin_taller' && <ServiceOrdersView />}
               {currentView === 'admin_comisiones' && <CommissionsView />}

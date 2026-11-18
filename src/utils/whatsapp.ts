@@ -701,11 +701,10 @@ export function buildPurchaseOrderDebtWhatsAppMessage(
   order: PurchaseOrder,
   settings: BusinessSettings
 ): { message: string; url: string } {
-  const rate = settings.bcvRate || order.bcvRate;
   const businessName = (settings.commercialName || settings.name || 'MotoCristoc').toUpperCase();
   const remainingUSD = Math.max(0, Math.round((order.totalUSD - (order.paidAmountUSD || 0)) * 100) / 100);
-  const remainingBs = remainingUSD * rate;
   const isCredit = order.paymentType === 'CREDITO';
+  const isBsBcv = order.paymentCurrencyCondition === 'BS_BCV';
 
   const itemsText =
     order.items.length > 0
@@ -726,10 +725,19 @@ export function buildPurchaseOrderDebtWhatsAppMessage(
     ? `📌 *Condición:* A CRÉDITO (${order.creditDays || 15} días${order.creditDueDate ? ` · Vence: ${order.creditDueDate}` : ''})`
     : `📌 *Condición:* DE CONTADO`;
 
+  const currencyConditionLine = isBsBcv
+    ? `💱 *Modalidad de Pago:* *Bs a Tasa BCV* (del día en que se realice el pago)`
+    : `💱 *Modalidad de Pago:* *Divisas ($ USD)*`;
+
   const statusLine =
     remainingUSD <= 0.01
       ? `✅ *ESTADO:* *FACTURA CANCELADA AL 100% ($0.00 pendiente)*`
-      : `🚨 *MONTO ACTUAL QUE SE DEBE:* *${formatUSD(remainingUSD)}* | *${formatBs(remainingBs)}*`;
+      : `🚨 *MONTO ACTUAL QUE SE DEBE:* *${formatUSD(remainingUSD)}*`;
+
+  const bcvNote =
+    isBsBcv && remainingUSD > 0.01
+      ? `\n_(El equivalente en Bolívares se calcula a la tasa BCV vigente el día del pago)_`
+      : '';
 
   const message = `📦 *ORDEN DE COMPRA / ESTADO DE FACTURA* · *${businessName}*
 ───────────────────────
@@ -738,15 +746,15 @@ Hola *${order.vendorName || order.supplierName}*, te saludamos de *${businessNam
 🏢 *Proveedor:* ${order.supplierName} (Cód: *${order.supplierCode}*)
 🧾 *Orden de Compra:* #${order.orderNumber}${order.supplierInvoiceNumber ? `\n📄 *Factura Proveedor:* #${order.supplierInvoiceNumber}` : ''}
 ${creditLine}
+${currencyConditionLine}
 ${receptionLine}
 
 🔩 *Repuestos solicitados:*
 ${itemsText}
 
 ───────────────────────
-💵 *Total de la Factura:* ${formatUSD(order.totalUSD)} (${formatBs(order.totalUSD * rate)})
-${(order.paidAmountUSD || 0) > 0 ? `✅ *Total Abonado:* ${formatUSD(order.paidAmountUSD)}\n` : ''}${statusLine}
-_(Calculado a Tasa BCV: Bs. ${rate.toFixed(2)})_
+💵 *Total de la Factura:* ${formatUSD(order.totalUSD)}
+${(order.paidAmountUSD || 0) > 0 ? `✅ *Total Abonado:* ${formatUSD(order.paidAmountUSD)}\n` : ''}${statusLine}${bcvNote}
 
 📎 Te adjuntamos la factura / orden de compra en *PDF* con el detalle completo. ¡Saludos!`;
 
@@ -765,16 +773,15 @@ export function buildPurchaseOrderPaymentWhatsAppMessage(
 ): { message: string; url: string } {
   const rate = settings.bcvRate || payment.bcvRate || order.bcvRate;
   const businessName = (settings.commercialName || settings.name || 'MotoCristoc').toUpperCase();
+  const isBsBcv = order.paymentCurrencyCondition === 'BS_BCV';
 
   const totalPaidAfterUSD = Math.round((order.paidAmountUSD || 0) * 100) / 100;
   const remainingOrderUSD = Math.max(0, Math.round((order.totalUSD - totalPaidAfterUSD) * 100) / 100);
-  const remainingOrderBs = remainingOrderUSD * rate;
 
   const totalDebtAfterUSD =
     totalSupplierDebtAfterUSD !== undefined
       ? Math.max(0, Math.round(totalSupplierDebtAfterUSD * 100) / 100)
       : remainingOrderUSD;
-  const totalDebtAfterBs = totalDebtAfterUSD * rate;
 
   const dateStr = new Date(payment.date).toLocaleString('es-VE', {
     day: '2-digit',
@@ -786,16 +793,30 @@ export function buildPurchaseOrderPaymentWhatsAppMessage(
 
   const hasOtherPendingOrders = Math.abs(totalDebtAfterUSD - remainingOrderUSD) > 0.01;
 
+  const abonoBsPart =
+    payment.currencyCategory === 'BS'
+      ? ` | *${formatBs(payment.amountBs || payment.amountUSD * rate)}* (BCV ${rate.toFixed(2)})`
+      : '';
+
+  const currencyConditionLabel = isBsBcv
+    ? 'Bs a Tasa BCV (del día de pago)'
+    : 'Divisas ($ USD)';
+
   const balanceLine =
     remainingOrderUSD <= 0.01
       ? `🎉 *ESTADO DE ESTA FACTURA:* *PAGADA AL 100% ($0.00 pendiente)*`
-      : `🚨 *SALDO RESTANTE QUE SE DEBE EN ESTA FACTURA:* *${formatUSD(remainingOrderUSD)}* | *${formatBs(remainingOrderBs)}*`;
+      : `🚨 *SALDO RESTANTE QUE SE DEBE EN ESTA FACTURA:* *${formatUSD(remainingOrderUSD)}*`;
 
   const consolidatedDebtLine = hasOtherPendingOrders
-    ? `\n📌 *DEUDA TOTAL ACTUAL CON ${order.supplierName.toUpperCase()}:* *${formatUSD(totalDebtAfterUSD)}* | *${formatBs(totalDebtAfterBs)}*`
+    ? `\n📌 *DEUDA TOTAL ACTUAL CON ${order.supplierName.toUpperCase()}:* *${formatUSD(totalDebtAfterUSD)}*`
     : totalDebtAfterUSD <= 0.01
     ? `\n🟢 *SALDO TOTAL CON EL PROVEEDOR:* *$0.00 (AL DÍA)*`
     : '';
+
+  const bcvNote =
+    isBsBcv && remainingOrderUSD > 0.01
+      ? `\n_(El saldo restante en Bolívares se calcula a la tasa BCV del día en que realice el próximo abono)_`
+      : '';
 
   const message = `✅ *NOTIFICACIÓN DE ABONO / PAGO A PROVEEDOR* · *${businessName}*
 ───────────────────────
@@ -803,15 +824,15 @@ Hola *${order.vendorName || order.supplierName}*, hemos registrado un pago / abo
 
 🏢 *Proveedor:* ${order.supplierName} (Cód: *${order.supplierCode}*)
 🧾 *Orden de Compra:* #${order.orderNumber}${order.supplierInvoiceNumber ? ` | *Fact. Prov:* #${order.supplierInvoiceNumber}` : ''}
+💱 *Condición Pactada:* ${currencyConditionLabel}
 📅 *Fecha del Abono:* ${dateStr}
 
-💵 *MONTO ABONADO HOY:* *${formatUSD(payment.amountUSD)}* | *${formatBs(payment.amountBs || payment.amountUSD * rate)}*
+💵 *MONTO ABONADO HOY:* *${formatUSD(payment.amountUSD)}*${abonoBsPart}
 💳 *Forma de Pago:* ${payment.paymentMethod}
 ${payment.reference ? `🔖 *Referencia / Comprobante:* ${payment.reference}\n` : ''}${payment.notes ? `📝 *Nota:* ${payment.notes}\n` : ''}───────────────────────
 📊 *Total de la Factura:* ${formatUSD(order.totalUSD)}
 ✅ *Total Abonado Acumulado:* ${formatUSD(totalPaidAfterUSD)}
-${balanceLine}${consolidatedDebtLine}
-_(Calculado a Tasa BCV: Bs. ${rate.toFixed(2)})_
+${balanceLine}${consolidatedDebtLine}${bcvNote}
 
 📎 Adjunto te enviamos el comprobante / estado de cuenta actualizado en *PDF*. ¡Muchas gracias!`;
 

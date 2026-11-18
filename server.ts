@@ -91,6 +91,9 @@ interface DeletedIdsMap {
   suppliers: string[];
   purchaseOrders: string[];
   expenses: string[];
+  treasuryAccounts: string[];
+  treasuryCommitments: string[];
+  treasuryMovements: string[];
 }
 
 const EMPTY_DELETED_IDS: DeletedIdsMap = {
@@ -105,6 +108,9 @@ const EMPTY_DELETED_IDS: DeletedIdsMap = {
   suppliers: [],
   purchaseOrders: [],
   expenses: [],
+  treasuryAccounts: [],
+  treasuryCommitments: [],
+  treasuryMovements: [],
 };
 
 function mergeDeletedIds(a?: Partial<DeletedIdsMap>, b?: Partial<DeletedIdsMap>): DeletedIdsMap {
@@ -120,6 +126,9 @@ function mergeDeletedIds(a?: Partial<DeletedIdsMap>, b?: Partial<DeletedIdsMap>)
     suppliers: Array.from(new Set([...(a?.suppliers || []), ...(b?.suppliers || [])])),
     purchaseOrders: Array.from(new Set([...(a?.purchaseOrders || []), ...(b?.purchaseOrders || [])])),
     expenses: Array.from(new Set([...(a?.expenses || []), ...(b?.expenses || [])])),
+    treasuryAccounts: Array.from(new Set([...(a?.treasuryAccounts || []), ...(b?.treasuryAccounts || [])])),
+    treasuryCommitments: Array.from(new Set([...(a?.treasuryCommitments || []), ...(b?.treasuryCommitments || [])])),
+    treasuryMovements: Array.from(new Set([...(a?.treasuryMovements || []), ...(b?.treasuryMovements || [])])),
   };
 }
 
@@ -136,6 +145,9 @@ interface AppDatabase {
   suppliers: any[];
   purchaseOrders: any[];
   expenses: any[];
+  treasuryAccounts: any[];
+  treasuryCommitments: any[];
+  treasuryMovements: any[];
   users: any[];
   deletedIds: DeletedIdsMap;
   updatedAt: string;
@@ -155,6 +167,9 @@ function getInitialDatabase(): AppDatabase {
     suppliers: [],
     purchaseOrders: [],
     expenses: [],
+    treasuryAccounts: [],
+    treasuryCommitments: [],
+    treasuryMovements: [],
     users: [DEFAULT_ADMIN_USER],
     deletedIds: { ...EMPTY_DELETED_IDS, sales: ['sale-102', 'sale-103'] },
     updatedAt: new Date().toISOString(),
@@ -191,6 +206,9 @@ function readDatabase(): AppDatabase {
       const deletedSupplierSet = new Set(deletedIds.suppliers);
       const deletedPurchaseOrderSet = new Set(deletedIds.purchaseOrders);
       const deletedExpenseSet = new Set(deletedIds.expenses);
+      const deletedTreasuryAccountSet = new Set(deletedIds.treasuryAccounts);
+      const deletedTreasuryCommitmentSet = new Set(deletedIds.treasuryCommitments);
+      const deletedTreasuryMovementSet = new Set(deletedIds.treasuryMovements);
 
       return {
         settings: parsed.settings || INITIAL_SETTINGS,
@@ -205,6 +223,9 @@ function readDatabase(): AppDatabase {
         suppliers: (Array.isArray(parsed.suppliers) ? parsed.suppliers : []).filter((s: any) => !deletedSupplierSet.has(s.id)),
         purchaseOrders: (Array.isArray(parsed.purchaseOrders) ? parsed.purchaseOrders : []).filter((po: any) => !deletedPurchaseOrderSet.has(po.id)),
         expenses: (Array.isArray(parsed.expenses) ? parsed.expenses : []).filter((ex: any) => !deletedExpenseSet.has(ex.id)),
+        treasuryAccounts: (Array.isArray(parsed.treasuryAccounts) ? parsed.treasuryAccounts : []).filter((acc: any) => !deletedTreasuryAccountSet.has(acc.id)),
+        treasuryCommitments: (Array.isArray(parsed.treasuryCommitments) ? parsed.treasuryCommitments : []).filter((cm: any) => !deletedTreasuryCommitmentSet.has(cm.id)),
+        treasuryMovements: (Array.isArray(parsed.treasuryMovements) ? parsed.treasuryMovements : []).filter((mv: any) => !deletedTreasuryMovementSet.has(mv.id)),
         users: guaranteedUsers,
         deletedIds,
         updatedAt: parsed.updatedAt || new Date().toISOString(),
@@ -283,6 +304,9 @@ function writeDatabase(
     const deletedSupplierSet = new Set(mergedDeletedIds.suppliers);
     const deletedPurchaseOrderSet = new Set(mergedDeletedIds.purchaseOrders);
     const deletedExpenseSet = new Set(mergedDeletedIds.expenses);
+    const deletedTreasuryAccountSet = new Set(mergedDeletedIds.treasuryAccounts);
+    const deletedTreasuryCommitmentSet = new Set(mergedDeletedIds.treasuryCommitments);
+    const deletedTreasuryMovementSet = new Set(mergedDeletedIds.treasuryMovements);
 
     const rawProducts = Array.isArray(data.products)
       ? mergeCollections
@@ -339,6 +363,21 @@ function writeDatabase(
         ? mergeCollectionById(current.expenses || [], data.expenses, deletedExpenseSet)
         : data.expenses
       : current.expenses || [];
+    const rawTreasuryAccounts = Array.isArray(data.treasuryAccounts)
+      ? mergeCollections
+        ? mergeCollectionById(current.treasuryAccounts || [], data.treasuryAccounts, deletedTreasuryAccountSet)
+        : data.treasuryAccounts
+      : current.treasuryAccounts || [];
+    const rawTreasuryCommitments = Array.isArray(data.treasuryCommitments)
+      ? mergeCollections
+        ? mergeCollectionById(current.treasuryCommitments || [], data.treasuryCommitments, deletedTreasuryCommitmentSet)
+        : data.treasuryCommitments
+      : current.treasuryCommitments || [];
+    const rawTreasuryMovements = Array.isArray(data.treasuryMovements)
+      ? mergeCollections
+        ? mergeCollectionById(current.treasuryMovements || [], data.treasuryMovements, deletedTreasuryMovementSet)
+        : data.treasuryMovements
+      : current.treasuryMovements || [];
 
     const updated: AppDatabase = {
       ...current,
@@ -354,6 +393,9 @@ function writeDatabase(
       suppliers: Array.isArray(rawSuppliers) ? rawSuppliers.filter((s: any) => !deletedSupplierSet.has(s.id)) : [],
       purchaseOrders: Array.isArray(rawPurchaseOrders) ? rawPurchaseOrders.filter((po: any) => !deletedPurchaseOrderSet.has(po.id)) : [],
       expenses: Array.isArray(rawExpenses) ? rawExpenses.filter((ex: any) => !deletedExpenseSet.has(ex.id)) : [],
+      treasuryAccounts: Array.isArray(rawTreasuryAccounts) ? rawTreasuryAccounts.filter((acc: any) => !deletedTreasuryAccountSet.has(acc.id)) : [],
+      treasuryCommitments: Array.isArray(rawTreasuryCommitments) ? rawTreasuryCommitments.filter((cm: any) => !deletedTreasuryCommitmentSet.has(cm.id)) : [],
+      treasuryMovements: Array.isArray(rawTreasuryMovements) ? rawTreasuryMovements.filter((mv: any) => !deletedTreasuryMovementSet.has(mv.id)) : [],
       deletedIds: mergedDeletedIds,
       updatedAt: new Date().toISOString(),
     };

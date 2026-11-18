@@ -31,6 +31,12 @@ import {
   ExpensePaymentCurrency,
   ExpensePaymentMethod,
   BusinessExpense,
+  TreasuryAccountGroup,
+  TreasuryAccount,
+  TreasuryCommitmentCategory,
+  TreasuryCommitment,
+  TreasuryMovementType,
+  TreasuryMovement,
 } from '../types';
 import {
   INITIAL_SETTINGS,
@@ -57,6 +63,9 @@ import {
   subscribeToSuppliers,
   subscribeToPurchaseOrders,
   subscribeToExpenses,
+  subscribeToTreasuryAccounts,
+  subscribeToTreasuryCommitments,
+  subscribeToTreasuryMovements,
   subscribeToDeletedIds,
   fetchDeletedIdsFromFirestore,
   syncProductToFirestore,
@@ -82,6 +91,12 @@ import {
   removePurchaseOrderFromFirestore,
   syncExpenseToFirestore,
   removeExpenseFromFirestore,
+  syncTreasuryAccountToFirestore,
+  removeTreasuryAccountFromFirestore,
+  syncTreasuryCommitmentToFirestore,
+  removeTreasuryCommitmentFromFirestore,
+  syncTreasuryMovementToFirestore,
+  removeTreasuryMovementFromFirestore,
   recordDeletedIdsInFirestore,
   clearDeletedIdsInFirestore,
   uploadAllToFirestore,
@@ -153,6 +168,9 @@ function mergeDeletedMaps(a?: Partial<DeletedIdsMap>, b?: Partial<DeletedIdsMap>
     suppliers: Array.from(new Set([...(a?.suppliers || []), ...(b?.suppliers || [])])),
     purchaseOrders: Array.from(new Set([...(a?.purchaseOrders || []), ...(b?.purchaseOrders || [])])),
     expenses: Array.from(new Set([...(a?.expenses || []), ...(b?.expenses || [])])),
+    treasuryAccounts: Array.from(new Set([...(a?.treasuryAccounts || []), ...(b?.treasuryAccounts || [])])),
+    treasuryCommitments: Array.from(new Set([...(a?.treasuryCommitments || []), ...(b?.treasuryCommitments || [])])),
+    treasuryMovements: Array.from(new Set([...(a?.treasuryMovements || []), ...(b?.treasuryMovements || [])])),
   };
 }
 
@@ -165,6 +183,7 @@ export type AppView =
   | 'admin_cuentas_cobrar'
   | 'admin_compras'
   | 'admin_gastos'
+  | 'admin_tesoreria'
   | 'admin_inventario'
   | 'admin_taller'
   | 'admin_comisiones'
@@ -368,6 +387,7 @@ interface AppContextType {
     supplierInvoiceNumber?: string;
     items: PurchaseOrderItem[];
     paymentType: 'CONTADO' | 'CREDITO';
+    paymentCurrencyCondition?: 'DIVISAS' | 'BS_BCV';
     creditDays?: number;
     creditDueDate?: string;
     isPaidImmediately?: boolean;
@@ -432,6 +452,76 @@ interface AppContextType {
   totalExpensesBs: number;
   currentMonthExpensesUSD: number;
   currentMonthExpensesBs: number;
+
+  // Treasury & Finance (Tesorería y Finanzas)
+  treasuryAccounts: TreasuryAccount[];
+  treasuryCommitments: TreasuryCommitment[];
+  treasuryMovements: TreasuryMovement[];
+  initializeDefaultTreasuryAccounts: () => TreasuryAccount[];
+  addTreasuryAccount: (data: {
+    name: string;
+    group: TreasuryAccountGroup;
+    currency: 'USD' | 'BS' | 'USDT';
+    nativeBalance: number;
+    institution?: string;
+    accountNumber?: string;
+    notes?: string;
+  }) => TreasuryAccount;
+  updateTreasuryAccount: (id: string, updates: Partial<TreasuryAccount>) => TreasuryAccount | null;
+  deleteTreasuryAccount: (id: string) => void;
+  addTreasuryCommitment: (data: {
+    title: string;
+    category: TreasuryCommitmentCategory;
+    dueDate: string;
+    amountUSD: number;
+    bcvRate?: number;
+    reservedUSD?: number;
+    linkedPurchaseOrderId?: string;
+    isRecurringMonthly?: boolean;
+    notes?: string;
+  }) => TreasuryCommitment;
+  updateTreasuryCommitment: (id: string, updates: Partial<TreasuryCommitment>) => TreasuryCommitment | null;
+  deleteTreasuryCommitment: (id: string) => void;
+  markCommitmentPaidFromAccount: (
+    commitmentId: string,
+    accountId: string,
+    options?: {
+      paymentDate?: string;
+      reference?: string;
+      notes?: string;
+      syncToExpense?: boolean;
+    }
+  ) => {
+    commitment: TreasuryCommitment;
+    movement: TreasuryMovement;
+    account: TreasuryAccount;
+  } | null;
+  recordTreasuryMovement: (data: {
+    date: string;
+    type: TreasuryMovementType;
+    accountId: string;
+    category: string;
+    description: string;
+    amountInput: number;
+    inputCurrency?: 'USD' | 'BS' | 'USDT';
+    bcvRate?: number;
+    reference?: string;
+    notes?: string;
+    syncToExpense?: boolean;
+    beneficiary?: string;
+  }) => {
+    movement: TreasuryMovement;
+    account: TreasuryAccount;
+    expense?: BusinessExpense;
+  } | null;
+  deleteTreasuryMovement: (id: string, revertAccountBalance?: boolean) => void;
+  importUnpaidPurchaseOrdersToCommitments: () => number;
+  totalLiquidityUSD: number;
+  totalLiquidityBs: number;
+  pendingCommitmentsUSD: number;
+  pendingCommitmentsBs: number;
+  projectedFreeBalanceUSD: number;
+  projectedFreeBalanceBs: number;
 
   // Modals & UI triggers
   selectedInvoice: Sale | null;
@@ -532,6 +622,9 @@ const STORAGE_KEYS = {
   SUPPLIERS: 'servimotos_suppliers_ve_v1',
   PURCHASE_ORDERS: 'servimotos_purchase_orders_ve_v1',
   EXPENSES: 'servimotos_expenses_ve_v1',
+  TREASURY_ACCOUNTS: 'servimotos_treasury_accounts_ve_v1',
+  TREASURY_COMMITMENTS: 'servimotos_treasury_commitments_ve_v1',
+  TREASURY_MOVEMENTS: 'servimotos_treasury_movements_ve_v1',
   CART: 'servimotos_cart_ve_v2',
   ML_ENTRIES: 'servimotos_ml_entries_ve_v2',
   DELETED_IDS: 'servimotos_deleted_ids_v1',
@@ -1317,6 +1410,43 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     return [];
   });
 
+  // Treasury Accounts, Commitments & Movements
+  const [treasuryAccounts, setTreasuryAccounts] = useState<TreasuryAccount[]>(() => {
+    try {
+      const delSet = new Set(deletedIdsRef.current.treasuryAccounts);
+      const stored = localStorage.getItem(STORAGE_KEYS.TREASURY_ACCOUNTS);
+      if (stored) {
+        const parsed: TreasuryAccount[] = JSON.parse(stored);
+        return Array.isArray(parsed) ? parsed.filter((acc) => !delSet.has(acc.id)) : [];
+      }
+    } catch {}
+    return [];
+  });
+
+  const [treasuryCommitments, setTreasuryCommitments] = useState<TreasuryCommitment[]>(() => {
+    try {
+      const delSet = new Set(deletedIdsRef.current.treasuryCommitments);
+      const stored = localStorage.getItem(STORAGE_KEYS.TREASURY_COMMITMENTS);
+      if (stored) {
+        const parsed: TreasuryCommitment[] = JSON.parse(stored);
+        return Array.isArray(parsed) ? parsed.filter((cm) => !delSet.has(cm.id)) : [];
+      }
+    } catch {}
+    return [];
+  });
+
+  const [treasuryMovements, setTreasuryMovements] = useState<TreasuryMovement[]>(() => {
+    try {
+      const delSet = new Set(deletedIdsRef.current.treasuryMovements);
+      const stored = localStorage.getItem(STORAGE_KEYS.TREASURY_MOVEMENTS);
+      if (stored) {
+        const parsed: TreasuryMovement[] = JSON.parse(stored);
+        return Array.isArray(parsed) ? parsed.filter((mv) => !delSet.has(mv.id)) : [];
+      }
+    } catch {}
+    return [];
+  });
+
   const isInitialLoaded = useRef(false);
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -1371,6 +1501,9 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
   const pendingSyncCommissionIdsRef = useRef<Set<string>>(new Set());
   const pendingSyncPurchaseOrderIdsRef = useRef<Set<string>>(new Set());
   const pendingSyncExpenseIdsRef = useRef<Set<string>>(new Set());
+  const pendingSyncTreasuryAccountIdsRef = useRef<Set<string>>(new Set());
+  const pendingSyncTreasuryCommitmentIdsRef = useRef<Set<string>>(new Set());
+  const pendingSyncTreasuryMovementIdsRef = useRef<Set<string>>(new Set());
 
   // Live refs so concurrent callbacks never read stale closures
   const salesRef = useRef<Sale[]>(sales);
@@ -1384,6 +1517,9 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
   const suppliersRef = useRef<Supplier[]>(suppliers);
   const purchaseOrdersRef = useRef<PurchaseOrder[]>(purchaseOrders);
   const expensesRef = useRef<BusinessExpense[]>(expenses);
+  const treasuryAccountsRef = useRef<TreasuryAccount[]>(treasuryAccounts);
+  const treasuryCommitmentsRef = useRef<TreasuryCommitment[]>(treasuryCommitments);
+  const treasuryMovementsRef = useRef<TreasuryMovement[]>(treasuryMovements);
   const settingsRef = useRef<BusinessSettings>(settings);
 
   // Sync to LocalStorage and live refs immediately on any state change
@@ -1446,6 +1582,21 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     expensesRef.current = expenses;
     localStorage.setItem(STORAGE_KEYS.EXPENSES, JSON.stringify(expenses));
   }, [expenses]);
+
+  useEffect(() => {
+    treasuryAccountsRef.current = treasuryAccounts;
+    localStorage.setItem(STORAGE_KEYS.TREASURY_ACCOUNTS, JSON.stringify(treasuryAccounts));
+  }, [treasuryAccounts]);
+
+  useEffect(() => {
+    treasuryCommitmentsRef.current = treasuryCommitments;
+    localStorage.setItem(STORAGE_KEYS.TREASURY_COMMITMENTS, JSON.stringify(treasuryCommitments));
+  }, [treasuryCommitments]);
+
+  useEffect(() => {
+    treasuryMovementsRef.current = treasuryMovements;
+    localStorage.setItem(STORAGE_KEYS.TREASURY_MOVEMENTS, JSON.stringify(treasuryMovements));
+  }, [treasuryMovements]);
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEYS.CART, JSON.stringify(cart));
@@ -1548,6 +1699,9 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
           const deletedSupplierSet = new Set(mergedDeleted.suppliers);
           const deletedPurchaseOrderSet = new Set(mergedDeleted.purchaseOrders);
           const deletedExpenseSet = new Set(mergedDeleted.expenses);
+          const deletedTreasuryAccountSet = new Set(mergedDeleted.treasuryAccounts);
+          const deletedTreasuryCommitmentSet = new Set(mergedDeleted.treasuryCommitments);
+          const deletedTreasuryMovementSet = new Set(mergedDeleted.treasuryMovements);
 
           // Merge products (excluding demo & deleted products)
           if (Array.isArray(serverDb.products)) {
@@ -1831,6 +1985,108 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
               return mergedList;
             });
           }
+
+          // Treasury Accounts (excluding deleted)
+          if (Array.isArray(serverDb.treasuryAccounts)) {
+            const validServerAccounts = serverDb.treasuryAccounts.filter(
+              (acc: TreasuryAccount) => !deletedTreasuryAccountSet.has(acc.id)
+            );
+            setTreasuryAccounts((current) => {
+              const serverById = new Map<string, TreasuryAccount>(
+                validServerAccounts.map((acc: TreasuryAccount) => [acc.id, acc])
+              );
+              const mergedList: TreasuryAccount[] = [];
+              const seenIds = new Set<string>();
+              for (const localAcc of current) {
+                if (deletedTreasuryAccountSet.has(localAcc.id)) continue;
+                seenIds.add(localAcc.id);
+                const serverAcc = serverById.get(localAcc.id);
+                if (!serverAcc || pendingSyncTreasuryAccountIdsRef.current.has(localAcc.id)) {
+                  mergedList.push(localAcc);
+                } else {
+                  mergedList.push(serverAcc);
+                }
+              }
+              for (const serverAcc of validServerAccounts) {
+                if (!seenIds.has(serverAcc.id) && !deletedTreasuryAccountSet.has(serverAcc.id)) {
+                  mergedList.push(serverAcc);
+                }
+              }
+              treasuryAccountsRef.current = mergedList;
+              localStorage.setItem(STORAGE_KEYS.TREASURY_ACCOUNTS, JSON.stringify(mergedList));
+              return mergedList;
+            });
+          }
+
+          // Treasury Commitments (excluding deleted)
+          if (Array.isArray(serverDb.treasuryCommitments)) {
+            const validServerCommitments = serverDb.treasuryCommitments.filter(
+              (cm: TreasuryCommitment) => !deletedTreasuryCommitmentSet.has(cm.id)
+            );
+            setTreasuryCommitments((current) => {
+              const serverById = new Map<string, TreasuryCommitment>(
+                validServerCommitments.map((cm: TreasuryCommitment) => [cm.id, cm])
+              );
+              const mergedList: TreasuryCommitment[] = [];
+              const seenIds = new Set<string>();
+              for (const localCm of current) {
+                if (deletedTreasuryCommitmentSet.has(localCm.id)) continue;
+                seenIds.add(localCm.id);
+                const serverCm = serverById.get(localCm.id);
+                if (!serverCm || pendingSyncTreasuryCommitmentIdsRef.current.has(localCm.id)) {
+                  mergedList.push(localCm);
+                } else {
+                  mergedList.push(serverCm);
+                }
+              }
+              for (const serverCm of validServerCommitments) {
+                if (!seenIds.has(serverCm.id) && !deletedTreasuryCommitmentSet.has(serverCm.id)) {
+                  mergedList.push(serverCm);
+                }
+              }
+              mergedList.sort((a, b) => (a.dueDate || '').localeCompare(b.dueDate || ''));
+              treasuryCommitmentsRef.current = mergedList;
+              localStorage.setItem(STORAGE_KEYS.TREASURY_COMMITMENTS, JSON.stringify(mergedList));
+              return mergedList;
+            });
+          }
+
+          // Treasury Movements (excluding deleted)
+          if (Array.isArray(serverDb.treasuryMovements)) {
+            const validServerMovements = serverDb.treasuryMovements.filter(
+              (mv: TreasuryMovement) => !deletedTreasuryMovementSet.has(mv.id)
+            );
+            setTreasuryMovements((current) => {
+              const serverById = new Map<string, TreasuryMovement>(
+                validServerMovements.map((mv: TreasuryMovement) => [mv.id, mv])
+              );
+              const mergedList: TreasuryMovement[] = [];
+              const seenIds = new Set<string>();
+              for (const localMv of current) {
+                if (deletedTreasuryMovementSet.has(localMv.id)) continue;
+                seenIds.add(localMv.id);
+                const serverMv = serverById.get(localMv.id);
+                if (!serverMv || pendingSyncTreasuryMovementIdsRef.current.has(localMv.id)) {
+                  mergedList.push(localMv);
+                } else {
+                  mergedList.push(serverMv);
+                }
+              }
+              for (const serverMv of validServerMovements) {
+                if (!seenIds.has(serverMv.id) && !deletedTreasuryMovementSet.has(serverMv.id)) {
+                  mergedList.push(serverMv);
+                }
+              }
+              mergedList.sort(
+                (a, b) =>
+                  (b.date || b.createdAt || '').localeCompare(a.date || a.createdAt || '') ||
+                  (b.createdAt || '').localeCompare(a.createdAt || '')
+              );
+              treasuryMovementsRef.current = mergedList;
+              localStorage.setItem(STORAGE_KEYS.TREASURY_MOVEMENTS, JSON.stringify(mergedList));
+              return mergedList;
+            });
+          }
         }
       } catch (err) {
         console.warn('Servidor de datos no respondió, usando datos locales:', err);
@@ -1855,6 +2111,9 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
                 suppliers: suppliersRef.current,
                 purchaseOrders: purchaseOrdersRef.current,
                 expenses: expensesRef.current,
+                treasuryAccounts: treasuryAccountsRef.current,
+                treasuryCommitments: treasuryCommitmentsRef.current,
+                treasuryMovements: treasuryMovementsRef.current,
                 deletedIds: deletedIdsRef.current,
               }),
             }).catch(() => {});
@@ -1885,6 +2144,9 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     suppliers: false,
     purchaseOrders: false,
     expenses: false,
+    treasuryAccounts: false,
+    treasuryCommitments: false,
+    treasuryMovements: false,
   });
   const seenFirestoreIdsRef = useRef<{
     products: Set<string>;
@@ -1898,6 +2160,9 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     suppliers: Set<string>;
     purchaseOrders: Set<string>;
     expenses: Set<string>;
+    treasuryAccounts: Set<string>;
+    treasuryCommitments: Set<string>;
+    treasuryMovements: Set<string>;
   }>({
     products: new Set(),
     customers: new Set(),
@@ -1910,6 +2175,9 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     suppliers: new Set(),
     purchaseOrders: new Set(),
     expenses: new Set(),
+    treasuryAccounts: new Set(),
+    treasuryCommitments: new Set(),
+    treasuryMovements: new Set(),
   });
 
   useEffect(() => {
@@ -1928,6 +2196,9 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       const delSuppliers = new Set(merged.suppliers);
       const delPurchaseOrders = new Set(merged.purchaseOrders);
       const delExpenses = new Set(merged.expenses);
+      const delTreasuryAccounts = new Set(merged.treasuryAccounts);
+      const delTreasuryCommitments = new Set(merged.treasuryCommitments);
+      const delTreasuryMovements = new Set(merged.treasuryMovements);
 
       setSales((prev) => prev.filter((s) => !delSales.has(s.id)));
       setProducts((prev) => prev.filter((p) => !delProds.has(p.id)));
@@ -1940,6 +2211,9 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       setSuppliers((prev) => prev.filter((s) => !delSuppliers.has(s.id)));
       setPurchaseOrders((prev) => prev.filter((po) => !delPurchaseOrders.has(po.id)));
       setExpenses((prev) => prev.filter((ex) => !delExpenses.has(ex.id)));
+      setTreasuryAccounts((prev) => prev.filter((acc) => !delTreasuryAccounts.has(acc.id)));
+      setTreasuryCommitments((prev) => prev.filter((cm) => !delTreasuryCommitments.has(cm.id)));
+      setTreasuryMovements((prev) => prev.filter((mv) => !delTreasuryMovements.has(mv.id)));
     };
 
     async function initFirestore() {
@@ -2599,6 +2873,218 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
           setFirebaseSyncStatus('synced');
         });
 
+        // 13. Real-time treasury accounts listener
+        const unsubTreasuryAccounts = subscribeToTreasuryAccounts((firestoreAccounts, meta) => {
+          if (!Array.isArray(firestoreAccounts)) return;
+          const delSet = new Set(deletedIdsRef.current.treasuryAccounts);
+          firestoreAccounts.forEach((acc) => {
+            if (delSet.has(acc.id)) {
+              removeTreasuryAccountFromFirestore(acc.id).catch(() => {});
+            }
+          });
+          const cleanAccounts = firestoreAccounts.filter((acc) => !delSet.has(acc.id));
+          const remoteById = new Map(cleanAccounts.map((acc) => [acc.id, acc]));
+          const remoteIdSet = new Set(cleanAccounts.map((acc) => acc.id));
+          const prevSeen = seenFirestoreIdsRef.current.treasuryAccounts;
+          const isServerConfirmed = !meta?.fromCache && !meta?.hasPendingWrites;
+
+          if (isServerConfirmed) {
+            remoteIdSet.forEach((id) => pendingSyncTreasuryAccountIdsRef.current.delete(id));
+          }
+
+          setTreasuryAccounts((prev) => {
+            const toUpload: TreasuryAccount[] = [];
+            const mergedMap = new Map<string, TreasuryAccount>();
+
+            for (const racc of cleanAccounts) {
+              mergedMap.set(racc.id, racc);
+            }
+
+            for (const lacc of prev) {
+              if (delSet.has(lacc.id)) continue;
+              const racc = remoteById.get(lacc.id);
+              const isPendingLocal = pendingSyncTreasuryAccountIdsRef.current.has(lacc.id);
+              const isNewerLocal =
+                racc && lacc.updatedAt && (!racc.updatedAt || lacc.updatedAt > racc.updatedAt);
+
+              if (!racc) {
+                if (isPendingLocal || !isServerConfirmed || !prevSeen.has(lacc.id)) {
+                  mergedMap.set(lacc.id, lacc);
+                  toUpload.push(lacc);
+                }
+              } else if (isPendingLocal || isNewerLocal) {
+                mergedMap.set(lacc.id, lacc);
+                toUpload.push(lacc);
+              }
+            }
+
+            if (toUpload.length > 0 && isServerConfirmed) {
+              queueMicrotask(() => {
+                toUpload.forEach((acc) => {
+                  pendingSyncTreasuryAccountIdsRef.current.add(acc.id);
+                  syncTreasuryAccountToFirestore(acc)
+                    .then(() => pendingSyncTreasuryAccountIdsRef.current.delete(acc.id))
+                    .catch(() => {});
+                });
+              });
+            }
+
+            const merged = Array.from(mergedMap.values()).sort((a, b) =>
+              (a.createdAt || '').localeCompare(b.createdAt || '')
+            );
+            treasuryAccountsRef.current = merged;
+            return merged;
+          });
+
+          if (isServerConfirmed) {
+            seenFirestoreIdsRef.current.treasuryAccounts = remoteIdSet;
+            firestoreSyncedFlags.current.treasuryAccounts = true;
+          }
+          setFirebaseSyncStatus('synced');
+        });
+
+        // 14. Real-time treasury commitments listener
+        const unsubTreasuryCommitments = subscribeToTreasuryCommitments((firestoreCommitments, meta) => {
+          if (!Array.isArray(firestoreCommitments)) return;
+          const delSet = new Set(deletedIdsRef.current.treasuryCommitments);
+          firestoreCommitments.forEach((cm) => {
+            if (delSet.has(cm.id)) {
+              removeTreasuryCommitmentFromFirestore(cm.id).catch(() => {});
+            }
+          });
+          const cleanCommitments = firestoreCommitments.filter((cm) => !delSet.has(cm.id));
+          const remoteById = new Map(cleanCommitments.map((cm) => [cm.id, cm]));
+          const remoteIdSet = new Set(cleanCommitments.map((cm) => cm.id));
+          const prevSeen = seenFirestoreIdsRef.current.treasuryCommitments;
+          const isServerConfirmed = !meta?.fromCache && !meta?.hasPendingWrites;
+
+          if (isServerConfirmed) {
+            remoteIdSet.forEach((id) => pendingSyncTreasuryCommitmentIdsRef.current.delete(id));
+          }
+
+          setTreasuryCommitments((prev) => {
+            const toUpload: TreasuryCommitment[] = [];
+            const mergedMap = new Map<string, TreasuryCommitment>();
+
+            for (const rcm of cleanCommitments) {
+              mergedMap.set(rcm.id, rcm);
+            }
+
+            for (const lcm of prev) {
+              if (delSet.has(lcm.id)) continue;
+              const rcm = remoteById.get(lcm.id);
+              const isPendingLocal = pendingSyncTreasuryCommitmentIdsRef.current.has(lcm.id);
+              const isNewerLocal =
+                rcm && lcm.updatedAt && (!rcm.updatedAt || lcm.updatedAt > rcm.updatedAt);
+
+              if (!rcm) {
+                if (isPendingLocal || !isServerConfirmed || !prevSeen.has(lcm.id)) {
+                  mergedMap.set(lcm.id, lcm);
+                  toUpload.push(lcm);
+                }
+              } else if (isPendingLocal || isNewerLocal) {
+                mergedMap.set(lcm.id, lcm);
+                toUpload.push(lcm);
+              }
+            }
+
+            if (toUpload.length > 0 && isServerConfirmed) {
+              queueMicrotask(() => {
+                toUpload.forEach((cm) => {
+                  pendingSyncTreasuryCommitmentIdsRef.current.add(cm.id);
+                  syncTreasuryCommitmentToFirestore(cm)
+                    .then(() => pendingSyncTreasuryCommitmentIdsRef.current.delete(cm.id))
+                    .catch(() => {});
+                });
+              });
+            }
+
+            const merged = Array.from(mergedMap.values()).sort((a, b) =>
+              (a.dueDate || '').localeCompare(b.dueDate || '')
+            );
+            treasuryCommitmentsRef.current = merged;
+            return merged;
+          });
+
+          if (isServerConfirmed) {
+            seenFirestoreIdsRef.current.treasuryCommitments = remoteIdSet;
+            firestoreSyncedFlags.current.treasuryCommitments = true;
+          }
+          setFirebaseSyncStatus('synced');
+        });
+
+        // 15. Real-time treasury movements listener
+        const unsubTreasuryMovements = subscribeToTreasuryMovements((firestoreMovements, meta) => {
+          if (!Array.isArray(firestoreMovements)) return;
+          const delSet = new Set(deletedIdsRef.current.treasuryMovements);
+          firestoreMovements.forEach((mv) => {
+            if (delSet.has(mv.id)) {
+              removeTreasuryMovementFromFirestore(mv.id).catch(() => {});
+            }
+          });
+          const cleanMovements = firestoreMovements.filter((mv) => !delSet.has(mv.id));
+          const remoteById = new Map(cleanMovements.map((mv) => [mv.id, mv]));
+          const remoteIdSet = new Set(cleanMovements.map((mv) => mv.id));
+          const prevSeen = seenFirestoreIdsRef.current.treasuryMovements;
+          const isServerConfirmed = !meta?.fromCache && !meta?.hasPendingWrites;
+
+          if (isServerConfirmed) {
+            remoteIdSet.forEach((id) => pendingSyncTreasuryMovementIdsRef.current.delete(id));
+          }
+
+          setTreasuryMovements((prev) => {
+            const toUpload: TreasuryMovement[] = [];
+            const mergedMap = new Map<string, TreasuryMovement>();
+
+            for (const rmv of cleanMovements) {
+              mergedMap.set(rmv.id, rmv);
+            }
+
+            for (const lmv of prev) {
+              if (delSet.has(lmv.id)) continue;
+              const rmv = remoteById.get(lmv.id);
+              const isPendingLocal = pendingSyncTreasuryMovementIdsRef.current.has(lmv.id);
+              const isNewerLocal =
+                rmv && lmv.updatedAt && (!rmv.updatedAt || lmv.updatedAt > rmv.updatedAt);
+
+              if (!rmv) {
+                if (isPendingLocal || !isServerConfirmed || !prevSeen.has(lmv.id)) {
+                  mergedMap.set(lmv.id, lmv);
+                  toUpload.push(lmv);
+                }
+              } else if (isPendingLocal || isNewerLocal) {
+                mergedMap.set(lmv.id, lmv);
+                toUpload.push(lmv);
+              }
+            }
+
+            if (toUpload.length > 0 && isServerConfirmed) {
+              queueMicrotask(() => {
+                toUpload.forEach((mv) => {
+                  pendingSyncTreasuryMovementIdsRef.current.add(mv.id);
+                  syncTreasuryMovementToFirestore(mv)
+                    .then(() => pendingSyncTreasuryMovementIdsRef.current.delete(mv.id))
+                    .catch(() => {});
+                });
+              });
+            }
+
+            const merged = Array.from(mergedMap.values()).sort(
+              (a, b) =>
+                (b.date || b.createdAt || '').localeCompare(a.date || a.createdAt || '') ||
+                (b.createdAt || '').localeCompare(a.createdAt || '')
+            );
+            treasuryMovementsRef.current = merged;
+            return merged;
+          });
+
+          if (isServerConfirmed) {
+            seenFirestoreIdsRef.current.treasuryMovements = remoteIdSet;
+            firestoreSyncedFlags.current.treasuryMovements = true;
+          }
+          setFirebaseSyncStatus('synced');
+        });
+
         unsubs = [
           unsubDeleted,
           unsubProducts,
@@ -2613,6 +3099,9 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
           unsubSuppliers,
           unsubPurchaseOrders,
           unsubExpenses,
+          unsubTreasuryAccounts,
+          unsubTreasuryCommitments,
+          unsubTreasuryMovements,
         ];
       } catch (err) {
         console.warn('Error starting Firestore real-time listeners:', err);
@@ -2647,6 +3136,9 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
         suppliers,
         purchaseOrders,
         expenses,
+        treasuryAccounts,
+        treasuryCommitments,
+        treasuryMovements,
         deletedIds: deletedIdsRef.current,
       });
       if (result.success) {
@@ -2686,6 +3178,9 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
           suppliers,
           purchaseOrders,
           expenses,
+          treasuryAccounts,
+          treasuryCommitments,
+          treasuryMovements,
           deletedIds: deletedIdsRef.current,
         }),
       }).catch((err) => {
@@ -2698,7 +3193,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
         clearTimeout(saveTimeoutRef.current);
       }
     };
-  }, [settings, products, customers, sales, serviceOrders, onlineOrders, technicians, serviceCommissions, technicianPayouts, suppliers, purchaseOrders, expenses, deletedIds]);
+  }, [settings, products, customers, sales, serviceOrders, onlineOrders, technicians, serviceCommissions, technicianPayouts, suppliers, purchaseOrders, expenses, treasuryAccounts, treasuryCommitments, treasuryMovements, deletedIds]);
 
   // Guarantee save before tab/window is closed
   useEffect(() => {
@@ -2717,6 +3212,9 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
           suppliers,
           purchaseOrders,
           expenses,
+          treasuryAccounts,
+          treasuryCommitments,
+          treasuryMovements,
           deletedIds: deletedIdsRef.current,
         });
 
@@ -2738,7 +3236,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     return () => {
       window.removeEventListener('beforeunload', handleBeforeUnload);
     };
-  }, [settings, products, customers, sales, serviceOrders, onlineOrders, technicians, serviceCommissions, technicianPayouts, suppliers, purchaseOrders, expenses, deletedIds]);
+  }, [settings, products, customers, sales, serviceOrders, onlineOrders, technicians, serviceCommissions, technicianPayouts, suppliers, purchaseOrders, expenses, treasuryAccounts, treasuryCommitments, treasuryMovements, deletedIds]);
 
   // Online products: strictly filter where stock > 0 and sort alphabetically (A-Z) by name
   const onlineProducts = useMemo(() => {
@@ -4980,34 +5478,133 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     setSuppliers(nextList);
   };
 
-  const applyPurchaseItemsToInventory = (items: PurchaseOrderItem[]) => {
-    if (!Array.isArray(items) || items.length === 0) return;
-    setProducts((prevProducts) => {
-      const touched: Product[] = [];
-      const next = prevProducts.map((prod) => {
-        const matchedItems = items.filter(
-          (it) =>
-            (it.productId && it.productId === prod.id) ||
-            (it.sku && prod.sku && it.sku.trim().toLowerCase() === prod.sku.trim().toLowerCase())
-        );
-        if (matchedItems.length === 0) return prod;
-        const addedQty = matchedItems.reduce((sum, it) => sum + (Number(it.quantity) || 0), 0);
-        const latestCost = matchedItems[matchedItems.length - 1]?.unitCostUSD;
+  const applyPurchaseItemsToInventory = (items: PurchaseOrderItem[]): PurchaseOrderItem[] => {
+    if (!Array.isArray(items) || items.length === 0) return items;
+
+    const updatedList = [...productsRef.current];
+    const changedProducts: Product[] = [];
+    const timestamp = Date.now();
+    const resolvedItems: PurchaseOrderItem[] = [];
+
+    items.forEach((it, index) => {
+      const qty = Math.max(0, Math.floor(Number(it.quantity) || 0));
+      const unitCost = Math.round(Math.max(0, Number(it.unitCostUSD) || 0) * 100) / 100;
+      const salePrice =
+        it.salePriceUSD !== undefined && !isNaN(Number(it.salePriceUSD))
+          ? Math.round(Math.max(0, Number(it.salePriceUSD)) * 100) / 100
+          : undefined;
+
+      const rawSku = (it.sku || '').trim();
+      const normalizedSku =
+        rawSku && rawSku.toUpperCase() !== 'NUEVO' ? rawSku.toLowerCase() : '';
+
+      const existingIdx = updatedList.findIndex(
+        (prod) =>
+          (it.productId && prod.id === it.productId) ||
+          (normalizedSku && prod.sku && prod.sku.trim().toLowerCase() === normalizedSku)
+      );
+
+      if (it.category && it.category.trim()) {
+        addCategory(it.category.trim());
+      }
+
+      if (existingIdx >= 0) {
+        const prod = updatedList[existingIdx];
+        let cleanImage = it.imageUrl ? normalizeImageUrl(it.imageUrl) : '';
+        if (!cleanImage && (it.name || prod.name).toLowerCase().includes('maleta')) {
+          cleanImage = prod.imageUrl || PRESET_PRODUCT_IMAGES.maletaParaMoto;
+        }
+
         const updatedProd: Product = {
           ...prod,
-          stock: Math.max(0, (Number(prod.stock) || 0) + addedQty),
-          costPrice: latestCost && latestCost > 0 ? latestCost : prod.costPrice,
+          name: it.name?.trim() ? it.name.trim() : prod.name,
+          category: (it.category?.trim() || prod.category) as ProductCategory,
+          description: it.description !== undefined && it.description.trim() !== '' ? it.description.trim() : prod.description,
+          brand: it.brand?.trim() ? it.brand.trim() : prod.brand,
+          compatibility: it.compatibility?.trim() ? it.compatibility.trim() : prod.compatibility,
+          warehouseLocation:
+            it.warehouseLocation !== undefined
+              ? it.warehouseLocation.trim() || prod.warehouseLocation
+              : prod.warehouseLocation,
+          barcode:
+            it.barcode !== undefined
+              ? it.barcode.trim() || prod.barcode
+              : prod.barcode,
+          minStock:
+            it.minStock !== undefined && !isNaN(Number(it.minStock))
+              ? Math.max(0, Math.floor(Number(it.minStock)))
+              : prod.minStock,
+          stock: Math.max(0, (Number(prod.stock) || 0) + qty),
+          costPrice: unitCost > 0 ? unitCost : prod.costPrice,
+          salePrice: salePrice !== undefined && salePrice > 0 ? salePrice : prod.salePrice,
+          imageUrl: cleanImage || prod.imageUrl,
         };
-        touched.push(updatedProd);
-        return updatedProd;
-      });
-      if (touched.length > 0) {
-        queueMicrotask(() => {
-          touched.forEach((p) => syncProductToFirestore(p).catch(() => {}));
+        updatedList[existingIdx] = updatedProd;
+        const existingTouchIdx = changedProducts.findIndex((p) => p.id === updatedProd.id);
+        if (existingTouchIdx >= 0) {
+          changedProducts[existingTouchIdx] = updatedProd;
+        } else {
+          changedProducts.push(updatedProd);
+        }
+        resolvedItems.push({
+          ...it,
+          productId: updatedProd.id,
+          sku: updatedProd.sku,
+          isNewProduct: false,
+        });
+      } else {
+        const finalSku =
+          rawSku && rawSku.toUpperCase() !== 'NUEVO'
+            ? rawSku.toUpperCase()
+            : `REP-${String(timestamp).slice(-5)}${index + 1}`;
+        let cleanImage = normalizeImageUrl(it.imageUrl || '');
+        if (!cleanImage && (it.name || '').toLowerCase().includes('maleta')) {
+          cleanImage = PRESET_PRODUCT_IMAGES.maletaParaMoto;
+        }
+        if (!cleanImage) {
+          cleanImage = PRESET_PRODUCT_IMAGES.brakeKit;
+        }
+
+        const newProd: Product = {
+          id: `prod-po-${timestamp}-${index}-${Math.random().toString(36).slice(2, 5)}`,
+          sku: finalSku,
+          barcode: it.barcode?.trim() || undefined,
+          name: (it.name || '').trim() || 'Repuesto Nuevo',
+          category: (it.category?.trim() || 'Accesorios') as ProductCategory,
+          description: it.description?.trim() || '',
+          costPrice: unitCost,
+          salePrice: salePrice !== undefined && salePrice >= 0 ? salePrice : unitCost,
+          stock: qty,
+          minStock:
+            it.minStock !== undefined && !isNaN(Number(it.minStock))
+              ? Math.max(0, Math.floor(Number(it.minStock)))
+              : 2,
+          brand: it.brand?.trim() || 'Genérico',
+          compatibility: it.compatibility?.trim() || 'Universal',
+          warehouseLocation: it.warehouseLocation?.trim() || undefined,
+          imageUrl: cleanImage,
+          featured: false,
+        };
+        updatedList.unshift(newProd);
+        changedProducts.push(newProd);
+        resolvedItems.push({
+          ...it,
+          productId: newProd.id,
+          sku: newProd.sku,
+          isNewProduct: false,
         });
       }
-      return next;
     });
+
+    if (changedProducts.length > 0) {
+      productsRef.current = updatedList;
+      setProducts(updatedList);
+      queueMicrotask(() => {
+        changedProducts.forEach((p) => syncProductToFirestore(p).catch(() => {}));
+      });
+    }
+
+    return resolvedItems;
   };
 
   const computeOrderDueDate = (days?: number): string | undefined => {
@@ -5087,11 +5684,10 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     const year = new Date().getFullYear();
     const orderNumber = `OC-${year}-${String(nextIndex).padStart(4, '0')}`;
 
-    const shouldApplyStock =
-      orderData.receivedStatus === 'RECIBIDA' && orderData.applyStockToInventory !== false;
-    if (shouldApplyStock) {
-      applyPurchaseItemsToInventory(cleanItems);
-    }
+    const shouldApplyStock = orderData.applyStockToInventory !== false;
+    const finalItems = shouldApplyStock
+      ? applyPurchaseItemsToInventory(cleanItems)
+      : cleanItems;
 
     const newOrder: PurchaseOrder = {
       id: `po-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
@@ -5102,11 +5698,12 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       supplierName: supplier.name,
       vendorName: supplier.vendorName,
       vendorPhone: supplier.vendorPhone,
-      items: cleanItems,
+      items: finalItems,
       totalUSD,
       bcvRate: rate,
       totalBs,
       paymentType: orderData.paymentType,
+      paymentCurrencyCondition: orderData.paymentCurrencyCondition || 'DIVISAS',
       creditDays: orderData.paymentType === 'CREDITO' ? Number(orderData.creditDays) || 15 : undefined,
       creditDueDate:
         orderData.paymentType === 'CREDITO'
@@ -5187,12 +5784,12 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     const nextReceivedStatus = updates.receivedStatus || existing.receivedStatus;
     const shouldApplyStock =
       !existing.stockApplied &&
-      nextReceivedStatus === 'RECIBIDA' &&
-      updates.applyStockToInventory !== false;
+      (updates.applyStockToInventory === true ||
+        (nextReceivedStatus === 'RECIBIDA' && updates.applyStockToInventory !== false));
 
-    if (shouldApplyStock) {
-      applyPurchaseItemsToInventory(nextItems);
-    }
+    const resolvedItems = shouldApplyStock
+      ? applyPurchaseItemsToInventory(nextItems)
+      : nextItems;
 
     const nextPaidUSD = updates.paidAmountUSD !== undefined ? updates.paidAmountUSD : existing.paidAmountUSD;
     const nextPaymentStatus: PurchaseOrder['paymentStatus'] =
@@ -5207,7 +5804,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       ...existing,
       ...cleanUpdates,
       ...supplierFields,
-      items: nextItems,
+      items: resolvedItems,
       totalUSD: nextTotalUSD,
       bcvRate: rate,
       totalBs: nextTotalBs,
@@ -5241,11 +5838,12 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     const existing = purchaseOrdersRef.current.find((po) => po.id === id);
     if (!existing) return null;
     const shouldApply = !existing.stockApplied && applyStockToInventory;
-    if (shouldApply) {
-      applyPurchaseItemsToInventory(existing.items);
-    }
+    const resolvedItems = shouldApply
+      ? applyPurchaseItemsToInventory(existing.items)
+      : existing.items;
     const updatedOrder: PurchaseOrder = {
       ...existing,
+      items: resolvedItems,
       receivedStatus: 'RECIBIDA',
       receivedDate: receivedDate || new Date().toISOString().split('T')[0],
       stockApplied: existing.stockApplied || shouldApply,
@@ -5560,6 +6158,638 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
 
   const currentMonthExpensesBs = currentMonthExpensesUSD * settings.bcvRate;
 
+  // Treasury & Finance (Tesorería y Finanzas) Operations
+  const computeAccountBalanceUSD = (
+    currency: 'USD' | 'BS' | 'USDT',
+    nativeBalance: number,
+    rate: number
+  ): number => {
+    const cleanNative = Number(nativeBalance) || 0;
+    if (currency === 'BS') {
+      const safeRate = rate > 0 ? rate : 1;
+      return Math.round((cleanNative / safeRate) * 100) / 100;
+    }
+    return Math.round(cleanNative * 100) / 100;
+  };
+
+  const initializeDefaultTreasuryAccounts = (): TreasuryAccount[] => {
+    const now = new Date().toISOString();
+    const defaults: TreasuryAccount[] = [
+      {
+        id: 'acc-efectivo-usd',
+        name: 'Caja Efectivo USD ($)',
+        group: 'EFECTIVO',
+        currency: 'USD',
+        nativeBalance: 0,
+        balanceUSD: 0,
+        institution: 'Caja Mostrador',
+        notes: 'Efectivo en divisas disponibles en caja',
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        id: 'acc-efectivo-bs',
+        name: 'Caja Efectivo Bs',
+        group: 'EFECTIVO',
+        currency: 'BS',
+        nativeBalance: 0,
+        balanceUSD: 0,
+        institution: 'Caja Mostrador',
+        notes: 'Efectivo en Bolívares en caja',
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        id: 'acc-banco-nacional-bs',
+        name: 'Banco Nacional (Bs)',
+        group: 'BANCO_NACIONAL',
+        currency: 'BS',
+        nativeBalance: 0,
+        balanceUSD: 0,
+        institution: 'Banco Mercantil / Banesco',
+        notes: 'Cuenta bancaria para transferencias y Pago Móvil',
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        id: 'acc-billetera-usdt',
+        name: 'Billetera USDT (Binance)',
+        group: 'BILLETERA_DIVISAS',
+        currency: 'USDT',
+        nativeBalance: 0,
+        balanceUSD: 0,
+        institution: 'Binance Pay',
+        notes: 'Saldo digital en USDT / divisas electrónicas',
+        createdAt: now,
+        updatedAt: now,
+      },
+    ];
+
+    const existingIds = new Set(treasuryAccountsRef.current.map((a) => a.id));
+    const toInsert = defaults.filter((d) => !existingIds.has(d.id));
+    if (toInsert.length === 0) return treasuryAccountsRef.current;
+
+    // Remove from tombstones if user explicitly requested re-initializing default accounts
+    const restoredIds = toInsert.map((a) => a.id);
+    if (deletedIdsRef.current.treasuryAccounts.some((id) => restoredIds.includes(id))) {
+      const nextDeleted = {
+        ...deletedIdsRef.current,
+        treasuryAccounts: deletedIdsRef.current.treasuryAccounts.filter(
+          (id) => !restoredIds.includes(id)
+        ),
+      };
+      deletedIdsRef.current = nextDeleted;
+      setDeletedIds(nextDeleted);
+    }
+
+    const nextAccounts = [...treasuryAccountsRef.current, ...toInsert];
+    treasuryAccountsRef.current = nextAccounts;
+    setTreasuryAccounts(nextAccounts);
+    try {
+      localStorage.setItem(STORAGE_KEYS.TREASURY_ACCOUNTS, JSON.stringify(nextAccounts));
+    } catch {}
+    toInsert.forEach((acc) => {
+      pendingSyncTreasuryAccountIdsRef.current.add(acc.id);
+      syncTreasuryAccountToFirestore(acc)
+        .then(() => pendingSyncTreasuryAccountIdsRef.current.delete(acc.id))
+        .catch(() => {});
+    });
+    return nextAccounts;
+  };
+
+  const addTreasuryAccount: AppContextType['addTreasuryAccount'] = (data) => {
+    const now = new Date().toISOString();
+    const rate = settingsRef.current.bcvRate || 1;
+    const nativeBal = Math.round((Number(data.nativeBalance) || 0) * 100) / 100;
+    const balanceUSD = computeAccountBalanceUSD(data.currency, nativeBal, rate);
+
+    const newAccount: TreasuryAccount = {
+      id: `acc-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      name: data.name.trim(),
+      group: data.group,
+      currency: data.currency,
+      nativeBalance: nativeBal,
+      balanceUSD,
+      institution: data.institution?.trim() || undefined,
+      accountNumber: data.accountNumber?.trim() || undefined,
+      notes: data.notes?.trim() || undefined,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    pendingSyncTreasuryAccountIdsRef.current.add(newAccount.id);
+    const nextList = [...treasuryAccountsRef.current, newAccount];
+    treasuryAccountsRef.current = nextList;
+    setTreasuryAccounts(nextList);
+    try {
+      localStorage.setItem(STORAGE_KEYS.TREASURY_ACCOUNTS, JSON.stringify(nextList));
+    } catch {}
+    syncTreasuryAccountToFirestore(newAccount)
+      .then(() => pendingSyncTreasuryAccountIdsRef.current.delete(newAccount.id))
+      .catch(() => {});
+
+    return newAccount;
+  };
+
+  const updateTreasuryAccount: AppContextType['updateTreasuryAccount'] = (id, updates) => {
+    const existing = treasuryAccountsRef.current.find((a) => a.id === id);
+    if (!existing) return null;
+
+    const rate = settingsRef.current.bcvRate || 1;
+    const nextCurrency = updates.currency ?? existing.currency;
+    const nextNative =
+      updates.nativeBalance !== undefined
+        ? Math.round((Number(updates.nativeBalance) || 0) * 100) / 100
+        : existing.nativeBalance;
+    const nextBalanceUSD =
+      updates.nativeBalance !== undefined || updates.currency !== undefined
+        ? computeAccountBalanceUSD(nextCurrency, nextNative, rate)
+        : updates.balanceUSD !== undefined
+          ? Math.round((Number(updates.balanceUSD) || 0) * 100) / 100
+          : existing.balanceUSD;
+
+    const updatedAccount: TreasuryAccount = {
+      ...existing,
+      ...updates,
+      currency: nextCurrency,
+      nativeBalance: nextNative,
+      balanceUSD: nextBalanceUSD,
+      updatedAt: new Date().toISOString(),
+    };
+
+    pendingSyncTreasuryAccountIdsRef.current.add(id);
+    const nextList = treasuryAccountsRef.current.map((a) => (a.id === id ? updatedAccount : a));
+    treasuryAccountsRef.current = nextList;
+    setTreasuryAccounts(nextList);
+    try {
+      localStorage.setItem(STORAGE_KEYS.TREASURY_ACCOUNTS, JSON.stringify(nextList));
+    } catch {}
+    syncTreasuryAccountToFirestore(updatedAccount)
+      .then(() => pendingSyncTreasuryAccountIdsRef.current.delete(id))
+      .catch(() => {});
+
+    return updatedAccount;
+  };
+
+  const deleteTreasuryAccount = (id: string) => {
+    recordDeleted('treasuryAccounts', [id]);
+    removeTreasuryAccountFromFirestore(id).catch(() => {});
+    const nextList = treasuryAccountsRef.current.filter((a) => a.id !== id);
+    treasuryAccountsRef.current = nextList;
+    setTreasuryAccounts(nextList);
+  };
+
+  const addTreasuryCommitment: AppContextType['addTreasuryCommitment'] = (data) => {
+    const now = new Date().toISOString();
+    const rate = Number(data.bcvRate) > 0 ? Number(data.bcvRate) : settingsRef.current.bcvRate || 1;
+    const amountUSD = Math.round(Math.max(0, Number(data.amountUSD) || 0) * 100) / 100;
+    const amountBs = Math.round(amountUSD * rate * 100) / 100;
+    const reservedUSD =
+      data.reservedUSD !== undefined
+        ? Math.min(amountUSD, Math.max(0, Math.round(Number(data.reservedUSD) * 100) / 100))
+        : 0;
+
+    const newCommitment: TreasuryCommitment = {
+      id: `cmt-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      title: data.title.trim(),
+      category: data.category,
+      dueDate: data.dueDate || now.split('T')[0],
+      amountUSD,
+      bcvRate: rate,
+      amountBs,
+      reservedUSD,
+      isPaid: false,
+      linkedPurchaseOrderId: data.linkedPurchaseOrderId || undefined,
+      isRecurringMonthly: Boolean(data.isRecurringMonthly),
+      notes: data.notes?.trim() || undefined,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    pendingSyncTreasuryCommitmentIdsRef.current.add(newCommitment.id);
+    const nextList = [...treasuryCommitmentsRef.current, newCommitment].sort((a, b) =>
+      (a.dueDate || '').localeCompare(b.dueDate || '')
+    );
+    treasuryCommitmentsRef.current = nextList;
+    setTreasuryCommitments(nextList);
+    try {
+      localStorage.setItem(STORAGE_KEYS.TREASURY_COMMITMENTS, JSON.stringify(nextList));
+    } catch {}
+    syncTreasuryCommitmentToFirestore(newCommitment)
+      .then(() => pendingSyncTreasuryCommitmentIdsRef.current.delete(newCommitment.id))
+      .catch(() => {});
+
+    return newCommitment;
+  };
+
+  const updateTreasuryCommitment: AppContextType['updateTreasuryCommitment'] = (id, updates) => {
+    const existing = treasuryCommitmentsRef.current.find((c) => c.id === id);
+    if (!existing) return null;
+
+    const rate =
+      updates.bcvRate !== undefined && Number(updates.bcvRate) > 0
+        ? Number(updates.bcvRate)
+        : existing.bcvRate || settingsRef.current.bcvRate || 1;
+    const nextAmountUSD =
+      updates.amountUSD !== undefined
+        ? Math.round(Math.max(0, Number(updates.amountUSD) || 0) * 100) / 100
+        : existing.amountUSD;
+    const nextAmountBs =
+      updates.amountBs !== undefined
+        ? Math.round(Math.max(0, Number(updates.amountBs) || 0) * 100) / 100
+        : Math.round(nextAmountUSD * rate * 100) / 100;
+
+    const updatedCommitment: TreasuryCommitment = {
+      ...existing,
+      ...updates,
+      amountUSD: nextAmountUSD,
+      bcvRate: rate,
+      amountBs: nextAmountBs,
+      updatedAt: new Date().toISOString(),
+    };
+
+    pendingSyncTreasuryCommitmentIdsRef.current.add(id);
+    const nextList = treasuryCommitmentsRef.current
+      .map((c) => (c.id === id ? updatedCommitment : c))
+      .sort((a, b) => (a.dueDate || '').localeCompare(b.dueDate || ''));
+    treasuryCommitmentsRef.current = nextList;
+    setTreasuryCommitments(nextList);
+    try {
+      localStorage.setItem(STORAGE_KEYS.TREASURY_COMMITMENTS, JSON.stringify(nextList));
+    } catch {}
+    syncTreasuryCommitmentToFirestore(updatedCommitment)
+      .then(() => pendingSyncTreasuryCommitmentIdsRef.current.delete(id))
+      .catch(() => {});
+
+    return updatedCommitment;
+  };
+
+  const deleteTreasuryCommitment = (id: string) => {
+    recordDeleted('treasuryCommitments', [id]);
+    removeTreasuryCommitmentFromFirestore(id).catch(() => {});
+    const nextList = treasuryCommitmentsRef.current.filter((c) => c.id !== id);
+    treasuryCommitmentsRef.current = nextList;
+    setTreasuryCommitments(nextList);
+  };
+
+  const mapAccountToExpensePayment = (
+    account: TreasuryAccount
+  ): { currencyType: ExpensePaymentCurrency; method: ExpensePaymentMethod } => {
+    if (account.currency === 'USDT') {
+      return { currencyType: 'USDT', method: 'USDT (Binance Pay)' };
+    }
+    if (account.currency === 'BS' && account.group === 'EFECTIVO') {
+      return { currencyType: 'EFECTIVO_BS', method: 'Efectivo Bs' };
+    }
+    if (account.currency === 'BS') {
+      return { currencyType: 'BS', method: 'Bolívares (Transferencia / Pago Móvil)' };
+    }
+    return { currencyType: 'EFECTIVO_USD', method: 'Efectivo en Dólares ($)' };
+  };
+
+  const nextMovementNumber = (): string => {
+    let nextIndex = treasuryMovementsRef.current.length + 1;
+    treasuryMovementsRef.current.forEach((mv) => {
+      const m = (mv.movementNumber || '').match(/(\d+)$/);
+      if (m) {
+        const parsed = parseInt(m[1], 10);
+        if (!isNaN(parsed) && parsed >= nextIndex) nextIndex = parsed + 1;
+      }
+    });
+    const year = new Date().getFullYear();
+    return `MOV-${year}-${String(nextIndex).padStart(4, '0')}`;
+  };
+
+  const applyAccountDelta = (
+    account: TreasuryAccount,
+    deltaUSD: number,
+    rate: number,
+    explicitNativeDelta?: number
+  ): TreasuryAccount => {
+    const safeRate = rate > 0 ? rate : settingsRef.current.bcvRate || 1;
+    const nativeDelta =
+      explicitNativeDelta !== undefined
+        ? explicitNativeDelta
+        : account.currency === 'BS'
+          ? Math.round(deltaUSD * safeRate * 100) / 100
+          : Math.round(deltaUSD * 100) / 100;
+
+    const nextNative = Math.round(((Number(account.nativeBalance) || 0) + nativeDelta) * 100) / 100;
+    const nextBalanceUSD = computeAccountBalanceUSD(account.currency, nextNative, safeRate);
+    const updatedAcc: TreasuryAccount = {
+      ...account,
+      nativeBalance: nextNative,
+      balanceUSD: nextBalanceUSD,
+      updatedAt: new Date().toISOString(),
+    };
+
+    pendingSyncTreasuryAccountIdsRef.current.add(updatedAcc.id);
+    const nextAccounts = treasuryAccountsRef.current.map((a) =>
+      a.id === updatedAcc.id ? updatedAcc : a
+    );
+    treasuryAccountsRef.current = nextAccounts;
+    setTreasuryAccounts(nextAccounts);
+    try {
+      localStorage.setItem(STORAGE_KEYS.TREASURY_ACCOUNTS, JSON.stringify(nextAccounts));
+    } catch {}
+    syncTreasuryAccountToFirestore(updatedAcc)
+      .then(() => pendingSyncTreasuryAccountIdsRef.current.delete(updatedAcc.id))
+      .catch(() => {});
+
+    return updatedAcc;
+  };
+
+  const markCommitmentPaidFromAccount: AppContextType['markCommitmentPaidFromAccount'] = (
+    commitmentId,
+    accountId,
+    options
+  ) => {
+    const commitment = treasuryCommitmentsRef.current.find((c) => c.id === commitmentId);
+    const account = treasuryAccountsRef.current.find((a) => a.id === accountId);
+    if (!commitment || !account) return null;
+
+    const rate = settingsRef.current.bcvRate || commitment.bcvRate || 1;
+    const now = new Date().toISOString();
+    const payDate = options?.paymentDate || now.split('T')[0];
+    const amountUSD = Math.round((Number(commitment.amountUSD) || 0) * 100) / 100;
+    const amountBs = Math.round(amountUSD * rate * 100) / 100;
+
+    // 1. Deduct from selected account
+    const updatedAccount = applyAccountDelta(account, -amountUSD, rate);
+
+    // 2. Sync linked Purchase Order if applicable
+    if (commitment.linkedPurchaseOrderId) {
+      const linkedPo = purchaseOrdersRef.current.find(
+        (po) => po.id === commitment.linkedPurchaseOrderId
+      );
+      if (linkedPo) {
+        const remainingPo = Math.max(0, linkedPo.totalUSD - (linkedPo.paidAmountUSD || 0));
+        if (remainingPo > 0.01) {
+          const poCurrency: PurchasePaymentCurrency =
+            account.currency === 'USDT'
+              ? 'USDT'
+              : account.currency === 'BS'
+                ? 'BS'
+                : 'DIVISAS';
+          recordPurchaseOrderPayment(linkedPo.id, {
+            amountUSD: Math.min(amountUSD, remainingPo),
+            currencyCategory: poCurrency,
+            paymentMethod: account.name,
+            reference: options?.reference,
+            notes: `Pagado desde Tesorería (${account.name})`,
+          });
+        }
+      }
+    }
+
+    // 3. Optionally mirror into Gastos del Negocio (except Proveedores already tracked in purchaseOrders)
+    let createdExpense: BusinessExpense | undefined;
+    if (options?.syncToExpense !== false && commitment.category !== 'PROVEEDORES') {
+      const mapped = mapAccountToExpensePayment(account);
+      const expenseCategory =
+        commitment.category === 'NOMINA_SUELDOS' ? 'Sueldo / Nómina' : 'Servicios Básicos';
+      createdExpense = addExpense({
+        date: payDate,
+        category: expenseCategory,
+        description: commitment.title,
+        amountUSD,
+        amountBs,
+        bcvRate: rate,
+        paymentCurrencyType: mapped.currencyType,
+        paymentMethod: mapped.method,
+        reference: options?.reference,
+        notes: options?.notes || `Pago planificado desde ${account.name}`,
+      });
+    }
+
+    // 4. Create Treasury Movement
+    const categoryLabel =
+      commitment.category === 'NOMINA_SUELDOS'
+        ? 'Nómina/Sueldos'
+        : commitment.category === 'PROVEEDORES'
+          ? 'Proveedores'
+          : 'Gastos Fijos';
+
+    const newMovement: TreasuryMovement = {
+      id: `mov-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      movementNumber: nextMovementNumber(),
+      date: payDate,
+      type: 'PAGO_PLANIFICADO',
+      accountId: account.id,
+      accountName: account.name,
+      accountGroup: account.group,
+      category: categoryLabel,
+      description: commitment.title,
+      amountUSD,
+      bcvRate: rate,
+      amountBs,
+      reference: options?.reference?.trim() || undefined,
+      commitmentId: commitment.id,
+      expenseId: createdExpense?.id,
+      notes: options?.notes?.trim() || undefined,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    pendingSyncTreasuryMovementIdsRef.current.add(newMovement.id);
+    const nextMovements = [newMovement, ...treasuryMovementsRef.current].sort(
+      (a, b) =>
+        (b.date || b.createdAt || '').localeCompare(a.date || a.createdAt || '') ||
+        (b.createdAt || '').localeCompare(a.createdAt || '')
+    );
+    treasuryMovementsRef.current = nextMovements;
+    setTreasuryMovements(nextMovements);
+    try {
+      localStorage.setItem(STORAGE_KEYS.TREASURY_MOVEMENTS, JSON.stringify(nextMovements));
+    } catch {}
+    syncTreasuryMovementToFirestore(newMovement)
+      .then(() => pendingSyncTreasuryMovementIdsRef.current.delete(newMovement.id))
+      .catch(() => {});
+
+    // 5. Update Commitment status -> Pagado
+    const updatedCommitment = updateTreasuryCommitment(commitment.id, {
+      isPaid: true,
+      paidAt: now,
+      paidAccountId: account.id,
+      paidAccountName: account.name,
+      reservedUSD: amountUSD,
+    });
+
+    return {
+      commitment: updatedCommitment || { ...commitment, isPaid: true },
+      movement: newMovement,
+      account: updatedAccount,
+    };
+  };
+
+  const recordTreasuryMovement: AppContextType['recordTreasuryMovement'] = (data) => {
+    const account = treasuryAccountsRef.current.find((a) => a.id === data.accountId);
+    if (!account) return null;
+
+    const rate =
+      Number(data.bcvRate) > 0 ? Number(data.bcvRate) : settingsRef.current.bcvRate || 1;
+    const rawInput = Math.max(0, Number(data.amountInput) || 0);
+    if (rawInput <= 0) return null;
+
+    const effectiveCurrency = data.inputCurrency || account.currency;
+    const amountUSD =
+      effectiveCurrency === 'BS'
+        ? Math.round((rawInput / rate) * 100) / 100
+        : Math.round(rawInput * 100) / 100;
+    const amountBs =
+      effectiveCurrency === 'BS'
+        ? Math.round(rawInput * 100) / 100
+        : Math.round(amountUSD * rate * 100) / 100;
+
+    const sign = data.type === 'INGRESO' ? 1 : -1;
+    const explicitNativeDelta =
+      account.currency === 'BS' && effectiveCurrency === 'BS'
+        ? sign * Math.round(rawInput * 100) / 100
+        : account.currency !== 'BS' && effectiveCurrency !== 'BS'
+          ? sign * Math.round(rawInput * 100) / 100
+          : undefined;
+
+    const updatedAccount = applyAccountDelta(account, sign * amountUSD, rate, explicitNativeDelta);
+
+    const now = new Date().toISOString();
+    const movDate = data.date || now.split('T')[0];
+
+    let createdExpense: BusinessExpense | undefined;
+    if (data.type !== 'INGRESO' && data.syncToExpense) {
+      const mapped = mapAccountToExpensePayment(account);
+      createdExpense = addExpense({
+        date: movDate,
+        category: data.category.trim() || 'Otros Gastos',
+        description: data.description.trim(),
+        beneficiary: data.beneficiary?.trim() || undefined,
+        amountUSD,
+        amountBs,
+        bcvRate: rate,
+        paymentCurrencyType: mapped.currencyType,
+        paymentMethod: mapped.method,
+        reference: data.reference,
+        notes: data.notes,
+      });
+    }
+
+    const newMovement: TreasuryMovement = {
+      id: `mov-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      movementNumber: nextMovementNumber(),
+      date: movDate,
+      type: data.type,
+      accountId: account.id,
+      accountName: account.name,
+      accountGroup: account.group,
+      category: data.category.trim() || (data.type === 'INGRESO' ? 'Ingreso Operativo' : 'Gasto Operativo'),
+      description: data.description.trim(),
+      amountUSD,
+      bcvRate: rate,
+      amountBs,
+      reference: data.reference?.trim() || undefined,
+      expenseId: createdExpense?.id,
+      notes: data.notes?.trim() || undefined,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    pendingSyncTreasuryMovementIdsRef.current.add(newMovement.id);
+    const nextMovements = [newMovement, ...treasuryMovementsRef.current].sort(
+      (a, b) =>
+        (b.date || b.createdAt || '').localeCompare(a.date || a.createdAt || '') ||
+        (b.createdAt || '').localeCompare(a.createdAt || '')
+    );
+    treasuryMovementsRef.current = nextMovements;
+    setTreasuryMovements(nextMovements);
+    try {
+      localStorage.setItem(STORAGE_KEYS.TREASURY_MOVEMENTS, JSON.stringify(nextMovements));
+    } catch {}
+    syncTreasuryMovementToFirestore(newMovement)
+      .then(() => pendingSyncTreasuryMovementIdsRef.current.delete(newMovement.id))
+      .catch(() => {});
+
+    return {
+      movement: newMovement,
+      account: updatedAccount,
+      expense: createdExpense,
+    };
+  };
+
+  const deleteTreasuryMovement = (id: string, revertAccountBalance: boolean = true) => {
+    const existing = treasuryMovementsRef.current.find((m) => m.id === id);
+    if (existing && revertAccountBalance) {
+      const account = treasuryAccountsRef.current.find((a) => a.id === existing.accountId);
+      if (account) {
+        const revertSign = existing.type === 'INGRESO' ? -1 : 1;
+        applyAccountDelta(
+          account,
+          revertSign * (Number(existing.amountUSD) || 0),
+          existing.bcvRate || settingsRef.current.bcvRate || 1
+        );
+      }
+    }
+    recordDeleted('treasuryMovements', [id]);
+    removeTreasuryMovementFromFirestore(id).catch(() => {});
+    const nextList = treasuryMovementsRef.current.filter((m) => m.id !== id);
+    treasuryMovementsRef.current = nextList;
+    setTreasuryMovements(nextList);
+  };
+
+  const importUnpaidPurchaseOrdersToCommitments = (): number => {
+    const existingLinkedIds = new Set(
+      treasuryCommitmentsRef.current.map((c) => c.linkedPurchaseOrderId).filter(Boolean)
+    );
+    const rate = settingsRef.current.bcvRate || 1;
+    let added = 0;
+
+    purchaseOrdersRef.current.forEach((po) => {
+      const pendingUSD = Math.round(Math.max(0, po.totalUSD - (po.paidAmountUSD || 0)) * 100) / 100;
+      if (pendingUSD <= 0.01 || existingLinkedIds.has(po.id)) return;
+      addTreasuryCommitment({
+        title: `${po.supplierName} (${po.orderNumber})`,
+        category: 'PROVEEDORES',
+        dueDate: po.creditDueDate || po.createdAt.split('T')[0],
+        amountUSD: pendingUSD,
+        bcvRate: rate,
+        linkedPurchaseOrderId: po.id,
+        notes: po.supplierInvoiceNumber ? `Factura proveedor: ${po.supplierInvoiceNumber}` : undefined,
+      });
+      added += 1;
+    });
+
+    return added;
+  };
+
+  // Computed Treasury KPIs (live linked to BCV rate & unpaid commitments)
+  const totalLiquidityUSD = useMemo(() => {
+    const rate = settings.bcvRate || 1;
+    return (
+      Math.round(
+        treasuryAccounts.reduce(
+          (sum, acc) =>
+            sum + computeAccountBalanceUSD(acc.currency, Number(acc.nativeBalance) || 0, rate),
+          0
+        ) * 100
+      ) / 100
+    );
+  }, [treasuryAccounts, settings.bcvRate]);
+
+  const totalLiquidityBs = totalLiquidityUSD * settings.bcvRate;
+
+  const pendingCommitmentsUSD = useMemo(() => {
+    return (
+      Math.round(
+        treasuryCommitments
+          .filter((cm) => !cm.isPaid)
+          .reduce((sum, cm) => sum + (Number(cm.amountUSD) || 0), 0) * 100
+      ) / 100
+    );
+  }, [treasuryCommitments]);
+
+  const pendingCommitmentsBs = pendingCommitmentsUSD * settings.bcvRate;
+  const projectedFreeBalanceUSD =
+    Math.round((totalLiquidityUSD - pendingCommitmentsUSD) * 100) / 100;
+  const projectedFreeBalanceBs = projectedFreeBalanceUSD * settings.bcvRate;
+
   // Online Store Orders
   const placeOnlineOrder = (
     orderData: Omit<OnlineOrder, 'id' | 'orderCode' | 'createdAt' | 'status' | 'bcvRate' | 'totalBs'>
@@ -5710,6 +6940,9 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     setSuppliers([]);
     setPurchaseOrders([]);
     setExpenses([]);
+    setTreasuryAccounts([]);
+    setTreasuryCommitments([]);
+    setTreasuryMovements([]);
     setCart([]);
     localStorage.clear();
   };
@@ -5815,6 +7048,26 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
         totalExpensesBs,
         currentMonthExpensesUSD,
         currentMonthExpensesBs,
+        treasuryAccounts,
+        treasuryCommitments,
+        treasuryMovements,
+        initializeDefaultTreasuryAccounts,
+        addTreasuryAccount,
+        updateTreasuryAccount,
+        deleteTreasuryAccount,
+        addTreasuryCommitment,
+        updateTreasuryCommitment,
+        deleteTreasuryCommitment,
+        markCommitmentPaidFromAccount,
+        recordTreasuryMovement,
+        deleteTreasuryMovement,
+        importUnpaidPurchaseOrdersToCommitments,
+        totalLiquidityUSD,
+        totalLiquidityBs,
+        pendingCommitmentsUSD,
+        pendingCommitmentsBs,
+        projectedFreeBalanceUSD,
+        projectedFreeBalanceBs,
         onlineOrders,
         placeOnlineOrder,
         updateOrderStatus,

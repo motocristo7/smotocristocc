@@ -98,6 +98,24 @@ service cloud.firestore {
       allow list: if true;
       allow get, create, update, delete: if isValidId(expenseId);
     }
+
+    // Tesorería: Cuentas Financieras
+    match /treasuryAccounts/{accountId} {
+      allow list: if true;
+      allow get, create, update, delete: if isValidId(accountId);
+    }
+
+    // Tesorería: Planificación de Pagos y Gastos Fijos
+    match /treasuryCommitments/{commitmentId} {
+      allow list: if true;
+      allow get, create, update, delete: if isValidId(commitmentId);
+    }
+
+    // Tesorería: Movimientos Recientes
+    match /treasuryMovements/{movementId} {
+      allow list: if true;
+      allow get, create, update, delete: if isValidId(movementId);
+    }
   }
 }
 

@@ -1,6 +1,6 @@
 import { jsPDF } from 'jspdf';
 import QRCode from 'qrcode';
-import { Sale, BusinessSettings, Product, ServiceOrder, TechnicianPayout } from '../types';
+import { Sale, BusinessSettings, Product, ServiceOrder, TechnicianPayout, PurchaseOrder } from '../types';
 import { formatUSD, formatBs, getPublicAppOrigin } from './whatsapp';
 
 /**
@@ -1768,3 +1768,424 @@ export function getTechnicianPayoutPDFBlob(
   const doc = generateTechnicianPayoutPDF(payout, settings);
   return doc.output('blob');
 }
+
+/**
+ * Genera el documento PDF de Orden de Compra / Estado de Deuda y Abonos para el Proveedor / Vendedor
+ */
+export function generatePurchaseOrderPDF(
+  order: PurchaseOrder,
+  settings: BusinessSettings
+): jsPDF {
+  const doc = new jsPDF({
+    orientation: 'portrait',
+    unit: 'mm',
+    format: 'a4',
+  });
+
+  const rate = settings.bcvRate || order.bcvRate || 1;
+  const totalUSD = Number(order.totalUSD || 0);
+  const paidUSD = Number(order.paidAmountUSD || 0);
+  const remainingUSD = Math.max(0, Math.round((totalUSD - paidUSD) * 100) / 100);
+  const totalBs = totalUSD * rate;
+  const remainingBs = remainingUSD * rate;
+  const isCredit = order.paymentType === 'CREDITO';
+
+  const pageWidth = 210;
+  const pageHeight = 297;
+  const margin = 15;
+  const contentWidth = pageWidth - margin * 2;
+  const commercialName = settings.commercialName || settings.name || 'MotoCristoc';
+  const cleanPhone = (settings.whatsapp || settings.phone || '+584127860509').replace(/[^\d+]/g, '');
+  const qrTargetUrl = `https://wa.me/${cleanPhone.replace('+', '')}`;
+
+  const drawPageHeader = (): number => {
+    const headerY = 14;
+    doc.setTextColor(15, 23, 42);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(16);
+    doc.text(commercialName, margin, headerY + 4);
+
+    doc.setFillColor(245, 158, 11);
+    doc.circle(margin + doc.getTextWidth(commercialName) + 2.5, headerY + 2.5, 1.2, 'F');
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(8.5);
+    doc.setTextColor(30, 41, 59);
+    doc.text(`RIF: ${settings.rif || 'V-19996141-8'}`, margin, headerY + 9.5);
+
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7.5);
+    doc.setTextColor(71, 85, 105);
+    const addressStr =
+      settings.address ||
+      'Calle Kennedy con calle 2 de Campo de Oro casa #1-23. Frente a la torre 5 de, Mérida 5101, Mérida';
+    const addressLines: string[] = doc.splitTextToSize(addressStr, 112);
+    doc.text(addressLines, margin, headerY + 13.5);
+
+    const contactY = headerY + 13.5 + addressLines.length * 3.5;
+    doc.text(`Tel / WhatsApp: ${settings.phone || '+584127860509'}`, margin, contactY);
+    doc.text(settings.email || 'servimotoscristocentro@gmail.com', margin, contactY + 3.8);
+
+    // Document Box Top Right
+    const docBoxW = 66;
+    const docBoxX = pageWidth - margin - docBoxW;
+    doc.setFillColor(248, 250, 252);
+    doc.setDrawColor(245, 158, 11);
+    doc.setLineWidth(0.45);
+    doc.roundedRect(docBoxX, headerY, docBoxW, 20, 2, 2, 'FD');
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(7.2);
+    doc.setTextColor(180, 83, 9);
+    doc.text(
+      remainingUSD > 0.01 ? 'FACTURA / ORDEN POR PAGAR' : 'ORDEN DE COMPRA CANCELADA',
+      docBoxX + docBoxW / 2,
+      headerY + 5,
+      { align: 'center' }
+    );
+
+    doc.setFontSize(11.5);
+    doc.setTextColor(15, 23, 42);
+    doc.text(`#${order.orderNumber}`, docBoxX + docBoxW / 2, headerY + 11.2, { align: 'center' });
+
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7);
+    doc.setTextColor(100, 116, 139);
+    const dateLabel = new Date(order.createdAt).toLocaleDateString('es-VE', {
+      day: '2-digit',
+      month: '2-digit',
+      year: 'numeric',
+    });
+    doc.text(`Emisión: ${dateLabel}`, docBoxX + docBoxW / 2, headerY + 16.5, { align: 'center' });
+
+    const dividerY = Math.max(headerY + 23, contactY + 7);
+    doc.setDrawColor(15, 23, 42);
+    doc.setLineWidth(0.4);
+    doc.line(margin, dividerY, margin + contentWidth, dividerY);
+    doc.setDrawColor(245, 158, 11);
+    doc.setLineWidth(0.9);
+    doc.line(margin, dividerY, margin + 32, dividerY);
+
+    return dividerY + 5;
+  };
+
+  let y = drawPageHeader();
+
+  const ensureSpace = (requiredHeight: number) => {
+    if (y + requiredHeight > pageHeight - 24) {
+      doc.addPage();
+      y = drawPageHeader();
+      y += 2;
+    }
+  };
+
+  // --- SUPPLIER & TERMS INFO CARD ---
+  const infoBoxH = 29;
+  doc.setFillColor(248, 250, 252);
+  doc.setDrawColor(226, 232, 240);
+  doc.setLineWidth(0.3);
+  doc.roundedRect(margin, y, contentWidth, infoBoxH, 2, 2, 'FD');
+
+  const midX = margin + contentWidth / 2;
+  doc.line(midX, y + 2, midX, y + infoBoxH - 2);
+
+  // Left: Supplier & Vendor
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(7.2);
+  doc.setTextColor(180, 83, 9);
+  doc.text('DATOS DEL PROVEEDOR Y VENDEDOR', margin + 4, y + 5);
+
+  doc.setFontSize(8.8);
+  doc.setTextColor(15, 23, 42);
+  doc.text(
+    doc.splitTextToSize(`${order.supplierName} (${order.supplierCode})`, contentWidth / 2 - 8)[0] || '',
+    margin + 4,
+    y + 10.5
+  );
+
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(7.8);
+  doc.setTextColor(51, 65, 85);
+  doc.text(`Vendedor: ${order.vendorName || 'No registrado'}`, margin + 4, y + 15.8);
+  doc.text(`Tel. Vendedor: ${order.vendorPhone || 'No registrado'}`, margin + 4, y + 20.5);
+  if (order.supplierInvoiceNumber) {
+    doc.setFont('helvetica', 'bold');
+    doc.text(`Fact. Proveedor: #${order.supplierInvoiceNumber}`, margin + 4, y + 25.2);
+  }
+
+  // Right: Condition, Credit & Reception
+  const rightX = midX + 4;
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(7.2);
+  doc.setTextColor(180, 83, 9);
+  doc.text('CONDICIÓN, RECEPCIÓN Y PAGO', rightX, y + 5);
+
+  doc.setFontSize(8.2);
+  doc.setTextColor(15, 23, 42);
+  doc.text(
+    isCredit
+      ? `Condición: A CRÉDITO (${order.creditDays || 15} días)`
+      : 'Condición: DE CONTADO',
+    rightX,
+    y + 10.5
+  );
+
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(7.8);
+  doc.setTextColor(51, 65, 85);
+  if (isCredit) {
+    doc.text(`Vencimiento: ${order.creditDueDate || 'A convenir'}`, rightX, y + 15.8);
+  } else {
+    doc.text(`Forma de Pago: ${order.initialPaymentMethod || 'Contado'}`, rightX, y + 15.8);
+  }
+
+  const receptionText =
+    order.receivedStatus === 'RECIBIDA'
+      ? `Mercancía: RECIBIDA${order.receivedDate ? ` (Llegó: ${order.receivedDate})` : ''}`
+      : 'Mercancía: PENDIENTE POR LLEGAR';
+  doc.text(receptionText, rightX, y + 20.5);
+  doc.text(`Tasa BCV Referencia: Bs. ${rate.toFixed(2)} / USD`, rightX, y + 25.2);
+
+  y += infoBoxH + 6;
+
+  // --- PURCHASED PARTS TABLE ---
+  ensureSpace(24);
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(8.5);
+  doc.setTextColor(15, 23, 42);
+  doc.text(`REPUESTOS COMPRADOS (${order.items.length})`, margin, y);
+  y += 3;
+
+  doc.setFillColor(15, 23, 42);
+  doc.roundedRect(margin, y, contentWidth, 7.5, 1.5, 1.5, 'F');
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(7.2);
+  doc.setTextColor(255, 255, 255);
+
+  const cSku = margin + 3;
+  const cName = margin + 28;
+  const cQty = margin + 122;
+  const cCost = margin + 148;
+  const cSub = pageWidth - margin - 3;
+
+  doc.text('CÓD/SKU', cSku, y + 5);
+  doc.text('REPUESTO / DESCRIPCIÓN', cName, y + 5);
+  doc.text('CANT.', cQty, y + 5, { align: 'center' });
+  doc.text('COSTO UNIT.', cCost, y + 5, { align: 'right' });
+  doc.text('SUBTOTAL ($)', cSub, y + 5, { align: 'right' });
+  y += 7.5;
+
+  order.items.forEach((item, idx) => {
+    const wrappedName: string[] = doc.splitTextToSize((item.name || '').toUpperCase(), 78);
+    const rowH = Math.max(8.5, wrappedName.length * 3.8 + 3.5);
+    ensureSpace(rowH + 2);
+
+    doc.setFillColor(idx % 2 === 0 ? 255 : 248, idx % 2 === 0 ? 255 : 250, idx % 2 === 0 ? 255 : 252);
+    doc.rect(margin, y, contentWidth, rowH, 'F');
+    doc.setDrawColor(226, 232, 240);
+    doc.setLineWidth(0.2);
+    doc.line(margin, y + rowH, margin + contentWidth, y + rowH);
+
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7);
+    doc.setTextColor(100, 116, 139);
+    doc.text((item.sku || 'EXT').slice(0, 14), cSku, y + 5);
+
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7.5);
+    doc.setTextColor(15, 23, 42);
+    doc.text(wrappedName, cName, y + 5);
+
+    doc.setFont('helvetica', 'bold');
+    doc.text(String(item.quantity), cQty, y + 5, { align: 'center' });
+
+    doc.setFont('helvetica', 'normal');
+    doc.text(formatUSD(item.unitCostUSD), cCost, y + 5, { align: 'right' });
+
+    doc.setFont('helvetica', 'bold');
+    doc.text(formatUSD(item.totalCostUSD), cSub, y + 5, { align: 'right' });
+
+    y += rowH;
+  });
+
+  y += 6;
+
+  // --- PAYMENTS / ABONOS HISTORY TABLE (IF ANY) ---
+  if (order.payments && order.payments.length > 0) {
+    ensureSpace(22);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(8.5);
+    doc.setTextColor(15, 23, 42);
+    doc.text(`HISTORIAL DE PAGOS Y ABONOS REGISTRADOS (${order.payments.length})`, margin, y);
+    y += 3;
+
+    doc.setFillColor(5, 150, 105);
+    doc.roundedRect(margin, y, contentWidth, 7, 1.5, 1.5, 'F');
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(7);
+    doc.setTextColor(255, 255, 255);
+    doc.text('FECHA', margin + 3, y + 4.7);
+    doc.text('FORMA DE PAGO (DIVISAS / USDT / BS)', margin + 38, y + 4.7);
+    doc.text('REFERENCIA', margin + 115, y + 4.7);
+    doc.text('MONTO ($)', margin + 150, y + 4.7, { align: 'right' });
+    doc.text('EQUIV. (BS)', pageWidth - margin - 3, y + 4.7, { align: 'right' });
+    y += 7;
+
+    order.payments.forEach((pay, idx) => {
+      const rowH = 7.5;
+      ensureSpace(rowH);
+      doc.setFillColor(idx % 2 === 0 ? 255 : 240, idx % 2 === 0 ? 255 : 253, idx % 2 === 0 ? 255 : 244);
+      doc.rect(margin, y, contentWidth, rowH, 'F');
+      doc.setDrawColor(226, 232, 240);
+      doc.line(margin, y + rowH, margin + contentWidth, y + rowH);
+
+      const pDate = new Date(pay.date).toLocaleDateString('es-VE', {
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric',
+      });
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(7.2);
+      doc.setTextColor(15, 23, 42);
+      doc.text(pDate, margin + 3, y + 4.8);
+      doc.text(doc.splitTextToSize(pay.paymentMethod || pay.currencyCategory, 72)[0] || '', margin + 38, y + 4.8);
+      doc.setTextColor(100, 116, 139);
+      doc.text((pay.reference || '-').slice(0, 18), margin + 115, y + 4.8);
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(5, 150, 105);
+      doc.text(formatUSD(pay.amountUSD), margin + 150, y + 4.8, { align: 'right' });
+      doc.setFont('helvetica', 'normal');
+      doc.text(formatBs(pay.amountBs || pay.amountUSD * rate), pageWidth - margin - 3, y + 4.8, { align: 'right' });
+      y += rowH;
+    });
+
+    y += 6;
+  }
+
+  // --- SUMMARY & BALANCE CARD + QR ---
+  ensureSpace(46);
+  const qrSize = 26;
+  drawVectorQRCode(doc, qrTargetUrl, margin, y, qrSize);
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(6);
+  doc.setTextColor(100, 116, 139);
+  doc.text('WhatsApp Administración', margin + qrSize / 2, y + qrSize + 3.8, { align: 'center' });
+
+  const sumX = margin + qrSize + 8;
+  const sumW = contentWidth - qrSize - 8;
+
+  // Total & Paid Summary Box
+  doc.setFillColor(248, 250, 252);
+  doc.setDrawColor(203, 213, 225);
+  doc.setLineWidth(0.35);
+  doc.roundedRect(sumX, y, sumW, 17, 2, 2, 'FD');
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(8);
+  doc.setTextColor(51, 65, 85);
+  doc.text('TOTAL DE LA COMPRA:', sumX + 4, y + 6);
+  doc.setFontSize(11);
+  doc.setTextColor(15, 23, 42);
+  doc.text(`${formatUSD(totalUSD)} (${formatBs(totalBs)})`, sumX + sumW - 4, y + 6.3, { align: 'right' });
+
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(8);
+  doc.setTextColor(5, 150, 105);
+  doc.text('Total Abonado / Pagado:', sumX + 4, y + 12.8);
+  doc.setFont('helvetica', 'bold');
+  doc.text(`-${formatUSD(paidUSD)}`, sumX + sumW - 4, y + 12.8, { align: 'right' });
+
+  // Remaining Debt Box
+  const debtY = y + 20;
+  const hasDebt = remainingUSD > 0.01;
+  doc.setFillColor(hasDebt ? 255 : 236, hasDebt ? 251 : 253, hasDebt ? 235 : 245);
+  doc.setDrawColor(hasDebt ? 245 : 16, hasDebt ? 158 : 185, hasDebt ? 11 : 129);
+  doc.setLineWidth(0.5);
+  doc.roundedRect(sumX, debtY, sumW, 16, 2, 2, 'FD');
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(8);
+  doc.setTextColor(hasDebt ? 146 : 6, hasDebt ? 64 : 95, hasDebt ? 14 : 70);
+  doc.text(
+    hasDebt ? 'SALDO PENDIENTE QUE SE DEBE:' : 'ESTADO DE LA FACTURA:',
+    sumX + 4,
+    debtY + 6.2
+  );
+
+  doc.setFontSize(12);
+  doc.setTextColor(hasDebt ? 180 : 4, hasDebt ? 83 : 120, hasDebt ? 9 : 87);
+  doc.text(
+    hasDebt ? formatUSD(remainingUSD) : '$0.00 (PAGADA AL 100%)',
+    sumX + sumW - 4,
+    debtY + 6.5,
+    { align: 'right' }
+  );
+
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(7.6);
+  doc.setTextColor(71, 85, 105);
+  doc.text(
+    hasDebt
+      ? `Equivalente pendiente (BCV Bs. ${rate.toFixed(2)}): ${formatBs(remainingBs)}`
+      : 'Factura cancelada en su totalidad.',
+    sumX + sumW - 4,
+    debtY + 12.5,
+    { align: 'right' }
+  );
+
+  y = debtY + 22;
+
+  if (order.notes) {
+    ensureSpace(14);
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(7.5);
+    doc.setTextColor(71, 85, 105);
+    doc.text('Observaciones:', margin, y);
+    y += 4;
+    doc.setFont('helvetica', 'normal');
+    const noteLines: string[] = doc.splitTextToSize(order.notes, contentWidth);
+    doc.text(noteLines, margin, y);
+  }
+
+  return doc;
+}
+
+export function downloadPurchaseOrderPDF(
+  order: PurchaseOrder,
+  settings: BusinessSettings
+): void {
+  const doc = generatePurchaseOrderPDF(order, settings);
+  const safeNum = String(order.orderNumber || 'OC').replace(/[^a-zA-Z0-9_-]/g, '_');
+  const safeSupplier = String(order.supplierCode || order.supplierName || 'Proveedor')
+    .replace(/[^a-zA-Z0-9_-]/g, '_')
+    .slice(0, 20);
+  const fileName = `Orden_Compra_${safeNum}_${safeSupplier}.pdf`;
+
+  try {
+    if (typeof window !== 'undefined' && typeof document !== 'undefined') {
+      const blob = doc.output('blob');
+      const blobUrl = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = blobUrl;
+      link.download = fileName;
+      link.style.display = 'none';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 15000);
+      return;
+    }
+  } catch (err) {
+    console.warn('Blob download fallback:', err);
+  }
+  doc.save(fileName);
+}
+
+export function getPurchaseOrderPDFBlob(
+  order: PurchaseOrder,
+  settings: BusinessSettings
+): Blob {
+  const doc = generatePurchaseOrderPDF(order, settings);
+  return doc.output('blob');
+}
+

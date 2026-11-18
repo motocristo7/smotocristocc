@@ -7,6 +7,8 @@ import {
   TechnicianPayout,
   Technician,
   CreditPaymentRecord,
+  PurchaseOrder,
+  PurchasePaymentRecord,
 } from '../types';
 
 export function formatUSD(amount: number): string {
@@ -691,4 +693,130 @@ Por favor revisar e iniciar el servicio. ¡Gracias por tu compromiso! 🏍️`;
 
   return { message, url };
 }
+
+/**
+ * Builds WhatsApp notification sent to the SUPPLIER VENDOR regarding the Purchase Order / Invoice owed (with PDF attachment)
+ */
+export function buildPurchaseOrderDebtWhatsAppMessage(
+  order: PurchaseOrder,
+  settings: BusinessSettings
+): { message: string; url: string } {
+  const rate = settings.bcvRate || order.bcvRate;
+  const businessName = (settings.commercialName || settings.name || 'MotoCristoc').toUpperCase();
+  const remainingUSD = Math.max(0, Math.round((order.totalUSD - (order.paidAmountUSD || 0)) * 100) / 100);
+  const remainingBs = remainingUSD * rate;
+  const isCredit = order.paymentType === 'CREDITO';
+
+  const itemsText =
+    order.items.length > 0
+      ? order.items
+          .map(
+            (it) =>
+              `▪ ${it.quantity}x ${it.name} (${formatUSD(it.unitCostUSD)} c/u → ${formatUSD(it.totalCostUSD)})`
+          )
+          .join('\n')
+      : '▪ Detalle adjunto en factura PDF';
+
+  const receptionLine =
+    order.receivedStatus === 'RECIBIDA'
+      ? `✅ *Mercancía:* Recibida${order.receivedDate ? ` (Llegó: ${order.receivedDate})` : ''}`
+      : `⏳ *Mercancía:* Pendiente por recibir`;
+
+  const creditLine = isCredit
+    ? `📌 *Condición:* A CRÉDITO (${order.creditDays || 15} días${order.creditDueDate ? ` · Vence: ${order.creditDueDate}` : ''})`
+    : `📌 *Condición:* DE CONTADO`;
+
+  const statusLine =
+    remainingUSD <= 0.01
+      ? `✅ *ESTADO:* *FACTURA CANCELADA AL 100% ($0.00 pendiente)*`
+      : `🚨 *MONTO ACTUAL QUE SE DEBE:* *${formatUSD(remainingUSD)}* | *${formatBs(remainingBs)}*`;
+
+  const message = `📦 *ORDEN DE COMPRA / ESTADO DE FACTURA* · *${businessName}*
+───────────────────────
+Hola *${order.vendorName || order.supplierName}*, te saludamos de *${businessName}*:
+
+🏢 *Proveedor:* ${order.supplierName} (Cód: *${order.supplierCode}*)
+🧾 *Orden de Compra:* #${order.orderNumber}${order.supplierInvoiceNumber ? `\n📄 *Factura Proveedor:* #${order.supplierInvoiceNumber}` : ''}
+${creditLine}
+${receptionLine}
+
+🔩 *Repuestos solicitados:*
+${itemsText}
+
+───────────────────────
+💵 *Total de la Factura:* ${formatUSD(order.totalUSD)} (${formatBs(order.totalUSD * rate)})
+${(order.paidAmountUSD || 0) > 0 ? `✅ *Total Abonado:* ${formatUSD(order.paidAmountUSD)}\n` : ''}${statusLine}
+_(Calculado a Tasa BCV: Bs. ${rate.toFixed(2)})_
+
+📎 Te adjuntamos la factura / orden de compra en *PDF* con el detalle completo. ¡Saludos!`;
+
+  const url = buildWhatsAppSendUrl(order.vendorPhone, message);
+  return { message, url };
+}
+
+/**
+ * Builds WhatsApp notification sent to the SUPPLIER VENDOR when an abono/payment is applied to a purchase order
+ */
+export function buildPurchaseOrderPaymentWhatsAppMessage(
+  order: PurchaseOrder,
+  payment: PurchasePaymentRecord,
+  settings: BusinessSettings,
+  totalSupplierDebtAfterUSD?: number
+): { message: string; url: string } {
+  const rate = settings.bcvRate || payment.bcvRate || order.bcvRate;
+  const businessName = (settings.commercialName || settings.name || 'MotoCristoc').toUpperCase();
+
+  const totalPaidAfterUSD = Math.round((order.paidAmountUSD || 0) * 100) / 100;
+  const remainingOrderUSD = Math.max(0, Math.round((order.totalUSD - totalPaidAfterUSD) * 100) / 100);
+  const remainingOrderBs = remainingOrderUSD * rate;
+
+  const totalDebtAfterUSD =
+    totalSupplierDebtAfterUSD !== undefined
+      ? Math.max(0, Math.round(totalSupplierDebtAfterUSD * 100) / 100)
+      : remainingOrderUSD;
+  const totalDebtAfterBs = totalDebtAfterUSD * rate;
+
+  const dateStr = new Date(payment.date).toLocaleString('es-VE', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+
+  const hasOtherPendingOrders = Math.abs(totalDebtAfterUSD - remainingOrderUSD) > 0.01;
+
+  const balanceLine =
+    remainingOrderUSD <= 0.01
+      ? `🎉 *ESTADO DE ESTA FACTURA:* *PAGADA AL 100% ($0.00 pendiente)*`
+      : `🚨 *SALDO RESTANTE QUE SE DEBE EN ESTA FACTURA:* *${formatUSD(remainingOrderUSD)}* | *${formatBs(remainingOrderBs)}*`;
+
+  const consolidatedDebtLine = hasOtherPendingOrders
+    ? `\n📌 *DEUDA TOTAL ACTUAL CON ${order.supplierName.toUpperCase()}:* *${formatUSD(totalDebtAfterUSD)}* | *${formatBs(totalDebtAfterBs)}*`
+    : totalDebtAfterUSD <= 0.01
+    ? `\n🟢 *SALDO TOTAL CON EL PROVEEDOR:* *$0.00 (AL DÍA)*`
+    : '';
+
+  const message = `✅ *NOTIFICACIÓN DE ABONO / PAGO A PROVEEDOR* · *${businessName}*
+───────────────────────
+Hola *${order.vendorName || order.supplierName}*, hemos registrado un pago / abono a su cuenta:
+
+🏢 *Proveedor:* ${order.supplierName} (Cód: *${order.supplierCode}*)
+🧾 *Orden de Compra:* #${order.orderNumber}${order.supplierInvoiceNumber ? ` | *Fact. Prov:* #${order.supplierInvoiceNumber}` : ''}
+📅 *Fecha del Abono:* ${dateStr}
+
+💵 *MONTO ABONADO HOY:* *${formatUSD(payment.amountUSD)}* | *${formatBs(payment.amountBs || payment.amountUSD * rate)}*
+💳 *Forma de Pago:* ${payment.paymentMethod}
+${payment.reference ? `🔖 *Referencia / Comprobante:* ${payment.reference}\n` : ''}${payment.notes ? `📝 *Nota:* ${payment.notes}\n` : ''}───────────────────────
+📊 *Total de la Factura:* ${formatUSD(order.totalUSD)}
+✅ *Total Abonado Acumulado:* ${formatUSD(totalPaidAfterUSD)}
+${balanceLine}${consolidatedDebtLine}
+_(Calculado a Tasa BCV: Bs. ${rate.toFixed(2)})_
+
+📎 Adjunto te enviamos el comprobante / estado de cuenta actualizado en *PDF*. ¡Muchas gracias!`;
+
+  const url = buildWhatsAppSendUrl(order.vendorPhone, message);
+  return { message, url };
+}
+
 

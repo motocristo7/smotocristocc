@@ -44,7 +44,8 @@
         "bcvOfficialDate": { "type": "string", "description": "Fecha valor oficial BCV" },
         "bcvSource": { "type": "string", "description": "Fuente de la tasa" },
         "bcvLastUpdated": { "type": "string", "description": "Hora de actualización" },
-        "customCategories": { "type": "array", "description": "Categorías personalizadas de inventario" }
+        "customCategories": { "type": "array", "description": "Categorías personalizadas de inventario" },
+        "customExpenseCategories": { "type": "array", "description": "Categorías personalizadas de gastos del negocio" }
       },
       "required": ["commercialName", "rif", "phone", "bcvRate"]
     },
@@ -166,7 +167,10 @@
         "onlineOrders": { "type": "array", "description": "IDs de pedidos eliminados" },
         "technicians": { "type": "array", "description": "IDs de técnicos eliminados" },
         "serviceCommissions": { "type": "array", "description": "IDs de comisiones eliminadas" },
-        "technicianPayouts": { "type": "array", "description": "IDs de liquidaciones eliminadas" }
+        "technicianPayouts": { "type": "array", "description": "IDs de liquidaciones eliminadas" },
+        "suppliers": { "type": "array", "description": "IDs de proveedores eliminados" },
+        "purchaseOrders": { "type": "array", "description": "IDs de órdenes de compra eliminadas" },
+        "expenses": { "type": "array", "description": "IDs de gastos del negocio eliminados" }
       }
     },
     "Technician": {
@@ -223,6 +227,69 @@
         "createdAt": { "type": "string", "description": "Fecha y hora del pago ISO" }
       },
       "required": ["id", "payoutNumber", "technicianId", "technicianName", "amountUSD", "bcvRate", "amountBs", "paymentMethod", "remainingDebtUSD", "createdAt"]
+    },
+    "Supplier": {
+      "title": "Supplier",
+      "description": "Proveedor de repuestos con código único y datos del vendedor",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "ID único del proveedor" },
+        "code": { "type": "string", "description": "Código único del proveedor (ej. PROV-001)" },
+        "name": { "type": "string", "description": "Nombre o razón social del proveedor" },
+        "rif": { "type": "string", "description": "RIF del proveedor" },
+        "vendorName": { "type": "string", "description": "Nombre del vendedor asignado" },
+        "vendorPhone": { "type": "string", "description": "Teléfono WhatsApp del vendedor" },
+        "createdAt": { "type": "string", "description": "Fecha de registro ISO" }
+      },
+      "required": ["id", "code", "name", "vendorName", "vendorPhone", "createdAt"]
+    },
+    "PurchaseOrder": {
+      "title": "PurchaseOrder",
+      "description": "Orden de compra a proveedor (contado/crédito, recepción, abonos en divisas/USDT/Bs)",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "ID único de la orden de compra" },
+        "orderNumber": { "type": "string", "description": "Correlativo OC-YYYY-XXXX" },
+        "supplierInvoiceNumber": { "type": "string", "description": "Número de factura del proveedor" },
+        "supplierId": { "type": "string", "description": "ID del proveedor" },
+        "supplierCode": { "type": "string", "description": "Código del proveedor" },
+        "supplierName": { "type": "string", "description": "Nombre del proveedor" },
+        "vendorName": { "type": "string", "description": "Nombre del vendedor" },
+        "vendorPhone": { "type": "string", "description": "Teléfono del vendedor" },
+        "totalUSD": { "type": "number", "description": "Total de la compra en USD" },
+        "bcvRate": { "type": "number", "description": "Tasa BCV aplicada" },
+        "totalBs": { "type": "number", "description": "Total equivalente en Bs" },
+        "paymentType": { "type": "string", "description": "CONTADO o CREDITO" },
+        "creditDays": { "type": "number", "description": "Días de crédito otorgados" },
+        "creditDueDate": { "type": "string", "description": "Fecha de vencimiento del crédito" },
+        "paymentStatus": { "type": "string", "description": "PENDIENTE, PARCIAL o PAGADO" },
+        "paidAmountUSD": { "type": "number", "description": "Monto abonado/pagado acumulado en USD" },
+        "receivedStatus": { "type": "string", "description": "PENDIENTE o RECIBIDA" },
+        "receivedDate": { "type": "string", "description": "Fecha de llegada de la mercancía" },
+        "createdAt": { "type": "string", "description": "Fecha de creación ISO" }
+      },
+      "required": ["id", "orderNumber", "supplierId", "supplierCode", "supplierName", "vendorName", "vendorPhone", "totalUSD", "bcvRate", "paymentType", "paymentStatus", "paidAmountUSD", "receivedStatus", "createdAt"]
+    },
+    "BusinessExpense": {
+      "title": "BusinessExpense",
+      "description": "Gasto operativo del negocio (sueldos, papelería, limpieza, servicios) con método de pago en Bs, USDT, Efectivo Bs o Efectivo USD",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "ID único del gasto" },
+        "expenseNumber": { "type": "string", "description": "Correlativo GAS-YYYY-XXXX" },
+        "date": { "type": "string", "description": "Fecha del gasto YYYY-MM-DD" },
+        "category": { "type": "string", "description": "Categoría del gasto" },
+        "description": { "type": "string", "description": "Descripción o concepto del gasto" },
+        "beneficiary": { "type": "string", "description": "Empleado, proveedor o comercio receptor" },
+        "amountUSD": { "type": "number", "description": "Monto en USD" },
+        "bcvRate": { "type": "number", "description": "Tasa BCV aplicada" },
+        "amountBs": { "type": "number", "description": "Monto equivalente en Bolívares" },
+        "paymentCurrencyType": { "type": "string", "description": "BS, USDT, EFECTIVO_BS o EFECTIVO_USD" },
+        "paymentMethod": { "type": "string", "description": "Descripción del método de pago" },
+        "reference": { "type": "string", "description": "Referencia de pago" },
+        "createdAt": { "type": "string", "description": "Fecha de registro ISO" }
+      },
+      "required": ["id", "expenseNumber", "date", "category", "description", "amountUSD", "bcvRate", "amountBs", "paymentCurrencyType", "paymentMethod", "createdAt"]
     }
   },
   "firestore": {
@@ -269,6 +336,18 @@
     "/technicianPayouts/{payoutId}": {
       "schema": { "$ref": "#/entities/TechnicianPayout" },
       "description": "Historial de pagos y facturas de liquidación de comisiones a técnicos"
+    },
+    "/suppliers/{supplierId}": {
+      "schema": { "$ref": "#/entities/Supplier" },
+      "description": "Proveedores registrados con su código, vendedor y teléfono"
+    },
+    "/purchaseOrders/{purchaseOrderId}": {
+      "schema": { "$ref": "#/entities/PurchaseOrder" },
+      "description": "Órdenes de compra a proveedores, control de crédito, recepción y abonos"
+    },
+    "/expenses/{expenseId}": {
+      "schema": { "$ref": "#/entities/BusinessExpense" },
+      "description": "Gastos operativos del negocio por categoría y forma de pago"
     }
   }
 }

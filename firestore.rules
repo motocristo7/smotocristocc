@@ -80,5 +80,24 @@ service cloud.firestore {
       allow list: if true;
       allow get, create, update, delete: if isValidId(payoutId);
     }
+
+    // Proveedores de Repuestos
+    match /suppliers/{supplierId} {
+      allow list: if true;
+      allow get, create, update, delete: if isValidId(supplierId);
+    }
+
+    // Órdenes de Compra a Proveedores
+    match /purchaseOrders/{purchaseOrderId} {
+      allow list: if true;
+      allow get, create, update, delete: if isValidId(purchaseOrderId);
+    }
+
+    // Gastos Operativos del Negocio
+    match /expenses/{expenseId} {
+      allow list: if true;
+      allow get, create, update, delete: if isValidId(expenseId);
+    }
   }
 }
+

@@ -19,6 +19,8 @@ import {
   FileText,
   Clock,
   BadgePercent,
+  Truck,
+  Receipt,
 } from 'lucide-react';
 
 interface NavItem {
@@ -42,6 +44,8 @@ export const AdminSidebar: React.FC = () => {
     serviceOrders,
     serviceCommissions,
     pendingCreditSales,
+    purchaseOrders,
+    pendingReceptionOrdersCount,
     enterPublicStore,
     onlineStoreBrand,
   } = useApp();
@@ -59,6 +63,11 @@ export const AdminSidebar: React.FC = () => {
   const pendingCommissionsCount = serviceCommissions.filter(
     (c) => Math.max(0, c.commissionAmountUSD - c.paidAmountUSD) > 0.01
   ).length;
+
+  const pendingPurchasePayCount = purchaseOrders.filter(
+    (po) => Math.max(0, po.totalUSD - (po.paidAmountUSD || 0)) > 0.01
+  ).length;
+  const purchaseBadgeCount = Math.max(pendingPurchasePayCount, pendingReceptionOrdersCount);
 
   const pendingCreditCount = pendingCreditSales.length;
 
@@ -87,6 +96,19 @@ export const AdminSidebar: React.FC = () => {
       shortLabel: 'Por Cobrar',
       icon: Clock,
       badge: pendingCreditCount > 0 ? pendingCreditCount : undefined,
+    },
+    {
+      view: 'admin_compras',
+      label: 'Órdenes de Compra',
+      shortLabel: 'Compras',
+      icon: Truck,
+      badge: purchaseBadgeCount > 0 ? purchaseBadgeCount : undefined,
+    },
+    {
+      view: 'admin_gastos',
+      label: 'Gastos del Negocio',
+      shortLabel: 'Gastos',
+      icon: Receipt,
     },
     {
       view: 'admin_inventario',

@@ -285,6 +285,7 @@ export interface BusinessSettings {
   invoiceDisclaimer: string;
   warrantyPolicy: string;
   customCategories?: string[];
+  customExpenseCategories?: string[];
 }
 
 export interface Technician {
@@ -354,4 +355,115 @@ export interface TechnicianPayout {
   remainingDebtUSD: number; // Deuda total restante con el técnico después de este pago
   remainingDebtBs: number;
   createdAt: string;
+}
+
+export interface Supplier {
+  id: string;
+  code: string; // Código único del proveedor (ej: PROV-001)
+  name: string; // Razón social / nombre del proveedor
+  rif?: string; // RIF / Documento fiscal opcional
+  vendorName: string; // Nombre del vendedor asignado
+  vendorPhone: string; // Teléfono WhatsApp del vendedor
+  email?: string;
+  address?: string;
+  notes?: string;
+  createdAt: string;
+  updatedAt?: string;
+}
+
+export type PurchasePaymentCurrency = 'DIVISAS' | 'USDT' | 'BS';
+
+export interface PurchaseOrderItem {
+  id?: string;
+  productId?: string;
+  sku?: string;
+  name: string;
+  category?: string;
+  quantity: number;
+  unitCostUSD: number;
+  totalCostUSD: number;
+  isNewProduct?: boolean;
+}
+
+export interface PurchasePaymentRecord {
+  id: string;
+  date: string; // ISO string
+  amountUSD: number;
+  amountBs: number;
+  bcvRate: number;
+  currencyCategory: PurchasePaymentCurrency; // 'DIVISAS' | 'USDT' | 'BS'
+  paymentMethod: string; // Ej: 'Divisas ($ Efectivo)', 'USDT (Binance Pay)', 'Bolívares (Pago Móvil)', 'Bolívares (Transferencia)'
+  reference?: string;
+  notes?: string;
+}
+
+export type PurchaseOrderPaymentStatus = 'PENDIENTE' | 'PARCIAL' | 'PAGADO';
+export type PurchaseOrderReceivedStatus = 'PENDIENTE' | 'RECIBIDA';
+
+export interface PurchaseOrder {
+  id: string;
+  orderNumber: string; // Correlativo interno: OC-2026-0001
+  supplierInvoiceNumber?: string; // Nro. factura física del proveedor (opcional)
+  supplierId: string;
+  supplierCode: string;
+  supplierName: string;
+  vendorName: string;
+  vendorPhone: string;
+  items: PurchaseOrderItem[];
+  totalUSD: number;
+  bcvRate: number;
+  totalBs: number;
+  paymentType: 'CONTADO' | 'CREDITO';
+  creditDays?: number; // Días de crédito si paymentType === 'CREDITO'
+  creditDueDate?: string; // Fecha de vencimiento YYYY-MM-DD
+  paymentStatus: PurchaseOrderPaymentStatus; // 'PENDIENTE' | 'PARCIAL' | 'PAGADO'
+  paidAmountUSD: number;
+  payments: PurchasePaymentRecord[];
+  initialPaymentCurrency?: PurchasePaymentCurrency;
+  initialPaymentMethod?: string;
+  receivedStatus: PurchaseOrderReceivedStatus; // 'PENDIENTE' | 'RECIBIDA'
+  receivedDate?: string; // Fecha de llegada YYYY-MM-DD
+  stockApplied?: boolean; // Controla que los repuestos se sumen al inventario una sola vez
+  notes?: string;
+  createdAt: string;
+  updatedAt?: string;
+}
+
+export const DEFAULT_EXPENSE_CATEGORIES: string[] = [
+  'Sueldos y Nómina',
+  'Papelería y Oficina',
+  'Limpieza y Aseo',
+  'Servicios Públicos (Luz, Agua, Internet)',
+  'Alquiler y Condominio',
+  'Mantenimiento y Equipos',
+  'Transporte y Envíos',
+  'Publicidad y Marketing',
+  'Impuestos y Tasas',
+  'Otros Gastos',
+];
+
+export type ExpensePaymentCurrency = 'BS' | 'USDT' | 'EFECTIVO_BS' | 'EFECTIVO_USD';
+
+export type ExpensePaymentMethod =
+  | 'Bolívares (Transferencia / Pago Móvil)'
+  | 'USDT (Binance Pay)'
+  | 'Efectivo Bs'
+  | 'Efectivo en Dólares ($)';
+
+export interface BusinessExpense {
+  id: string;
+  expenseNumber: string; // Correlativo GAS-2026-0001
+  date: string; // Fecha del gasto YYYY-MM-DD
+  category: string; // Sueldo, Papelería, Limpieza o categoría personalizada
+  description: string; // Detalle del gasto
+  beneficiary?: string; // Empleado, comercio o proveedor del servicio
+  amountUSD: number; // Monto equivalente en USD
+  bcvRate: number; // Tasa BCV aplicada
+  amountBs: number; // Monto equivalente en Bolívares
+  paymentCurrencyType: ExpensePaymentCurrency; // 'BS' | 'USDT' | 'EFECTIVO_BS' | 'EFECTIVO_USD'
+  paymentMethod: ExpensePaymentMethod;
+  reference?: string; // Número de referencia o comprobante
+  notes?: string;
+  createdAt: string;
+  updatedAt?: string;
 }

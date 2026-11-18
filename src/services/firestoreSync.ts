@@ -20,6 +20,9 @@ import {
   Technician,
   ServiceCommission,
   TechnicianPayout,
+  Supplier,
+  PurchaseOrder,
+  BusinessExpense,
 } from '../types';
 
 export interface SnapshotSyncMeta {
@@ -36,6 +39,9 @@ export interface DeletedIdsMap {
   technicians: string[];
   serviceCommissions: string[];
   technicianPayouts: string[];
+  suppliers: string[];
+  purchaseOrders: string[];
+  expenses: string[];
 }
 
 export const EMPTY_DELETED_IDS: DeletedIdsMap = {
@@ -47,6 +53,9 @@ export const EMPTY_DELETED_IDS: DeletedIdsMap = {
   technicians: [],
   serviceCommissions: [],
   technicianPayouts: [],
+  suppliers: [],
+  purchaseOrders: [],
+  expenses: [],
 };
 
 // Recursively remove undefined values because Firestore throws on undefined fields
@@ -321,6 +330,84 @@ export function subscribeToTechnicianPayouts(callback: (payouts: TechnicianPayou
   }
 }
 
+// Real-time listener for suppliers
+export function subscribeToSuppliers(callback: (suppliers: Supplier[], meta: SnapshotSyncMeta) => void) {
+  try {
+    const colRef = collection(db, 'suppliers');
+    return onSnapshot(
+      colRef,
+      (snapshot) => {
+        const list: Supplier[] = [];
+        snapshot.forEach((docSnap) => {
+          list.push({ ...(docSnap.data() as Supplier), id: docSnap.id });
+        });
+        callback(list, {
+          hasPendingWrites: snapshot.metadata.hasPendingWrites,
+          fromCache: snapshot.metadata.fromCache,
+        });
+      },
+      (error) => {
+        logFirestoreError(error, OperationType.GET, 'suppliers');
+      }
+    );
+  } catch (error) {
+    console.warn('Error starting suppliers listener:', error);
+    return () => {};
+  }
+}
+
+// Real-time listener for purchase orders
+export function subscribeToPurchaseOrders(callback: (orders: PurchaseOrder[], meta: SnapshotSyncMeta) => void) {
+  try {
+    const colRef = collection(db, 'purchaseOrders');
+    return onSnapshot(
+      colRef,
+      (snapshot) => {
+        const list: PurchaseOrder[] = [];
+        snapshot.forEach((docSnap) => {
+          list.push({ ...(docSnap.data() as PurchaseOrder), id: docSnap.id });
+        });
+        callback(list, {
+          hasPendingWrites: snapshot.metadata.hasPendingWrites,
+          fromCache: snapshot.metadata.fromCache,
+        });
+      },
+      (error) => {
+        logFirestoreError(error, OperationType.GET, 'purchaseOrders');
+      }
+    );
+  } catch (error) {
+    console.warn('Error starting purchaseOrders listener:', error);
+    return () => {};
+  }
+}
+
+// Real-time listener for business expenses
+export function subscribeToExpenses(callback: (expenses: BusinessExpense[], meta: SnapshotSyncMeta) => void) {
+  try {
+    const colRef = collection(db, 'expenses');
+    return onSnapshot(
+      colRef,
+      (snapshot) => {
+        const list: BusinessExpense[] = [];
+        snapshot.forEach((docSnap) => {
+          list.push({ ...(docSnap.data() as BusinessExpense), id: docSnap.id });
+        });
+        callback(list, {
+          hasPendingWrites: snapshot.metadata.hasPendingWrites,
+          fromCache: snapshot.metadata.fromCache,
+        });
+      },
+      (error) => {
+        logFirestoreError(error, OperationType.GET, 'expenses');
+      }
+    );
+  } catch (error) {
+    console.warn('Error starting expenses listener:', error);
+    return () => {};
+  }
+}
+
 // One-shot fetch for deleted IDs tombstones before starting collection listeners
 export async function fetchDeletedIdsFromFirestore(): Promise<DeletedIdsMap | null> {
   try {
@@ -337,6 +424,9 @@ export async function fetchDeletedIdsFromFirestore(): Promise<DeletedIdsMap | nu
       technicians: Array.isArray(data.technicians) ? data.technicians : [],
       serviceCommissions: Array.isArray(data.serviceCommissions) ? data.serviceCommissions : [],
       technicianPayouts: Array.isArray(data.technicianPayouts) ? data.technicianPayouts : [],
+      suppliers: Array.isArray(data.suppliers) ? data.suppliers : [],
+      purchaseOrders: Array.isArray(data.purchaseOrders) ? data.purchaseOrders : [],
+      expenses: Array.isArray(data.expenses) ? data.expenses : [],
     };
   } catch (error) {
     console.warn('Error fetching deletedIds registry:', error);
@@ -362,6 +452,9 @@ export function subscribeToDeletedIds(callback: (deletedIds: DeletedIdsMap) => v
             technicians: Array.isArray(data.technicians) ? data.technicians : [],
             serviceCommissions: Array.isArray(data.serviceCommissions) ? data.serviceCommissions : [],
             technicianPayouts: Array.isArray(data.technicianPayouts) ? data.technicianPayouts : [],
+            suppliers: Array.isArray(data.suppliers) ? data.suppliers : [],
+            purchaseOrders: Array.isArray(data.purchaseOrders) ? data.purchaseOrders : [],
+            expenses: Array.isArray(data.expenses) ? data.expenses : [],
           });
         }
       },
@@ -543,6 +636,54 @@ export async function removeTechnicianPayoutFromFirestore(payoutId: string): Pro
   }
 }
 
+export async function syncSupplierToFirestore(supplier: Supplier): Promise<void> {
+  try {
+    await setDoc(doc(db, 'suppliers', supplier.id), stripUndefined(supplier));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, `suppliers/${supplier.id}`);
+  }
+}
+
+export async function removeSupplierFromFirestore(supplierId: string): Promise<void> {
+  try {
+    await deleteDoc(doc(db, 'suppliers', supplierId));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, `suppliers/${supplierId}`);
+  }
+}
+
+export async function syncPurchaseOrderToFirestore(order: PurchaseOrder): Promise<void> {
+  try {
+    await setDoc(doc(db, 'purchaseOrders', order.id), stripUndefined(order));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, `purchaseOrders/${order.id}`);
+  }
+}
+
+export async function removePurchaseOrderFromFirestore(orderId: string): Promise<void> {
+  try {
+    await deleteDoc(doc(db, 'purchaseOrders', orderId));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, `purchaseOrders/${orderId}`);
+  }
+}
+
+export async function syncExpenseToFirestore(expense: BusinessExpense): Promise<void> {
+  try {
+    await setDoc(doc(db, 'expenses', expense.id), stripUndefined(expense));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, `expenses/${expense.id}`);
+  }
+}
+
+export async function removeExpenseFromFirestore(expenseId: string): Promise<void> {
+  try {
+    await deleteDoc(doc(db, 'expenses', expenseId));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, `expenses/${expenseId}`);
+  }
+}
+
 export async function recordDeletedIdsInFirestore(
   category: keyof DeletedIdsMap,
   ids: string[]
@@ -578,6 +719,9 @@ export async function uploadAllToFirestore(data: {
   technicians?: Technician[];
   serviceCommissions?: ServiceCommission[];
   technicianPayouts?: TechnicianPayout[];
+  suppliers?: Supplier[];
+  purchaseOrders?: PurchaseOrder[];
+  expenses?: BusinessExpense[];
   users?: AppUser[];
   deletedIds?: DeletedIdsMap;
 }): Promise<{ success: boolean; count: number }> {
@@ -616,6 +760,15 @@ export async function uploadAllToFirestore(data: {
       }
       for (const id of data.deletedIds.technicianPayouts || []) {
         await deleteDoc(doc(db, 'technicianPayouts', id)).catch(() => {});
+      }
+      for (const id of data.deletedIds.suppliers || []) {
+        await deleteDoc(doc(db, 'suppliers', id)).catch(() => {});
+      }
+      for (const id of data.deletedIds.purchaseOrders || []) {
+        await deleteDoc(doc(db, 'purchaseOrders', id)).catch(() => {});
+      }
+      for (const id of data.deletedIds.expenses || []) {
+        await deleteDoc(doc(db, 'expenses', id)).catch(() => {});
       }
     }
 
@@ -677,6 +830,29 @@ export async function uploadAllToFirestore(data: {
     if (Array.isArray(data.technicianPayouts) && data.technicianPayouts.length > 0) {
       for (const tp of data.technicianPayouts) {
         await setDoc(doc(db, 'technicianPayouts', tp.id), stripUndefined(tp));
+        totalCount++;
+      }
+    }
+
+    // 9. Suppliers & Purchase Orders
+    if (Array.isArray(data.suppliers) && data.suppliers.length > 0) {
+      for (const sup of data.suppliers) {
+        await setDoc(doc(db, 'suppliers', sup.id), stripUndefined(sup));
+        totalCount++;
+      }
+    }
+
+    if (Array.isArray(data.purchaseOrders) && data.purchaseOrders.length > 0) {
+      for (const po of data.purchaseOrders) {
+        await setDoc(doc(db, 'purchaseOrders', po.id), stripUndefined(po));
+        totalCount++;
+      }
+    }
+
+    // 10. Business Expenses
+    if (Array.isArray(data.expenses) && data.expenses.length > 0) {
+      for (const exp of data.expenses) {
+        await setDoc(doc(db, 'expenses', exp.id), stripUndefined(exp));
         totalCount++;
       }
     }

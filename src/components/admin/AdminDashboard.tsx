@@ -29,6 +29,7 @@ import {
   Check,
   QrCode,
   ExternalLink,
+  Receipt,
 } from 'lucide-react';
 import QRCode from 'qrcode';
 
@@ -53,6 +54,7 @@ export const AdminDashboard: React.FC = () => {
     enterPublicStore,
     publicStoreUrl,
     onlineStoreBrand,
+    currentMonthExpensesUSD,
   } = useApp();
 
   const [showMlDetails, setShowMlDetails] = useState(false);
@@ -232,6 +234,14 @@ Ingresa directamente desde tu teléfono aquí:
           >
             <Wrench className="w-4 h-4 text-amber-400" />
             <span>Nueva Orden de Taller</span>
+          </button>
+          <button
+            onClick={() => setCurrentView('admin_gastos')}
+            className="px-4 py-2.5 bg-white hover:bg-slate-50 text-slate-800 border border-slate-300 font-semibold text-xs rounded-xl shadow-xs transition-colors flex items-center gap-1.5 cursor-pointer"
+            title="Ir al módulo de Gastos del Negocio"
+          >
+            <Receipt className="w-4 h-4 text-rose-600" />
+            <span>Gastos ({formatUSD(currentMonthExpensesUSD)})</span>
           </button>
         </div>
       </div>

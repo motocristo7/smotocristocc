@@ -88,6 +88,9 @@ interface DeletedIdsMap {
   technicians: string[];
   serviceCommissions: string[];
   technicianPayouts: string[];
+  suppliers: string[];
+  purchaseOrders: string[];
+  expenses: string[];
 }
 
 const EMPTY_DELETED_IDS: DeletedIdsMap = {
@@ -99,6 +102,9 @@ const EMPTY_DELETED_IDS: DeletedIdsMap = {
   technicians: [],
   serviceCommissions: [],
   technicianPayouts: [],
+  suppliers: [],
+  purchaseOrders: [],
+  expenses: [],
 };
 
 function mergeDeletedIds(a?: Partial<DeletedIdsMap>, b?: Partial<DeletedIdsMap>): DeletedIdsMap {
@@ -111,6 +117,9 @@ function mergeDeletedIds(a?: Partial<DeletedIdsMap>, b?: Partial<DeletedIdsMap>)
     technicians: Array.from(new Set([...(a?.technicians || []), ...(b?.technicians || [])])),
     serviceCommissions: Array.from(new Set([...(a?.serviceCommissions || []), ...(b?.serviceCommissions || [])])),
     technicianPayouts: Array.from(new Set([...(a?.technicianPayouts || []), ...(b?.technicianPayouts || [])])),
+    suppliers: Array.from(new Set([...(a?.suppliers || []), ...(b?.suppliers || [])])),
+    purchaseOrders: Array.from(new Set([...(a?.purchaseOrders || []), ...(b?.purchaseOrders || [])])),
+    expenses: Array.from(new Set([...(a?.expenses || []), ...(b?.expenses || [])])),
   };
 }
 
@@ -124,6 +133,9 @@ interface AppDatabase {
   technicians: any[];
   serviceCommissions: any[];
   technicianPayouts: any[];
+  suppliers: any[];
+  purchaseOrders: any[];
+  expenses: any[];
   users: any[];
   deletedIds: DeletedIdsMap;
   updatedAt: string;
@@ -140,6 +152,9 @@ function getInitialDatabase(): AppDatabase {
     technicians: [],
     serviceCommissions: [],
     technicianPayouts: [],
+    suppliers: [],
+    purchaseOrders: [],
+    expenses: [],
     users: [DEFAULT_ADMIN_USER],
     deletedIds: { ...EMPTY_DELETED_IDS, sales: ['sale-102', 'sale-103'] },
     updatedAt: new Date().toISOString(),
@@ -173,6 +188,9 @@ function readDatabase(): AppDatabase {
       const deletedTechSet = new Set(deletedIds.technicians);
       const deletedCommSet = new Set(deletedIds.serviceCommissions);
       const deletedPayoutSet = new Set(deletedIds.technicianPayouts);
+      const deletedSupplierSet = new Set(deletedIds.suppliers);
+      const deletedPurchaseOrderSet = new Set(deletedIds.purchaseOrders);
+      const deletedExpenseSet = new Set(deletedIds.expenses);
 
       return {
         settings: parsed.settings || INITIAL_SETTINGS,
@@ -184,6 +202,9 @@ function readDatabase(): AppDatabase {
         technicians: (Array.isArray(parsed.technicians) ? parsed.technicians : []).filter((t: any) => !deletedTechSet.has(t.id)),
         serviceCommissions: (Array.isArray(parsed.serviceCommissions) ? parsed.serviceCommissions : []).filter((c: any) => !deletedCommSet.has(c.id)),
         technicianPayouts: (Array.isArray(parsed.technicianPayouts) ? parsed.technicianPayouts : []).filter((p: any) => !deletedPayoutSet.has(p.id)),
+        suppliers: (Array.isArray(parsed.suppliers) ? parsed.suppliers : []).filter((s: any) => !deletedSupplierSet.has(s.id)),
+        purchaseOrders: (Array.isArray(parsed.purchaseOrders) ? parsed.purchaseOrders : []).filter((po: any) => !deletedPurchaseOrderSet.has(po.id)),
+        expenses: (Array.isArray(parsed.expenses) ? parsed.expenses : []).filter((ex: any) => !deletedExpenseSet.has(ex.id)),
         users: guaranteedUsers,
         deletedIds,
         updatedAt: parsed.updatedAt || new Date().toISOString(),
@@ -259,6 +280,9 @@ function writeDatabase(
     const deletedTechSet = new Set(mergedDeletedIds.technicians);
     const deletedCommSet = new Set(mergedDeletedIds.serviceCommissions);
     const deletedPayoutSet = new Set(mergedDeletedIds.technicianPayouts);
+    const deletedSupplierSet = new Set(mergedDeletedIds.suppliers);
+    const deletedPurchaseOrderSet = new Set(mergedDeletedIds.purchaseOrders);
+    const deletedExpenseSet = new Set(mergedDeletedIds.expenses);
 
     const rawProducts = Array.isArray(data.products)
       ? mergeCollections
@@ -300,6 +324,21 @@ function writeDatabase(
         ? mergeCollectionById(current.technicianPayouts || [], data.technicianPayouts, deletedPayoutSet)
         : data.technicianPayouts
       : current.technicianPayouts || [];
+    const rawSuppliers = Array.isArray(data.suppliers)
+      ? mergeCollections
+        ? mergeCollectionById(current.suppliers || [], data.suppliers, deletedSupplierSet)
+        : data.suppliers
+      : current.suppliers || [];
+    const rawPurchaseOrders = Array.isArray(data.purchaseOrders)
+      ? mergeCollections
+        ? mergeCollectionById(current.purchaseOrders || [], data.purchaseOrders, deletedPurchaseOrderSet)
+        : data.purchaseOrders
+      : current.purchaseOrders || [];
+    const rawExpenses = Array.isArray(data.expenses)
+      ? mergeCollections
+        ? mergeCollectionById(current.expenses || [], data.expenses, deletedExpenseSet)
+        : data.expenses
+      : current.expenses || [];
 
     const updated: AppDatabase = {
       ...current,
@@ -312,6 +351,9 @@ function writeDatabase(
       technicians: Array.isArray(rawTechnicians) ? rawTechnicians.filter((t: any) => !deletedTechSet.has(t.id)) : [],
       serviceCommissions: Array.isArray(rawServiceCommissions) ? rawServiceCommissions.filter((c: any) => !deletedCommSet.has(c.id)) : [],
       technicianPayouts: Array.isArray(rawTechnicianPayouts) ? rawTechnicianPayouts.filter((p: any) => !deletedPayoutSet.has(p.id)) : [],
+      suppliers: Array.isArray(rawSuppliers) ? rawSuppliers.filter((s: any) => !deletedSupplierSet.has(s.id)) : [],
+      purchaseOrders: Array.isArray(rawPurchaseOrders) ? rawPurchaseOrders.filter((po: any) => !deletedPurchaseOrderSet.has(po.id)) : [],
+      expenses: Array.isArray(rawExpenses) ? rawExpenses.filter((ex: any) => !deletedExpenseSet.has(ex.id)) : [],
       deletedIds: mergedDeletedIds,
       updatedAt: new Date().toISOString(),
     };

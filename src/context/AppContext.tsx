@@ -22,6 +22,15 @@ import {
   TechnicianPayoutItem,
   PaymentMethod,
   CreditPaymentRecord,
+  Supplier,
+  PurchaseOrder,
+  PurchaseOrderItem,
+  PurchasePaymentCurrency,
+  PurchasePaymentRecord,
+  DEFAULT_EXPENSE_CATEGORIES,
+  ExpensePaymentCurrency,
+  ExpensePaymentMethod,
+  BusinessExpense,
 } from '../types';
 import {
   INITIAL_SETTINGS,
@@ -45,6 +54,9 @@ import {
   subscribeToTechnicians,
   subscribeToServiceCommissions,
   subscribeToTechnicianPayouts,
+  subscribeToSuppliers,
+  subscribeToPurchaseOrders,
+  subscribeToExpenses,
   subscribeToDeletedIds,
   fetchDeletedIdsFromFirestore,
   syncProductToFirestore,
@@ -64,6 +76,12 @@ import {
   removeServiceCommissionFromFirestore,
   syncTechnicianPayoutToFirestore,
   removeTechnicianPayoutFromFirestore,
+  syncSupplierToFirestore,
+  removeSupplierFromFirestore,
+  syncPurchaseOrderToFirestore,
+  removePurchaseOrderFromFirestore,
+  syncExpenseToFirestore,
+  removeExpenseFromFirestore,
   recordDeletedIdsInFirestore,
   clearDeletedIdsInFirestore,
   uploadAllToFirestore,
@@ -132,6 +150,9 @@ function mergeDeletedMaps(a?: Partial<DeletedIdsMap>, b?: Partial<DeletedIdsMap>
     technicians: Array.from(new Set([...(a?.technicians || []), ...(b?.technicians || [])])),
     serviceCommissions: Array.from(new Set([...(a?.serviceCommissions || []), ...(b?.serviceCommissions || [])])),
     technicianPayouts: Array.from(new Set([...(a?.technicianPayouts || []), ...(b?.technicianPayouts || [])])),
+    suppliers: Array.from(new Set([...(a?.suppliers || []), ...(b?.suppliers || [])])),
+    purchaseOrders: Array.from(new Set([...(a?.purchaseOrders || []), ...(b?.purchaseOrders || [])])),
+    expenses: Array.from(new Set([...(a?.expenses || []), ...(b?.expenses || [])])),
   };
 }
 
@@ -142,6 +163,8 @@ export type AppView =
   | 'admin_pos'
   | 'admin_ventas'
   | 'admin_cuentas_cobrar'
+  | 'admin_compras'
+  | 'admin_gastos'
   | 'admin_inventario'
   | 'admin_taller'
   | 'admin_comisiones'
@@ -333,6 +356,83 @@ interface AppContextType {
   pendingTechniciansCommissionUSD: number;
   pendingTechniciansCommissionBs: number;
 
+  // Suppliers & Purchase Orders (Proveedores y Órdenes de Compra)
+  suppliers: Supplier[];
+  addSupplier: (supplierData: Omit<Supplier, 'id' | 'createdAt' | 'updatedAt'>) => Supplier;
+  updateSupplier: (id: string, updates: Partial<Supplier>) => void;
+  deleteSupplier: (id: string) => void;
+
+  purchaseOrders: PurchaseOrder[];
+  createPurchaseOrder: (orderData: {
+    supplierId: string;
+    supplierInvoiceNumber?: string;
+    items: PurchaseOrderItem[];
+    paymentType: 'CONTADO' | 'CREDITO';
+    creditDays?: number;
+    creditDueDate?: string;
+    isPaidImmediately?: boolean;
+    initialPaidUSD?: number;
+    initialPaymentCurrency?: PurchasePaymentCurrency;
+    initialPaymentMethod?: string;
+    initialPaymentReference?: string;
+    receivedStatus: 'PENDIENTE' | 'RECIBIDA';
+    receivedDate?: string;
+    applyStockToInventory?: boolean;
+    notes?: string;
+  }) => PurchaseOrder | null;
+  updatePurchaseOrder: (
+    id: string,
+    updates: Partial<PurchaseOrder> & { applyStockToInventory?: boolean }
+  ) => PurchaseOrder | null;
+  deletePurchaseOrder: (id: string) => void;
+  markPurchaseOrderReceived: (
+    id: string,
+    receivedDate?: string,
+    applyStockToInventory?: boolean
+  ) => PurchaseOrder | null;
+  recordPurchaseOrderPayment: (
+    orderId: string,
+    payment: {
+      amountUSD: number;
+      currencyCategory: PurchasePaymentCurrency;
+      paymentMethod: string;
+      reference?: string;
+      notes?: string;
+    }
+  ) => {
+    updatedOrder: PurchaseOrder;
+    paymentRecord: PurchasePaymentRecord;
+    totalSupplierDebtAfterUSD: number;
+  } | null;
+  totalSupplierDebtUSD: number;
+  totalSupplierDebtBs: number;
+  pendingReceptionOrdersCount: number;
+
+  // Business Expenses (Gastos del Negocio)
+  expenses: BusinessExpense[];
+  expenseCategories: string[];
+  addExpenseCategory: (categoryName: string) => { added: boolean; category: string };
+  deleteExpenseCategory: (categoryName: string) => void;
+  addExpense: (expenseData: {
+    date: string;
+    category: string;
+    description: string;
+    beneficiary?: string;
+    amountUSD: number;
+    amountBs?: number;
+    bcvRate?: number;
+    paymentCurrencyType: ExpensePaymentCurrency;
+    paymentMethod: ExpensePaymentMethod;
+    reference?: string;
+    notes?: string;
+  }) => BusinessExpense;
+  updateExpense: (id: string, updates: Partial<BusinessExpense>) => BusinessExpense | null;
+  deleteExpense: (id: string) => void;
+  totalExpensesUSD: number;
+  totalExpensesBs: number;
+  currentMonthExpensesUSD: number;
+  currentMonthExpensesBs: number;
+
   // Modals & UI triggers
   selectedInvoice: Sale | null;
   setSelectedInvoice: (sale: Sale | null) => void;
@@ -344,9 +444,11 @@ interface AppContextType {
     recipientName: string;
     primaryLabel?: string;
     isTechnician?: boolean;
+    isSupplier?: boolean;
     sale?: Sale;
     serviceOrder?: ServiceOrder;
     technicianPayout?: TechnicianPayout;
+    purchaseOrder?: PurchaseOrder;
     pdfFileName?: string;
     secondaryNotification?: {
       label: string;
@@ -366,9 +468,11 @@ interface AppContextType {
     recipientName: string;
     primaryLabel?: string;
     isTechnician?: boolean;
+    isSupplier?: boolean;
     sale?: Sale;
     serviceOrder?: ServiceOrder;
     technicianPayout?: TechnicianPayout;
+    purchaseOrder?: PurchaseOrder;
     pdfFileName?: string;
     secondaryNotification?: {
       label: string;
@@ -425,6 +529,9 @@ const STORAGE_KEYS = {
   TECHNICIANS: 'servimotos_technicians_ve_v1',
   SERVICE_COMMISSIONS: 'servimotos_service_commissions_ve_v1',
   TECH_PAYOUTS: 'servimotos_tech_payouts_ve_v1',
+  SUPPLIERS: 'servimotos_suppliers_ve_v1',
+  PURCHASE_ORDERS: 'servimotos_purchase_orders_ve_v1',
+  EXPENSES: 'servimotos_expenses_ve_v1',
   CART: 'servimotos_cart_ve_v2',
   ML_ENTRIES: 'servimotos_ml_entries_ve_v2',
   DELETED_IDS: 'servimotos_deleted_ids_v1',
@@ -1118,9 +1225,11 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     recipientName: string;
     primaryLabel?: string;
     isTechnician?: boolean;
+    isSupplier?: boolean;
     sale?: Sale;
     serviceOrder?: ServiceOrder;
     technicianPayout?: TechnicianPayout;
+    purchaseOrder?: PurchaseOrder;
     pdfFileName?: string;
     secondaryNotification?: {
       label: string;
@@ -1165,6 +1274,44 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       if (stored) {
         const parsed: TechnicianPayout[] = JSON.parse(stored);
         return Array.isArray(parsed) ? parsed.filter((p) => !delSet.has(p.id)) : [];
+      }
+    } catch {}
+    return [];
+  });
+
+  // Suppliers & Purchase Orders
+  const [suppliers, setSuppliers] = useState<Supplier[]>(() => {
+    try {
+      const delSet = new Set(deletedIdsRef.current.suppliers);
+      const stored = localStorage.getItem(STORAGE_KEYS.SUPPLIERS);
+      if (stored) {
+        const parsed: Supplier[] = JSON.parse(stored);
+        return Array.isArray(parsed) ? parsed.filter((s) => !delSet.has(s.id)) : [];
+      }
+    } catch {}
+    return [];
+  });
+
+  const [purchaseOrders, setPurchaseOrders] = useState<PurchaseOrder[]>(() => {
+    try {
+      const delSet = new Set(deletedIdsRef.current.purchaseOrders);
+      const stored = localStorage.getItem(STORAGE_KEYS.PURCHASE_ORDERS);
+      if (stored) {
+        const parsed: PurchaseOrder[] = JSON.parse(stored);
+        return Array.isArray(parsed) ? parsed.filter((po) => !delSet.has(po.id)) : [];
+      }
+    } catch {}
+    return [];
+  });
+
+  // Business Expenses
+  const [expenses, setExpenses] = useState<BusinessExpense[]>(() => {
+    try {
+      const delSet = new Set(deletedIdsRef.current.expenses);
+      const stored = localStorage.getItem(STORAGE_KEYS.EXPENSES);
+      if (stored) {
+        const parsed: BusinessExpense[] = JSON.parse(stored);
+        return Array.isArray(parsed) ? parsed.filter((ex) => !delSet.has(ex.id)) : [];
       }
     } catch {}
     return [];
@@ -1220,8 +1367,10 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       });
   };
 
-  // Pending-sync set for modified/newly paid service commissions so Firestore snapshots never overwrite local payouts in flight
+  // Pending-sync set for modified/newly paid service commissions & purchase orders so Firestore snapshots never overwrite local payouts in flight
   const pendingSyncCommissionIdsRef = useRef<Set<string>>(new Set());
+  const pendingSyncPurchaseOrderIdsRef = useRef<Set<string>>(new Set());
+  const pendingSyncExpenseIdsRef = useRef<Set<string>>(new Set());
 
   // Live refs so concurrent callbacks never read stale closures
   const salesRef = useRef<Sale[]>(sales);
@@ -1232,6 +1381,9 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
   const techniciansRef = useRef<Technician[]>(technicians);
   const serviceCommissionsRef = useRef<ServiceCommission[]>(serviceCommissions);
   const technicianPayoutsRef = useRef<TechnicianPayout[]>(technicianPayouts);
+  const suppliersRef = useRef<Supplier[]>(suppliers);
+  const purchaseOrdersRef = useRef<PurchaseOrder[]>(purchaseOrders);
+  const expensesRef = useRef<BusinessExpense[]>(expenses);
   const settingsRef = useRef<BusinessSettings>(settings);
 
   // Sync to LocalStorage and live refs immediately on any state change
@@ -1279,6 +1431,21 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     technicianPayoutsRef.current = technicianPayouts;
     localStorage.setItem(STORAGE_KEYS.TECH_PAYOUTS, JSON.stringify(technicianPayouts));
   }, [technicianPayouts]);
+
+  useEffect(() => {
+    suppliersRef.current = suppliers;
+    localStorage.setItem(STORAGE_KEYS.SUPPLIERS, JSON.stringify(suppliers));
+  }, [suppliers]);
+
+  useEffect(() => {
+    purchaseOrdersRef.current = purchaseOrders;
+    localStorage.setItem(STORAGE_KEYS.PURCHASE_ORDERS, JSON.stringify(purchaseOrders));
+  }, [purchaseOrders]);
+
+  useEffect(() => {
+    expensesRef.current = expenses;
+    localStorage.setItem(STORAGE_KEYS.EXPENSES, JSON.stringify(expenses));
+  }, [expenses]);
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEYS.CART, JSON.stringify(cart));
@@ -1378,6 +1545,9 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
           const deletedTechSet = new Set(mergedDeleted.technicians);
           const deletedCommSet = new Set(mergedDeleted.serviceCommissions);
           const deletedPayoutSet = new Set(mergedDeleted.technicianPayouts);
+          const deletedSupplierSet = new Set(mergedDeleted.suppliers);
+          const deletedPurchaseOrderSet = new Set(mergedDeleted.purchaseOrders);
+          const deletedExpenseSet = new Set(mergedDeleted.expenses);
 
           // Merge products (excluding demo & deleted products)
           if (Array.isArray(serverDb.products)) {
@@ -1440,7 +1610,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
             });
           }
 
-          // Settings (merge customCategories from both server & local)
+          // Settings (merge customCategories & customExpenseCategories from both server & local)
           if (serverDb.settings) {
             setSettings((prev) => {
               const mergedCustom = Array.from(
@@ -1449,9 +1619,16 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
                   ...(Array.isArray(prev.customCategories) ? prev.customCategories : []),
                 ])
               );
+              const mergedCustomExpenses = Array.from(
+                new Set([
+                  ...(Array.isArray(serverDb.settings.customExpenseCategories) ? serverDb.settings.customExpenseCategories : []),
+                  ...(Array.isArray(prev.customExpenseCategories) ? prev.customExpenseCategories : []),
+                ])
+              );
               const nextSettings: BusinessSettings = {
                 ...serverDb.settings,
                 ...(mergedCustom.length > 0 ? { customCategories: mergedCustom } : {}),
+                ...(mergedCustomExpenses.length > 0 ? { customExpenseCategories: mergedCustomExpenses } : {}),
               };
               localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(nextSettings));
               return nextSettings;
@@ -1571,6 +1748,89 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
               return merged;
             });
           }
+
+          // Suppliers (excluding deleted)
+          if (Array.isArray(serverDb.suppliers)) {
+            const validServerSuppliers = serverDb.suppliers.filter(
+              (s: Supplier) => !deletedSupplierSet.has(s.id)
+            );
+            setSuppliers((current) => {
+              const serverIdSet = new Set(validServerSuppliers.map((s: Supplier) => s.id));
+              const localAdditions = current.filter((s) => !deletedSupplierSet.has(s.id) && !serverIdSet.has(s.id));
+              const merged = [...validServerSuppliers, ...localAdditions].sort((a, b) =>
+                (a.name || '').localeCompare(b.name || '', 'es', { sensitivity: 'base' })
+              );
+              suppliersRef.current = merged;
+              localStorage.setItem(STORAGE_KEYS.SUPPLIERS, JSON.stringify(merged));
+              return merged;
+            });
+          }
+
+          // Purchase Orders (excluding deleted)
+          if (Array.isArray(serverDb.purchaseOrders)) {
+            const validServerPurchaseOrders = serverDb.purchaseOrders.filter(
+              (po: PurchaseOrder) => !deletedPurchaseOrderSet.has(po.id)
+            );
+            setPurchaseOrders((current) => {
+              const serverById = new Map<string, PurchaseOrder>(
+                validServerPurchaseOrders.map((po: PurchaseOrder) => [po.id, po])
+              );
+              const mergedList: PurchaseOrder[] = [];
+              const seenIds = new Set<string>();
+              for (const localPo of current) {
+                if (deletedPurchaseOrderSet.has(localPo.id)) continue;
+                seenIds.add(localPo.id);
+                const serverPo = serverById.get(localPo.id);
+                if (!serverPo || pendingSyncPurchaseOrderIdsRef.current.has(localPo.id)) {
+                  mergedList.push(localPo);
+                } else {
+                  mergedList.push(serverPo);
+                }
+              }
+              for (const serverPo of validServerPurchaseOrders) {
+                if (!seenIds.has(serverPo.id) && !deletedPurchaseOrderSet.has(serverPo.id)) {
+                  mergedList.push(serverPo);
+                }
+              }
+              mergedList.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+              purchaseOrdersRef.current = mergedList;
+              localStorage.setItem(STORAGE_KEYS.PURCHASE_ORDERS, JSON.stringify(mergedList));
+              return mergedList;
+            });
+          }
+
+          // Business Expenses (excluding deleted)
+          if (Array.isArray(serverDb.expenses)) {
+            const validServerExpenses = serverDb.expenses.filter(
+              (ex: BusinessExpense) => !deletedExpenseSet.has(ex.id)
+            );
+            setExpenses((current) => {
+              const serverById = new Map<string, BusinessExpense>(
+                validServerExpenses.map((ex: BusinessExpense) => [ex.id, ex])
+              );
+              const mergedList: BusinessExpense[] = [];
+              const seenIds = new Set<string>();
+              for (const localEx of current) {
+                if (deletedExpenseSet.has(localEx.id)) continue;
+                seenIds.add(localEx.id);
+                const serverEx = serverById.get(localEx.id);
+                if (!serverEx || pendingSyncExpenseIdsRef.current.has(localEx.id)) {
+                  mergedList.push(localEx);
+                } else {
+                  mergedList.push(serverEx);
+                }
+              }
+              for (const serverEx of validServerExpenses) {
+                if (!seenIds.has(serverEx.id) && !deletedExpenseSet.has(serverEx.id)) {
+                  mergedList.push(serverEx);
+                }
+              }
+              mergedList.sort((a, b) => (b.date || b.createdAt || '').localeCompare(a.date || a.createdAt || '') || (b.createdAt || '').localeCompare(a.createdAt || ''));
+              expensesRef.current = mergedList;
+              localStorage.setItem(STORAGE_KEYS.EXPENSES, JSON.stringify(mergedList));
+              return mergedList;
+            });
+          }
         }
       } catch (err) {
         console.warn('Servidor de datos no respondió, usando datos locales:', err);
@@ -1592,6 +1852,9 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
                 technicians: techniciansRef.current,
                 serviceCommissions: serviceCommissionsRef.current,
                 technicianPayouts: technicianPayoutsRef.current,
+                suppliers: suppliersRef.current,
+                purchaseOrders: purchaseOrdersRef.current,
+                expenses: expensesRef.current,
                 deletedIds: deletedIdsRef.current,
               }),
             }).catch(() => {});
@@ -1619,6 +1882,9 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     technicians: false,
     serviceCommissions: false,
     technicianPayouts: false,
+    suppliers: false,
+    purchaseOrders: false,
+    expenses: false,
   });
   const seenFirestoreIdsRef = useRef<{
     products: Set<string>;
@@ -1629,6 +1895,9 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     technicians: Set<string>;
     serviceCommissions: Set<string>;
     technicianPayouts: Set<string>;
+    suppliers: Set<string>;
+    purchaseOrders: Set<string>;
+    expenses: Set<string>;
   }>({
     products: new Set(),
     customers: new Set(),
@@ -1638,6 +1907,9 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     technicians: new Set(),
     serviceCommissions: new Set(),
     technicianPayouts: new Set(),
+    suppliers: new Set(),
+    purchaseOrders: new Set(),
+    expenses: new Set(),
   });
 
   useEffect(() => {
@@ -1653,6 +1925,9 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       const delTechs = new Set(merged.technicians);
       const delComms = new Set(merged.serviceCommissions);
       const delPayouts = new Set(merged.technicianPayouts);
+      const delSuppliers = new Set(merged.suppliers);
+      const delPurchaseOrders = new Set(merged.purchaseOrders);
+      const delExpenses = new Set(merged.expenses);
 
       setSales((prev) => prev.filter((s) => !delSales.has(s.id)));
       setProducts((prev) => prev.filter((p) => !delProds.has(p.id)));
@@ -1662,6 +1937,9 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       setTechnicians((prev) => prev.filter((t) => !delTechs.has(t.id)));
       setServiceCommissions((prev) => prev.filter((c) => !delComms.has(c.id)));
       setTechnicianPayouts((prev) => prev.filter((p) => !delPayouts.has(p.id)));
+      setSuppliers((prev) => prev.filter((s) => !delSuppliers.has(s.id)));
+      setPurchaseOrders((prev) => prev.filter((po) => !delPurchaseOrders.has(po.id)));
+      setExpenses((prev) => prev.filter((ex) => !delExpenses.has(ex.id)));
     };
 
     async function initFirestore() {
@@ -1756,9 +2034,21 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
                 ? prev.customCategories
                 : [];
               const mergedCustom = Array.from(new Set([...remoteCustom, ...localCustom]));
+              const remoteCustomExpenses = Array.isArray(firestoreSettings.customExpenseCategories)
+                ? firestoreSettings.customExpenseCategories
+                : [];
+              const localCustomExpenses = Array.isArray(prev.customExpenseCategories)
+                ? prev.customExpenseCategories
+                : [];
+              const mergedCustomExpenses = Array.from(
+                new Set([...remoteCustomExpenses, ...localCustomExpenses])
+              );
               const nextSettings: BusinessSettings = {
                 ...firestoreSettings,
                 ...(mergedCustom.length > 0 ? { customCategories: mergedCustom } : {}),
+                ...(mergedCustomExpenses.length > 0
+                  ? { customExpenseCategories: mergedCustomExpenses }
+                  : {}),
               };
               settingsRef.current = nextSettings;
               return nextSettings;
@@ -2127,6 +2417,188 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
           setFirebaseSyncStatus('synced');
         });
 
+        // 10. Real-time suppliers listener
+        const unsubSuppliers = subscribeToSuppliers((firestoreSuppliers, meta) => {
+          if (!Array.isArray(firestoreSuppliers)) return;
+          const delSet = new Set(deletedIdsRef.current.suppliers);
+          firestoreSuppliers.forEach((s) => {
+            if (delSet.has(s.id)) {
+              removeSupplierFromFirestore(s.id).catch(() => {});
+            }
+          });
+          const cleanSuppliers = firestoreSuppliers.filter((s) => !delSet.has(s.id));
+          const remoteIdSet = new Set(cleanSuppliers.map((s) => s.id));
+          const prevSeen = seenFirestoreIdsRef.current.suppliers;
+          const isServerConfirmed = !meta?.fromCache && !meta?.hasPendingWrites;
+
+          setSuppliers((prev) => {
+            const unsyncedLocal = prev.filter(
+              (s) =>
+                !delSet.has(s.id) &&
+                !remoteIdSet.has(s.id) &&
+                (!isServerConfirmed || !prevSeen.has(s.id))
+            );
+            if (unsyncedLocal.length > 0 && isServerConfirmed) {
+              queueMicrotask(() => {
+                unsyncedLocal.forEach((s) => syncSupplierToFirestore(s).catch(() => {}));
+              });
+            }
+            const merged = [...cleanSuppliers, ...unsyncedLocal].sort((a, b) =>
+              (a.name || '').localeCompare(b.name || '', 'es', { sensitivity: 'base' })
+            );
+            suppliersRef.current = merged;
+            return merged;
+          });
+
+          if (isServerConfirmed) {
+            seenFirestoreIdsRef.current.suppliers = remoteIdSet;
+            firestoreSyncedFlags.current.suppliers = true;
+          }
+          setFirebaseSyncStatus('synced');
+        });
+
+        // 11. Real-time purchase orders listener
+        const unsubPurchaseOrders = subscribeToPurchaseOrders((firestoreOrders, meta) => {
+          if (!Array.isArray(firestoreOrders)) return;
+          const delSet = new Set(deletedIdsRef.current.purchaseOrders);
+          firestoreOrders.forEach((po) => {
+            if (delSet.has(po.id)) {
+              removePurchaseOrderFromFirestore(po.id).catch(() => {});
+            }
+          });
+          const cleanOrders = firestoreOrders.filter((po) => !delSet.has(po.id));
+          const remoteById = new Map(cleanOrders.map((po) => [po.id, po]));
+          const remoteIdSet = new Set(cleanOrders.map((po) => po.id));
+          const prevSeen = seenFirestoreIdsRef.current.purchaseOrders;
+          const isServerConfirmed = !meta?.fromCache && !meta?.hasPendingWrites;
+
+          if (isServerConfirmed) {
+            remoteIdSet.forEach((id) => pendingSyncPurchaseOrderIdsRef.current.delete(id));
+          }
+
+          setPurchaseOrders((prev) => {
+            const toUpload: PurchaseOrder[] = [];
+            const mergedMap = new Map<string, PurchaseOrder>();
+
+            for (const rpo of cleanOrders) {
+              mergedMap.set(rpo.id, rpo);
+            }
+
+            for (const lpo of prev) {
+              if (delSet.has(lpo.id)) continue;
+              const rpo = remoteById.get(lpo.id);
+              const isPendingLocal = pendingSyncPurchaseOrderIdsRef.current.has(lpo.id);
+              const isNewerLocal =
+                rpo && lpo.updatedAt && (!rpo.updatedAt || lpo.updatedAt > rpo.updatedAt);
+
+              if (!rpo) {
+                if (isPendingLocal || !isServerConfirmed || !prevSeen.has(lpo.id)) {
+                  mergedMap.set(lpo.id, lpo);
+                  toUpload.push(lpo);
+                }
+              } else if (isPendingLocal || isNewerLocal) {
+                mergedMap.set(lpo.id, lpo);
+                toUpload.push(lpo);
+              }
+            }
+
+            if (toUpload.length > 0 && isServerConfirmed) {
+              queueMicrotask(() => {
+                toUpload.forEach((po) => {
+                  pendingSyncPurchaseOrderIdsRef.current.add(po.id);
+                  syncPurchaseOrderToFirestore(po)
+                    .then(() => pendingSyncPurchaseOrderIdsRef.current.delete(po.id))
+                    .catch(() => {});
+                });
+              });
+            }
+
+            const merged = Array.from(mergedMap.values()).sort((a, b) =>
+              (b.createdAt || '').localeCompare(a.createdAt || '')
+            );
+            purchaseOrdersRef.current = merged;
+            return merged;
+          });
+
+          if (isServerConfirmed) {
+            seenFirestoreIdsRef.current.purchaseOrders = remoteIdSet;
+            firestoreSyncedFlags.current.purchaseOrders = true;
+          }
+          setFirebaseSyncStatus('synced');
+        });
+
+        // 12. Real-time business expenses listener
+        const unsubExpenses = subscribeToExpenses((firestoreExpenses, meta) => {
+          if (!Array.isArray(firestoreExpenses)) return;
+          const delSet = new Set(deletedIdsRef.current.expenses);
+          firestoreExpenses.forEach((ex) => {
+            if (delSet.has(ex.id)) {
+              removeExpenseFromFirestore(ex.id).catch(() => {});
+            }
+          });
+          const cleanExpenses = firestoreExpenses.filter((ex) => !delSet.has(ex.id));
+          const remoteById = new Map(cleanExpenses.map((ex) => [ex.id, ex]));
+          const remoteIdSet = new Set(cleanExpenses.map((ex) => ex.id));
+          const prevSeen = seenFirestoreIdsRef.current.expenses;
+          const isServerConfirmed = !meta?.fromCache && !meta?.hasPendingWrites;
+
+          if (isServerConfirmed) {
+            remoteIdSet.forEach((id) => pendingSyncExpenseIdsRef.current.delete(id));
+          }
+
+          setExpenses((prev) => {
+            const toUpload: BusinessExpense[] = [];
+            const mergedMap = new Map<string, BusinessExpense>();
+
+            for (const rex of cleanExpenses) {
+              mergedMap.set(rex.id, rex);
+            }
+
+            for (const lex of prev) {
+              if (delSet.has(lex.id)) continue;
+              const rex = remoteById.get(lex.id);
+              const isPendingLocal = pendingSyncExpenseIdsRef.current.has(lex.id);
+              const isNewerLocal =
+                rex && lex.updatedAt && (!rex.updatedAt || lex.updatedAt > rex.updatedAt);
+
+              if (!rex) {
+                if (isPendingLocal || !isServerConfirmed || !prevSeen.has(lex.id)) {
+                  mergedMap.set(lex.id, lex);
+                  toUpload.push(lex);
+                }
+              } else if (isPendingLocal || isNewerLocal) {
+                mergedMap.set(lex.id, lex);
+                toUpload.push(lex);
+              }
+            }
+
+            if (toUpload.length > 0 && isServerConfirmed) {
+              queueMicrotask(() => {
+                toUpload.forEach((ex) => {
+                  pendingSyncExpenseIdsRef.current.add(ex.id);
+                  syncExpenseToFirestore(ex)
+                    .then(() => pendingSyncExpenseIdsRef.current.delete(ex.id))
+                    .catch(() => {});
+                });
+              });
+            }
+
+            const merged = Array.from(mergedMap.values()).sort(
+              (a, b) =>
+                (b.date || b.createdAt || '').localeCompare(a.date || a.createdAt || '') ||
+                (b.createdAt || '').localeCompare(a.createdAt || '')
+            );
+            expensesRef.current = merged;
+            return merged;
+          });
+
+          if (isServerConfirmed) {
+            seenFirestoreIdsRef.current.expenses = remoteIdSet;
+            firestoreSyncedFlags.current.expenses = true;
+          }
+          setFirebaseSyncStatus('synced');
+        });
+
         unsubs = [
           unsubDeleted,
           unsubProducts,
@@ -2138,6 +2610,9 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
           unsubTechnicians,
           unsubCommissions,
           unsubPayouts,
+          unsubSuppliers,
+          unsubPurchaseOrders,
+          unsubExpenses,
         ];
       } catch (err) {
         console.warn('Error starting Firestore real-time listeners:', err);
@@ -2169,6 +2644,9 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
         technicians,
         serviceCommissions,
         technicianPayouts,
+        suppliers,
+        purchaseOrders,
+        expenses,
         deletedIds: deletedIdsRef.current,
       });
       if (result.success) {
@@ -2205,6 +2683,9 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
           technicians,
           serviceCommissions,
           technicianPayouts,
+          suppliers,
+          purchaseOrders,
+          expenses,
           deletedIds: deletedIdsRef.current,
         }),
       }).catch((err) => {
@@ -2217,7 +2698,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
         clearTimeout(saveTimeoutRef.current);
       }
     };
-  }, [settings, products, customers, sales, serviceOrders, onlineOrders, technicians, serviceCommissions, technicianPayouts, deletedIds]);
+  }, [settings, products, customers, sales, serviceOrders, onlineOrders, technicians, serviceCommissions, technicianPayouts, suppliers, purchaseOrders, expenses, deletedIds]);
 
   // Guarantee save before tab/window is closed
   useEffect(() => {
@@ -2233,6 +2714,9 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
           technicians,
           serviceCommissions,
           technicianPayouts,
+          suppliers,
+          purchaseOrders,
+          expenses,
           deletedIds: deletedIdsRef.current,
         });
 
@@ -2254,7 +2738,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     return () => {
       window.removeEventListener('beforeunload', handleBeforeUnload);
     };
-  }, [settings, products, customers, sales, serviceOrders, onlineOrders, technicians, serviceCommissions, technicianPayouts, deletedIds]);
+  }, [settings, products, customers, sales, serviceOrders, onlineOrders, technicians, serviceCommissions, technicianPayouts, suppliers, purchaseOrders, expenses, deletedIds]);
 
   // Online products: strictly filter where stock > 0 and sort alphabetically (A-Z) by name
   const onlineProducts = useMemo(() => {
@@ -4416,6 +4900,666 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
 
   const pendingTechniciansCommissionBs = pendingTechniciansCommissionUSD * settings.bcvRate;
 
+  // Suppliers & Purchase Orders Operations
+  const generateNextSupplierCode = (): string => {
+    let maxNum = suppliersRef.current.length;
+    suppliersRef.current.forEach((s) => {
+      const match = (s.code || '').match(/(\d+)$/);
+      if (match) {
+        const parsed = parseInt(match[1], 10);
+        if (!isNaN(parsed) && parsed > maxNum) maxNum = parsed;
+      }
+    });
+    return `PROV-${String(maxNum + 1).padStart(3, '0')}`;
+  };
+
+  const addSupplier = (supplierData: Omit<Supplier, 'id' | 'createdAt' | 'updatedAt'>): Supplier => {
+    const now = new Date().toISOString();
+    const newSupplier: Supplier = {
+      ...supplierData,
+      id: `sup-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      code: (supplierData.code || '').trim().toUpperCase() || generateNextSupplierCode(),
+      name: (supplierData.name || '').trim(),
+      vendorName: (supplierData.vendorName || '').trim(),
+      vendorPhone: (supplierData.vendorPhone || '').trim(),
+      createdAt: now,
+      updatedAt: now,
+    };
+    const nextList = [...suppliersRef.current, newSupplier].sort((a, b) =>
+      (a.name || '').localeCompare(b.name || '', 'es', { sensitivity: 'base' })
+    );
+    suppliersRef.current = nextList;
+    setSuppliers(nextList);
+    syncSupplierToFirestore(newSupplier).catch(() => {});
+    return newSupplier;
+  };
+
+  const updateSupplier = (id: string, updates: Partial<Supplier>) => {
+    const existing = suppliersRef.current.find((s) => s.id === id);
+    if (!existing) return;
+    const updatedSupplier: Supplier = {
+      ...existing,
+      ...updates,
+      code: updates.code !== undefined ? updates.code.trim().toUpperCase() : existing.code,
+      updatedAt: new Date().toISOString(),
+    };
+    const nextList = suppliersRef.current
+      .map((s) => (s.id === id ? updatedSupplier : s))
+      .sort((a, b) => (a.name || '').localeCompare(b.name || '', 'es', { sensitivity: 'base' }));
+    suppliersRef.current = nextList;
+    setSuppliers(nextList);
+    syncSupplierToFirestore(updatedSupplier).catch(() => {});
+
+    // Keep denormalized supplier snapshots updated on existing purchase orders
+    const touchedOrders: PurchaseOrder[] = [];
+    const nextOrders = purchaseOrdersRef.current.map((po) => {
+      if (po.supplierId !== id) return po;
+      const syncedPo: PurchaseOrder = {
+        ...po,
+        supplierCode: updatedSupplier.code,
+        supplierName: updatedSupplier.name,
+        vendorName: updatedSupplier.vendorName,
+        vendorPhone: updatedSupplier.vendorPhone,
+        updatedAt: new Date().toISOString(),
+      };
+      touchedOrders.push(syncedPo);
+      return syncedPo;
+    });
+    if (touchedOrders.length > 0) {
+      purchaseOrdersRef.current = nextOrders;
+      setPurchaseOrders(nextOrders);
+      touchedOrders.forEach((po) => syncPurchaseOrderToFirestore(po).catch(() => {}));
+    }
+  };
+
+  const deleteSupplier = (id: string) => {
+    recordDeleted('suppliers', [id]);
+    removeSupplierFromFirestore(id).catch(() => {});
+    const nextList = suppliersRef.current.filter((s) => s.id !== id);
+    suppliersRef.current = nextList;
+    setSuppliers(nextList);
+  };
+
+  const applyPurchaseItemsToInventory = (items: PurchaseOrderItem[]) => {
+    if (!Array.isArray(items) || items.length === 0) return;
+    setProducts((prevProducts) => {
+      const touched: Product[] = [];
+      const next = prevProducts.map((prod) => {
+        const matchedItems = items.filter(
+          (it) =>
+            (it.productId && it.productId === prod.id) ||
+            (it.sku && prod.sku && it.sku.trim().toLowerCase() === prod.sku.trim().toLowerCase())
+        );
+        if (matchedItems.length === 0) return prod;
+        const addedQty = matchedItems.reduce((sum, it) => sum + (Number(it.quantity) || 0), 0);
+        const latestCost = matchedItems[matchedItems.length - 1]?.unitCostUSD;
+        const updatedProd: Product = {
+          ...prod,
+          stock: Math.max(0, (Number(prod.stock) || 0) + addedQty),
+          costPrice: latestCost && latestCost > 0 ? latestCost : prod.costPrice,
+        };
+        touched.push(updatedProd);
+        return updatedProd;
+      });
+      if (touched.length > 0) {
+        queueMicrotask(() => {
+          touched.forEach((p) => syncProductToFirestore(p).catch(() => {}));
+        });
+      }
+      return next;
+    });
+  };
+
+  const computeOrderDueDate = (days?: number): string | undefined => {
+    if (!days || days <= 0) return undefined;
+    const d = new Date();
+    d.setDate(d.getDate() + Number(days));
+    return d.toISOString().split('T')[0];
+  };
+
+  const createPurchaseOrder: AppContextType['createPurchaseOrder'] = (orderData) => {
+    const supplier = suppliersRef.current.find((s) => s.id === orderData.supplierId);
+    if (!supplier) return null;
+
+    const rate = settingsRef.current.bcvRate || 1;
+    const now = new Date().toISOString();
+    const cleanItems: PurchaseOrderItem[] = (orderData.items || []).map((it) => {
+      const qty = Math.max(1, Number(it.quantity) || 1);
+      const unitCost = Math.max(0, Number(it.unitCostUSD) || 0);
+      return {
+        ...it,
+        quantity: qty,
+        unitCostUSD: Math.round(unitCost * 100) / 100,
+        totalCostUSD: Math.round(qty * unitCost * 100) / 100,
+      };
+    });
+
+    const totalUSD =
+      Math.round(cleanItems.reduce((sum, it) => sum + it.totalCostUSD, 0) * 100) / 100;
+    const totalBs = Math.round(totalUSD * rate * 100) / 100;
+
+    let initialPaid = 0;
+    if (orderData.paymentType === 'CONTADO') {
+      initialPaid = orderData.isPaidImmediately !== false ? totalUSD : Math.min(totalUSD, Math.max(0, Number(orderData.initialPaidUSD) || 0));
+    } else {
+      initialPaid = Math.min(totalUSD, Math.max(0, Number(orderData.initialPaidUSD) || 0));
+    }
+    initialPaid = Math.round(initialPaid * 100) / 100;
+
+    const payments: PurchasePaymentRecord[] = [];
+    if (initialPaid > 0.009) {
+      const currCat: PurchasePaymentCurrency = orderData.initialPaymentCurrency || 'DIVISAS';
+      const methodLabel =
+        orderData.initialPaymentMethod ||
+        (currCat === 'DIVISAS'
+          ? 'Divisas ($ Efectivo)'
+          : currCat === 'USDT'
+          ? 'USDT (Binance Pay)'
+          : 'Bolívares (Pago Móvil / Transf.)');
+      payments.push({
+        id: `popay-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
+        date: now,
+        amountUSD: initialPaid,
+        amountBs: Math.round(initialPaid * rate * 100) / 100,
+        bcvRate: rate,
+        currencyCategory: currCat,
+        paymentMethod: methodLabel,
+        reference: orderData.initialPaymentReference?.trim() || undefined,
+        notes: orderData.paymentType === 'CONTADO' ? 'Pago de contado al emitir orden' : 'Abono inicial',
+      });
+    }
+
+    const paymentStatus: PurchaseOrder['paymentStatus'] =
+      initialPaid >= totalUSD - 0.01 && totalUSD > 0
+        ? 'PAGADO'
+        : initialPaid > 0.01
+        ? 'PARCIAL'
+        : 'PENDIENTE';
+
+    let nextIndex = purchaseOrdersRef.current.length + 1;
+    purchaseOrdersRef.current.forEach((po) => {
+      const m = (po.orderNumber || '').match(/(\d+)$/);
+      if (m) {
+        const parsed = parseInt(m[1], 10);
+        if (!isNaN(parsed) && parsed >= nextIndex) nextIndex = parsed + 1;
+      }
+    });
+    const year = new Date().getFullYear();
+    const orderNumber = `OC-${year}-${String(nextIndex).padStart(4, '0')}`;
+
+    const shouldApplyStock =
+      orderData.receivedStatus === 'RECIBIDA' && orderData.applyStockToInventory !== false;
+    if (shouldApplyStock) {
+      applyPurchaseItemsToInventory(cleanItems);
+    }
+
+    const newOrder: PurchaseOrder = {
+      id: `po-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      orderNumber,
+      supplierInvoiceNumber: orderData.supplierInvoiceNumber?.trim() || undefined,
+      supplierId: supplier.id,
+      supplierCode: supplier.code,
+      supplierName: supplier.name,
+      vendorName: supplier.vendorName,
+      vendorPhone: supplier.vendorPhone,
+      items: cleanItems,
+      totalUSD,
+      bcvRate: rate,
+      totalBs,
+      paymentType: orderData.paymentType,
+      creditDays: orderData.paymentType === 'CREDITO' ? Number(orderData.creditDays) || 15 : undefined,
+      creditDueDate:
+        orderData.paymentType === 'CREDITO'
+          ? orderData.creditDueDate || computeOrderDueDate(Number(orderData.creditDays) || 15)
+          : undefined,
+      paymentStatus,
+      paidAmountUSD: initialPaid,
+      payments,
+      initialPaymentCurrency: orderData.initialPaymentCurrency,
+      initialPaymentMethod: orderData.initialPaymentMethod,
+      receivedStatus: orderData.receivedStatus,
+      receivedDate:
+        orderData.receivedStatus === 'RECIBIDA'
+          ? orderData.receivedDate || new Date().toISOString().split('T')[0]
+          : undefined,
+      stockApplied: shouldApplyStock,
+      notes: orderData.notes?.trim() || undefined,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    pendingSyncPurchaseOrderIdsRef.current.add(newOrder.id);
+    const nextOrders = [newOrder, ...purchaseOrdersRef.current];
+    purchaseOrdersRef.current = nextOrders;
+    setPurchaseOrders(nextOrders);
+    try {
+      localStorage.setItem(STORAGE_KEYS.PURCHASE_ORDERS, JSON.stringify(nextOrders));
+    } catch {}
+    syncPurchaseOrderToFirestore(newOrder)
+      .then(() => pendingSyncPurchaseOrderIdsRef.current.delete(newOrder.id))
+      .catch(() => {});
+
+    return newOrder;
+  };
+
+  const updatePurchaseOrder: AppContextType['updatePurchaseOrder'] = (id, updates) => {
+    const existing = purchaseOrdersRef.current.find((po) => po.id === id);
+    if (!existing) return null;
+
+    const rate = settingsRef.current.bcvRate || existing.bcvRate || 1;
+    const nextItems = Array.isArray(updates.items)
+      ? updates.items.map((it) => {
+          const qty = Math.max(1, Number(it.quantity) || 1);
+          const unitCost = Math.max(0, Number(it.unitCostUSD) || 0);
+          return {
+            ...it,
+            quantity: qty,
+            unitCostUSD: Math.round(unitCost * 100) / 100,
+            totalCostUSD: Math.round(qty * unitCost * 100) / 100,
+          };
+        })
+      : existing.items;
+
+    const nextTotalUSD =
+      Math.round(nextItems.reduce((sum, it) => sum + it.totalCostUSD, 0) * 100) / 100;
+    const nextTotalBs = Math.round(nextTotalUSD * rate * 100) / 100;
+
+    let supplierFields = {
+      supplierId: existing.supplierId,
+      supplierCode: existing.supplierCode,
+      supplierName: existing.supplierName,
+      vendorName: existing.vendorName,
+      vendorPhone: existing.vendorPhone,
+    };
+    if (updates.supplierId && updates.supplierId !== existing.supplierId) {
+      const sup = suppliersRef.current.find((s) => s.id === updates.supplierId);
+      if (sup) {
+        supplierFields = {
+          supplierId: sup.id,
+          supplierCode: sup.code,
+          supplierName: sup.name,
+          vendorName: sup.vendorName,
+          vendorPhone: sup.vendorPhone,
+        };
+      }
+    }
+
+    const nextReceivedStatus = updates.receivedStatus || existing.receivedStatus;
+    const shouldApplyStock =
+      !existing.stockApplied &&
+      nextReceivedStatus === 'RECIBIDA' &&
+      updates.applyStockToInventory !== false;
+
+    if (shouldApplyStock) {
+      applyPurchaseItemsToInventory(nextItems);
+    }
+
+    const nextPaidUSD = updates.paidAmountUSD !== undefined ? updates.paidAmountUSD : existing.paidAmountUSD;
+    const nextPaymentStatus: PurchaseOrder['paymentStatus'] =
+      nextPaidUSD >= nextTotalUSD - 0.01 && nextTotalUSD > 0
+        ? 'PAGADO'
+        : nextPaidUSD > 0.01
+        ? 'PARCIAL'
+        : 'PENDIENTE';
+
+    const { applyStockToInventory: _ignore, ...cleanUpdates } = updates;
+    const updatedOrder: PurchaseOrder = {
+      ...existing,
+      ...cleanUpdates,
+      ...supplierFields,
+      items: nextItems,
+      totalUSD: nextTotalUSD,
+      bcvRate: rate,
+      totalBs: nextTotalBs,
+      paidAmountUSD: nextPaidUSD,
+      paymentStatus: updates.paymentStatus || nextPaymentStatus,
+      receivedStatus: nextReceivedStatus,
+      receivedDate:
+        nextReceivedStatus === 'RECIBIDA'
+          ? updates.receivedDate || existing.receivedDate || new Date().toISOString().split('T')[0]
+          : undefined,
+      stockApplied: existing.stockApplied || shouldApplyStock,
+      updatedAt: new Date().toISOString(),
+    };
+
+    pendingSyncPurchaseOrderIdsRef.current.add(id);
+    const nextList = purchaseOrdersRef.current.map((po) => (po.id === id ? updatedOrder : po));
+    purchaseOrdersRef.current = nextList;
+    setPurchaseOrders(nextList);
+    syncPurchaseOrderToFirestore(updatedOrder)
+      .then(() => pendingSyncPurchaseOrderIdsRef.current.delete(id))
+      .catch(() => {});
+
+    return updatedOrder;
+  };
+
+  const markPurchaseOrderReceived = (
+    id: string,
+    receivedDate?: string,
+    applyStockToInventory: boolean = true
+  ): PurchaseOrder | null => {
+    const existing = purchaseOrdersRef.current.find((po) => po.id === id);
+    if (!existing) return null;
+    const shouldApply = !existing.stockApplied && applyStockToInventory;
+    if (shouldApply) {
+      applyPurchaseItemsToInventory(existing.items);
+    }
+    const updatedOrder: PurchaseOrder = {
+      ...existing,
+      receivedStatus: 'RECIBIDA',
+      receivedDate: receivedDate || new Date().toISOString().split('T')[0],
+      stockApplied: existing.stockApplied || shouldApply,
+      updatedAt: new Date().toISOString(),
+    };
+    pendingSyncPurchaseOrderIdsRef.current.add(id);
+    const nextList = purchaseOrdersRef.current.map((po) => (po.id === id ? updatedOrder : po));
+    purchaseOrdersRef.current = nextList;
+    setPurchaseOrders(nextList);
+    syncPurchaseOrderToFirestore(updatedOrder)
+      .then(() => pendingSyncPurchaseOrderIdsRef.current.delete(id))
+      .catch(() => {});
+    return updatedOrder;
+  };
+
+  const recordPurchaseOrderPayment: AppContextType['recordPurchaseOrderPayment'] = (
+    orderId,
+    payment
+  ) => {
+    const existing = purchaseOrdersRef.current.find((po) => po.id === orderId);
+    if (!existing) return null;
+
+    const rate = settingsRef.current.bcvRate || existing.bcvRate || 1;
+    const remainingBefore = Math.max(0, existing.totalUSD - (existing.paidAmountUSD || 0));
+    const appliedUSD = Math.min(
+      remainingBefore > 0 ? remainingBefore : Number(payment.amountUSD) || 0,
+      Math.max(0, Math.round((Number(payment.amountUSD) || 0) * 100) / 100)
+    );
+    if (appliedUSD <= 0) return null;
+
+    const paymentRecord: PurchasePaymentRecord = {
+      id: `popay-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      date: new Date().toISOString(),
+      amountUSD: appliedUSD,
+      amountBs: Math.round(appliedUSD * rate * 100) / 100,
+      bcvRate: rate,
+      currencyCategory: payment.currencyCategory,
+      paymentMethod: payment.paymentMethod,
+      reference: payment.reference?.trim() || undefined,
+      notes: payment.notes?.trim() || undefined,
+    };
+
+    const nextPaidUSD = Math.round(((existing.paidAmountUSD || 0) + appliedUSD) * 100) / 100;
+    const nextPaymentStatus: PurchaseOrder['paymentStatus'] =
+      nextPaidUSD >= existing.totalUSD - 0.01
+        ? 'PAGADO'
+        : nextPaidUSD > 0.01
+        ? 'PARCIAL'
+        : 'PENDIENTE';
+
+    const updatedOrder: PurchaseOrder = {
+      ...existing,
+      paidAmountUSD: nextPaidUSD,
+      paymentStatus: nextPaymentStatus,
+      payments: [...(existing.payments || []), paymentRecord],
+      updatedAt: new Date().toISOString(),
+    };
+
+    pendingSyncPurchaseOrderIdsRef.current.add(orderId);
+    const nextList = purchaseOrdersRef.current.map((po) => (po.id === orderId ? updatedOrder : po));
+    purchaseOrdersRef.current = nextList;
+    setPurchaseOrders(nextList);
+    try {
+      localStorage.setItem(STORAGE_KEYS.PURCHASE_ORDERS, JSON.stringify(nextList));
+    } catch {}
+    syncPurchaseOrderToFirestore(updatedOrder)
+      .then(() => pendingSyncPurchaseOrderIdsRef.current.delete(orderId))
+      .catch(() => {});
+
+    const totalSupplierDebtAfterUSD = Math.round(
+      nextList
+        .filter((po) => po.supplierId === existing.supplierId)
+        .reduce((sum, po) => sum + Math.max(0, po.totalUSD - (po.paidAmountUSD || 0)), 0) * 100
+    ) / 100;
+
+    return { updatedOrder, paymentRecord, totalSupplierDebtAfterUSD };
+  };
+
+  const deletePurchaseOrder = (id: string) => {
+    recordDeleted('purchaseOrders', [id]);
+    removePurchaseOrderFromFirestore(id).catch(() => {});
+    const nextList = purchaseOrdersRef.current.filter((po) => po.id !== id);
+    purchaseOrdersRef.current = nextList;
+    setPurchaseOrders(nextList);
+  };
+
+  const totalSupplierDebtUSD = useMemo(() => {
+    return (
+      Math.round(
+        purchaseOrders.reduce(
+          (sum, po) => sum + Math.max(0, po.totalUSD - (po.paidAmountUSD || 0)),
+          0
+        ) * 100
+      ) / 100
+    );
+  }, [purchaseOrders]);
+
+  const totalSupplierDebtBs = totalSupplierDebtUSD * settings.bcvRate;
+
+  const pendingReceptionOrdersCount = useMemo(() => {
+    return purchaseOrders.filter((po) => po.receivedStatus === 'PENDIENTE').length;
+  }, [purchaseOrders]);
+
+  // Business Expenses Categories & CRUD
+  const expenseCategories = useMemo<string[]>(() => {
+    const result: string[] = [];
+    const seenLower = new Set<string>();
+    const registerCat = (cat?: string) => {
+      const cleaned = (cat || '').trim().replace(/\s+/g, ' ');
+      if (!cleaned) return;
+      const key = cleaned.toLowerCase();
+      if (seenLower.has(key)) return;
+      seenLower.add(key);
+      result.push(cleaned);
+    };
+    DEFAULT_EXPENSE_CATEGORIES.forEach(registerCat);
+    if (Array.isArray(settings.customExpenseCategories)) {
+      settings.customExpenseCategories.forEach(registerCat);
+    }
+    expenses.forEach((ex) => registerCat(ex.category));
+    return result;
+  }, [settings.customExpenseCategories, expenses]);
+
+  const addExpenseCategory = (categoryName: string): { added: boolean; category: string } => {
+    const cleaned = categoryName.trim().replace(/\s+/g, ' ');
+    if (!cleaned) {
+      return { added: false, category: 'Otros Gastos' };
+    }
+    const existing = expenseCategories.find(
+      (c) => c.trim().toLowerCase() === cleaned.toLowerCase()
+    );
+    if (existing) {
+      return { added: false, category: existing };
+    }
+    const formatted =
+      cleaned === cleaned.toLowerCase()
+        ? cleaned.charAt(0).toUpperCase() + cleaned.slice(1)
+        : cleaned;
+
+    setSettings((prev) => {
+      const prevCustom = Array.isArray(prev.customExpenseCategories)
+        ? prev.customExpenseCategories
+        : [];
+      if (prevCustom.some((c) => c.trim().toLowerCase() === formatted.toLowerCase())) {
+        return prev;
+      }
+      const updated: BusinessSettings = {
+        ...prev,
+        customExpenseCategories: [...prevCustom, formatted],
+      };
+      try {
+        localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(updated));
+      } catch {}
+      syncSettingsToFirestore(updated).catch((err) =>
+        console.warn('Firestore custom expense category sync error:', err)
+      );
+      return updated;
+    });
+
+    return { added: true, category: formatted };
+  };
+
+  const deleteExpenseCategory = (categoryName: string) => {
+    const targetLower = categoryName.trim().toLowerCase();
+    setSettings((prev) => {
+      const prevCustom = Array.isArray(prev.customExpenseCategories)
+        ? prev.customExpenseCategories
+        : [];
+      const nextCustom = prevCustom.filter((c) => c.trim().toLowerCase() !== targetLower);
+      const updated: BusinessSettings = {
+        ...prev,
+        customExpenseCategories: nextCustom,
+      };
+      try {
+        localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(updated));
+      } catch {}
+      syncSettingsToFirestore(updated).catch(() => {});
+      return updated;
+    });
+  };
+
+  const addExpense: AppContextType['addExpense'] = (expenseData) => {
+    const activeRate = Number(expenseData.bcvRate) > 0 ? Number(expenseData.bcvRate) : settingsRef.current.bcvRate || 1;
+    const rawAmountUSD = Math.max(0, Number(expenseData.amountUSD) || 0);
+    const amountUSD = Math.round(rawAmountUSD * 100) / 100;
+    const amountBs =
+      expenseData.amountBs !== undefined && Number(expenseData.amountBs) > 0
+        ? Math.round(Number(expenseData.amountBs) * 100) / 100
+        : Math.round(amountUSD * activeRate * 100) / 100;
+
+    let nextIndex = expensesRef.current.length + 1;
+    expensesRef.current.forEach((ex) => {
+      const m = (ex.expenseNumber || '').match(/(\d+)$/);
+      if (m) {
+        const parsed = parseInt(m[1], 10);
+        if (!isNaN(parsed) && parsed >= nextIndex) nextIndex = parsed + 1;
+      }
+    });
+    const year = new Date().getFullYear();
+    const expenseNumber = `GAS-${year}-${String(nextIndex).padStart(4, '0')}`;
+    const now = new Date().toISOString();
+
+    const newExpense: BusinessExpense = {
+      id: `exp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      expenseNumber,
+      date: expenseData.date || now.split('T')[0],
+      category: expenseData.category.trim() || 'Otros Gastos',
+      description: expenseData.description.trim(),
+      beneficiary: expenseData.beneficiary?.trim() || undefined,
+      amountUSD,
+      bcvRate: activeRate,
+      amountBs,
+      paymentCurrencyType: expenseData.paymentCurrencyType,
+      paymentMethod: expenseData.paymentMethod,
+      reference: expenseData.reference?.trim() || undefined,
+      notes: expenseData.notes?.trim() || undefined,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    pendingSyncExpenseIdsRef.current.add(newExpense.id);
+    const nextList = [newExpense, ...expensesRef.current].sort(
+      (a, b) =>
+        (b.date || b.createdAt || '').localeCompare(a.date || a.createdAt || '') ||
+        (b.createdAt || '').localeCompare(a.createdAt || '')
+    );
+    expensesRef.current = nextList;
+    setExpenses(nextList);
+    try {
+      localStorage.setItem(STORAGE_KEYS.EXPENSES, JSON.stringify(nextList));
+    } catch {}
+    syncExpenseToFirestore(newExpense)
+      .then(() => pendingSyncExpenseIdsRef.current.delete(newExpense.id))
+      .catch(() => {});
+
+    return newExpense;
+  };
+
+  const updateExpense: AppContextType['updateExpense'] = (id, updates) => {
+    const existing = expensesRef.current.find((ex) => ex.id === id);
+    if (!existing) return null;
+
+    const rate =
+      updates.bcvRate !== undefined && Number(updates.bcvRate) > 0
+        ? Number(updates.bcvRate)
+        : existing.bcvRate || settingsRef.current.bcvRate || 1;
+    const nextUSD =
+      updates.amountUSD !== undefined
+        ? Math.round(Math.max(0, Number(updates.amountUSD) || 0) * 100) / 100
+        : existing.amountUSD;
+    const nextBs =
+      updates.amountBs !== undefined
+        ? Math.round(Math.max(0, Number(updates.amountBs) || 0) * 100) / 100
+        : Math.round(nextUSD * rate * 100) / 100;
+
+    const updatedExpense: BusinessExpense = {
+      ...existing,
+      ...updates,
+      amountUSD: nextUSD,
+      bcvRate: rate,
+      amountBs: nextBs,
+      updatedAt: new Date().toISOString(),
+    };
+
+    pendingSyncExpenseIdsRef.current.add(id);
+    const nextList = expensesRef.current
+      .map((ex) => (ex.id === id ? updatedExpense : ex))
+      .sort(
+        (a, b) =>
+          (b.date || b.createdAt || '').localeCompare(a.date || a.createdAt || '') ||
+          (b.createdAt || '').localeCompare(a.createdAt || '')
+      );
+    expensesRef.current = nextList;
+    setExpenses(nextList);
+    try {
+      localStorage.setItem(STORAGE_KEYS.EXPENSES, JSON.stringify(nextList));
+    } catch {}
+    syncExpenseToFirestore(updatedExpense)
+      .then(() => pendingSyncExpenseIdsRef.current.delete(id))
+      .catch(() => {});
+
+    return updatedExpense;
+  };
+
+  const deleteExpense = (id: string) => {
+    recordDeleted('expenses', [id]);
+    removeExpenseFromFirestore(id).catch(() => {});
+    const nextList = expensesRef.current.filter((ex) => ex.id !== id);
+    expensesRef.current = nextList;
+    setExpenses(nextList);
+  };
+
+  const totalExpensesUSD = useMemo(() => {
+    return (
+      Math.round(expenses.reduce((sum, ex) => sum + (Number(ex.amountUSD) || 0), 0) * 100) / 100
+    );
+  }, [expenses]);
+
+  const totalExpensesBs = totalExpensesUSD * settings.bcvRate;
+
+  const currentMonthExpensesUSD = useMemo(() => {
+    const now = new Date();
+    const monthPrefix = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+    return (
+      Math.round(
+        expenses
+          .filter((ex) => (ex.date || ex.createdAt || '').startsWith(monthPrefix))
+          .reduce((sum, ex) => sum + (Number(ex.amountUSD) || 0), 0) * 100
+      ) / 100
+    );
+  }, [expenses]);
+
+  const currentMonthExpensesBs = currentMonthExpensesUSD * settings.bcvRate;
+
   // Online Store Orders
   const placeOnlineOrder = (
     orderData: Omit<OnlineOrder, 'id' | 'orderCode' | 'createdAt' | 'status' | 'bcvRate' | 'totalBs'>
@@ -4563,6 +5707,9 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     setTechnicians([]);
     setServiceCommissions([]);
     setTechnicianPayouts([]);
+    setSuppliers([]);
+    setPurchaseOrders([]);
+    setExpenses([]);
     setCart([]);
     localStorage.clear();
   };
@@ -4644,6 +5791,30 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
         deleteTechnicianPayout,
         pendingTechniciansCommissionUSD,
         pendingTechniciansCommissionBs,
+        suppliers,
+        addSupplier,
+        updateSupplier,
+        deleteSupplier,
+        purchaseOrders,
+        createPurchaseOrder,
+        updatePurchaseOrder,
+        deletePurchaseOrder,
+        markPurchaseOrderReceived,
+        recordPurchaseOrderPayment,
+        totalSupplierDebtUSD,
+        totalSupplierDebtBs,
+        pendingReceptionOrdersCount,
+        expenses,
+        expenseCategories,
+        addExpenseCategory,
+        deleteExpenseCategory,
+        addExpense,
+        updateExpense,
+        deleteExpense,
+        totalExpensesUSD,
+        totalExpensesBs,
+        currentMonthExpensesUSD,
+        currentMonthExpensesBs,
         onlineOrders,
         placeOnlineOrder,
         updateOrderStatus,

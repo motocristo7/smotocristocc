@@ -7,6 +7,8 @@ import {
   getServiceOrderPDFBlob,
   downloadTechnicianPayoutPDF,
   getTechnicianPayoutPDFBlob,
+  downloadPurchaseOrderPDF,
+  getPurchaseOrderPDFBlob,
 } from '../../utils/pdfInvoice';
 import { buildWhatsAppSendUrl, hasValidWhatsAppPhone } from '../../utils/whatsapp';
 import {
@@ -22,6 +24,7 @@ import {
   CheckCircle2,
   Wrench,
   User,
+  Truck,
 } from 'lucide-react';
 
 export const WhatsAppModal: React.FC = () => {
@@ -64,11 +67,13 @@ export const WhatsAppModal: React.FC = () => {
   const activeIsTechnician = Boolean(
     isSecondaryActive ? secondary?.isTechnician : whatsappModalData.isTechnician
   );
+  const activeIsSupplier = Boolean(!isSecondaryActive && (whatsappModalData.isSupplier || whatsappModalData.purchaseOrder));
 
   const sale = whatsappModalData.sale;
   const serviceOrder = whatsappModalData.serviceOrder;
   const technicianPayout = whatsappModalData.technicianPayout;
-  const hasPdf = !isSecondaryActive && Boolean(sale || serviceOrder || technicianPayout);
+  const purchaseOrder = whatsappModalData.purchaseOrder;
+  const hasPdf = !isSecondaryActive && Boolean(sale || serviceOrder || technicianPayout || purchaseOrder);
 
   const hasStoredValidPhone = hasValidWhatsAppPhone(activeStoredPhone);
   const activePhone = hasValidWhatsAppPhone(activeManualPhone)
@@ -90,6 +95,8 @@ export const WhatsAppModal: React.FC = () => {
     ? `Factura_Servicio_${serviceOrder.orderNumber}_MotoCristoc.pdf`
     : technicianPayout
     ? `Factura_Comision_${technicianPayout.payoutNumber}.pdf`
+    : purchaseOrder
+    ? `Orden_Compra_${purchaseOrder.orderNumber}_${purchaseOrder.supplierCode || 'Proveedor'}.pdf`
     : '';
 
   const handleCopy = () => {
@@ -113,6 +120,10 @@ export const WhatsAppModal: React.FC = () => {
       downloadTechnicianPayoutPDF(technicianPayout, settings);
       setDownloadedPdf(true);
       setTimeout(() => setDownloadedPdf(false), 4000);
+    } else if (purchaseOrder) {
+      downloadPurchaseOrderPDF(purchaseOrder, settings);
+      setDownloadedPdf(true);
+      setTimeout(() => setDownloadedPdf(false), 4000);
     } else if (serviceOrder) {
       setIsGeneratingPdf(true);
       downloadServiceOrderPDF(serviceOrder, settings)
@@ -133,6 +144,8 @@ export const WhatsAppModal: React.FC = () => {
         downloadInvoicePDF(sale, settings);
       } else if (technicianPayout) {
         downloadTechnicianPayoutPDF(technicianPayout, settings);
+      } else if (purchaseOrder) {
+        downloadPurchaseOrderPDF(purchaseOrder, settings);
       } else if (serviceOrder) {
         await downloadServiceOrderPDF(serviceOrder, settings);
       }
@@ -165,6 +178,10 @@ export const WhatsAppModal: React.FC = () => {
         blob = getTechnicianPayoutPDFBlob(technicianPayout, settings);
         pdfFileName = `Factura_Comision_${technicianPayout.payoutNumber}.pdf`;
         shareTitle = `Comprobante Comisión ${technicianPayout.payoutNumber} - ${technicianPayout.technicianName}`;
+      } else if (purchaseOrder) {
+        blob = getPurchaseOrderPDFBlob(purchaseOrder, settings);
+        pdfFileName = `Orden_Compra_${purchaseOrder.orderNumber}_${purchaseOrder.supplierCode || 'Proveedor'}.pdf`;
+        shareTitle = `Orden de Compra ${purchaseOrder.orderNumber} - ${purchaseOrder.supplierName}`;
       } else if (serviceOrder) {
         blob = await getServiceOrderPDFBlob(serviceOrder, settings);
         pdfFileName = `Factura_Servicio_${serviceOrder.orderNumber}_MotoCristoc.pdf`;
@@ -204,22 +221,28 @@ export const WhatsAppModal: React.FC = () => {
         {/* Header */}
         <div
           className={`px-6 py-4 text-white flex items-center justify-between transition-colors ${
-            activeIsTechnician ? 'bg-slate-900' : 'bg-emerald-600'
+            activeIsTechnician || activeIsSupplier ? 'bg-slate-900' : 'bg-emerald-600'
           }`}
         >
           <div className="flex items-center gap-3 min-w-0">
             <div
               className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${
-                activeIsTechnician ? 'bg-amber-500/20 text-amber-400' : 'bg-white/15 text-white'
+                activeIsTechnician || activeIsSupplier ? 'bg-amber-500/20 text-amber-400' : 'bg-white/15 text-white'
               }`}
             >
-              {activeIsTechnician ? <Wrench className="w-5 h-5" /> : <MessageSquare className="w-5 h-5" />}
+              {activeIsTechnician ? (
+                <Wrench className="w-5 h-5" />
+              ) : activeIsSupplier ? (
+                <Truck className="w-5 h-5" />
+              ) : (
+                <MessageSquare className="w-5 h-5" />
+              )}
             </div>
             <div className="min-w-0">
               <h3 className="font-semibold text-base sm:text-lg leading-tight truncate">{activeTitle}</h3>
               <p
                 className={`text-xs flex items-center gap-1.5 mt-0.5 flex-wrap ${
-                  activeIsTechnician ? 'text-slate-300' : 'text-emerald-100'
+                  activeIsTechnician || activeIsSupplier ? 'text-slate-300' : 'text-emerald-100'
                 }`}
               >
                 <Phone className="w-3.5 h-3.5 shrink-0" />
@@ -358,6 +381,8 @@ export const WhatsAppModal: React.FC = () => {
                         ? 'Factura de Taller en PDF (con Detalle y QR de Pago)'
                         : technicianPayout
                         ? 'Factura / Comprobante de Pago de Comisión en PDF'
+                        : purchaseOrder
+                        ? 'Orden de Compra / Estado de Deuda y Abonos en PDF'
                         : 'Factura Oficial en Formato PDF'}
                     </h4>
                     <p className="text-[11px] text-slate-600 mt-0.5">
@@ -370,6 +395,8 @@ export const WhatsAppModal: React.FC = () => {
                           ? 'Al presionar "Descargar PDF y Enviar a WhatsApp" se descargará el PDF con el trabajo, datos y QR Pago Móvil.'
                           : technicianPayout
                           ? 'Al presionar "Descargar PDF y Enviar a WhatsApp" se enviará la notificación al técnico y se descargará el comprobante PDF.'
+                          : purchaseOrder
+                          ? 'Al presionar "Descargar PDF y Enviar a WhatsApp" se descargará el PDF para enviárselo al vendedor por WhatsApp.'
                           : 'Al presionar "Descargar PDF y Enviar a WhatsApp" se abrirá WhatsApp y se descargará el PDF en ese momento.'}
                       </span>
                     </p>
@@ -391,8 +418,8 @@ export const WhatsAppModal: React.FC = () => {
             </div>
           )}
 
-          {/* Pago Móvil QR & Data Card (only for customer-facing charges, not technician messages) */}
-          {!technicianPayout && !activeIsTechnician && (
+          {/* Pago Móvil QR & Data Card (only for customer-facing charges, not technician/supplier messages) */}
+          {!technicianPayout && !activeIsTechnician && !activeIsSupplier && !purchaseOrder && (
             <div className="bg-white border border-slate-200 rounded-xl p-3.5 shadow-2xs flex items-center justify-between gap-3">
               <div className="flex items-center gap-3">
                 <img
@@ -424,7 +451,11 @@ export const WhatsAppModal: React.FC = () => {
           <div>
             <div className="flex items-center justify-between mb-2">
               <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
-                {activeIsTechnician ? 'Mensaje para el Técnico' : 'Mensaje de Notificación WhatsApp'}
+                {activeIsTechnician
+                  ? 'Mensaje para el Técnico'
+                  : activeIsSupplier
+                  ? 'Mensaje para el Vendedor / Proveedor'
+                  : 'Mensaje de Notificación WhatsApp'}
               </span>
               <button
                 type="button"

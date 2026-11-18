@@ -16,6 +16,12 @@ import {
 import { downloadPurchaseOrderPDF } from '../../utils/pdfInvoice';
 import { compressImageFileToDataUrl, normalizeImageUrl } from '../../utils/imageUrl';
 import {
+  downloadPurchaseOrderTemplate,
+  ParsedPOExcelItem,
+  ParsedPOHeaderMetadata,
+} from '../../utils/excelPurchaseOrder';
+import { ImportPurchaseOrderExcelModal } from './ImportPurchaseOrderExcelModal';
+import {
   Truck,
   Plus,
   Search,
@@ -28,6 +34,9 @@ import {
   Phone,
   MessageSquare,
   FileDown,
+  FileSpreadsheet,
+  Download,
+  UploadCloud,
   Edit3,
   Trash2,
   X,
@@ -180,6 +189,7 @@ export const PurchaseOrdersView: React.FC = () => {
   const [customPartImageUrl, setCustomPartImageUrl] = useState('');
   const [customPartError, setCustomPartError] = useState<string | null>(null);
   const [expandedItemIdx, setExpandedItemIdx] = useState<number | null>(null);
+  const [isImportExcelModalOpen, setIsImportExcelModalOpen] = useState(false);
 
   // Inline quick supplier creation inside Order Modal
   const [showQuickSupplierForm, setShowQuickSupplierForm] = useState(false);
@@ -423,6 +433,7 @@ export const PurchaseOrdersView: React.FC = () => {
     setExpandedItemIdx(null);
     setIsAddingCustomCategory(false);
     setNewCustomCategoryName('');
+    setIsImportExcelModalOpen(false);
     setShowQuickSupplierForm(suppliers.length === 0);
     setQSupCode(suggestNextSupplierCode());
     setQSupName('');
@@ -463,8 +474,113 @@ export const PurchaseOrdersView: React.FC = () => {
     setExpandedItemIdx(null);
     setIsAddingCustomCategory(false);
     setNewCustomCategoryName('');
+    setIsImportExcelModalOpen(false);
     setShowQuickSupplierForm(false);
     setIsOrderModalOpen(true);
+  };
+
+  const handleExcelOrderImported = ({
+    items,
+    headerMetadata,
+    applyHeaderMetadata,
+    mode,
+  }: {
+    items: ParsedPOExcelItem[];
+    headerMetadata: ParsedPOHeaderMetadata | null;
+    applyHeaderMetadata: boolean;
+    mode: 'append' | 'replace';
+  }) => {
+    // Register any custom categories brought from Excel so dropdowns reflect them immediately
+    items.forEach((it) => {
+      if (it.category && it.category.trim()) {
+        addCategory(it.category.trim());
+      }
+    });
+
+    const cleanItems: PurchaseOrderItem[] = items.map(
+      ({ rowNumber: _rowNumber, matchStatus: _matchStatus, ...item }) => ({
+        ...item,
+      })
+    );
+
+    if (mode === 'replace') {
+      setOrdItems(cleanItems);
+    } else {
+      setOrdItems((prev) => {
+        const next = [...prev];
+        cleanItems.forEach((incoming) => {
+          const matchIdx = next.findIndex(
+            (existing) =>
+              (incoming.productId && existing.productId === incoming.productId) ||
+              (incoming.sku &&
+                existing.sku &&
+                existing.sku.trim().toUpperCase() === incoming.sku.trim().toUpperCase())
+          );
+          if (matchIdx >= 0) {
+            const existing = next[matchIdx];
+            const nextQty = existing.quantity + incoming.quantity;
+            const nextCost =
+              incoming.unitCostUSD >= 0 ? incoming.unitCostUSD : existing.unitCostUSD;
+            next[matchIdx] = {
+              ...existing,
+              quantity: nextQty,
+              unitCostUSD: nextCost,
+              salePriceUSD:
+                incoming.salePriceUSD && incoming.salePriceUSD > 0
+                  ? incoming.salePriceUSD
+                  : existing.salePriceUSD,
+              totalCostUSD: Math.round(nextQty * nextCost * 100) / 100,
+            };
+          } else {
+            next.push(incoming);
+          }
+        });
+        return next;
+      });
+    }
+
+    if (applyHeaderMetadata && headerMetadata) {
+      if (headerMetadata.supplierId) {
+        setOrdSupplierId(headerMetadata.supplierId);
+      }
+      if (headerMetadata.supplierInvoiceNumber) {
+        setOrdSupplierInvoice(headerMetadata.supplierInvoiceNumber);
+      }
+      if (headerMetadata.paymentType) {
+        setOrdPaymentType(headerMetadata.paymentType);
+        if (!editingOrder) {
+          setOrdPaymentOption(headerMetadata.paymentType === 'CONTADO' ? 'PAGADO' : 'PENDIENTE');
+        }
+      }
+      if (headerMetadata.paymentCurrencyCondition) {
+        setOrdCurrencyCondition(headerMetadata.paymentCurrencyCondition);
+        if (!editingOrder) {
+          if (headerMetadata.paymentCurrencyCondition === 'BS_BCV') {
+            setOrdPayCurrency('BS');
+            setOrdPayMethod('Bolívares (Pago Móvil)');
+          } else {
+            setOrdPayCurrency('DIVISAS');
+            setOrdPayMethod('Divisas ($ Efectivo)');
+          }
+        }
+      }
+      if (headerMetadata.creditDays && headerMetadata.creditDays > 0) {
+        setOrdCreditDays(headerMetadata.creditDays);
+        setOrdCreditDueDate(computeSuggestedDueDate(headerMetadata.creditDays));
+      }
+      if (headerMetadata.receivedStatus) {
+        setOrdReceivedStatus(headerMetadata.receivedStatus);
+      }
+      if (headerMetadata.receivedDate) {
+        setOrdReceivedDate(headerMetadata.receivedDate);
+      }
+      if (headerMetadata.notes) {
+        setOrdNotes(headerMetadata.notes);
+      }
+    }
+
+    setOrdError(null);
+    setExpandedItemIdx(null);
   };
 
   const handleAddInventoryProductToOrder = (prod: (typeof products)[number]) => {
@@ -1727,6 +1843,41 @@ export const PurchaseOrdersView: React.FC = () => {
                   <span>{ordError}</span>
                 </div>
               )}
+
+              {/* Carga Rápida con Plantilla Excel */}
+              <div className="bg-emerald-50/70 rounded-2xl border border-emerald-200 p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                <div className="flex items-start gap-2.5">
+                  <div className="w-8 h-8 rounded-xl bg-emerald-100 text-emerald-700 flex items-center justify-center shrink-0">
+                    <FileSpreadsheet className="w-4 h-4" />
+                  </div>
+                  <div>
+                    <h4 className="text-xs font-bold text-slate-900">
+                      Carga Masiva de Orden desde Excel
+                    </h4>
+                    <p className="text-[11px] text-slate-600">
+                      Descarga la plantilla oficial, llénala con los repuestos, costos y precios de venta, e impórtala aquí directamente.
+                    </p>
+                  </div>
+                </div>
+                <div className="flex flex-wrap items-center gap-2 shrink-0">
+                  <button
+                    type="button"
+                    onClick={downloadPurchaseOrderTemplate}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white hover:bg-amber-50 text-slate-800 border border-amber-300 rounded-xl text-xs font-bold transition-colors cursor-pointer"
+                  >
+                    <Download className="w-3.5 h-3.5 text-amber-600" />
+                    <span>Descargar Plantilla</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setIsImportExcelModalOpen(true)}
+                    className="inline-flex items-center gap-1.5 px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold shadow-2xs transition-colors cursor-pointer"
+                  >
+                    <UploadCloud className="w-3.5 h-3.5" />
+                    <span>Importar Excel</span>
+                  </button>
+                </div>
+              </div>
 
               {/* Section 1: Proveedor & Factura Proveedor */}
               <div className="bg-slate-50 rounded-2xl border border-slate-200 p-4 space-y-3">
@@ -3341,6 +3492,16 @@ export const PurchaseOrdersView: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* MODAL 7: IMPORTAR ORDEN DE COMPRA DESDE EXCEL */}
+      <ImportPurchaseOrderExcelModal
+        isOpen={isImportExcelModalOpen}
+        onClose={() => setIsImportExcelModalOpen(false)}
+        existingProducts={products}
+        suppliers={suppliers}
+        hasExistingOrderItems={ordItems.length > 0}
+        onImportConfirmed={handleExcelOrderImported}
+      />
     </div>
   );
 };

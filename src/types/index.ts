@@ -296,6 +296,7 @@ export interface BusinessSettings {
   warrantyPolicy: string;
   customCategories?: string[];
   customExpenseCategories?: string[];
+  customExpensePosBanks?: string[];
 }
 
 export interface Technician {
@@ -463,10 +464,21 @@ export const DEFAULT_EXPENSE_CATEGORIES: string[] = [
   'Otros Gastos',
 ];
 
-export type ExpensePaymentCurrency = 'BS' | 'USDT' | 'EFECTIVO_BS' | 'EFECTIVO_USD';
+export const DEFAULT_EXPENSE_POS_BANKS: string[] = [
+  'Banesco Personal',
+  'Provincial',
+];
+
+export type ExpensePaymentCurrency =
+  | 'BS'
+  | 'PUNTO_VENTA'
+  | 'USDT'
+  | 'EFECTIVO_BS'
+  | 'EFECTIVO_USD';
 
 export type ExpensePaymentMethod =
   | 'Bolívares (Transferencia / Pago Móvil)'
+  | 'Punto de Venta (Bs)'
   | 'USDT (Binance Pay)'
   | 'Efectivo Bs'
   | 'Efectivo en Dólares ($)';
@@ -481,8 +493,9 @@ export interface BusinessExpense {
   amountUSD: number; // Monto equivalente en USD
   bcvRate: number; // Tasa BCV aplicada
   amountBs: number; // Monto equivalente en Bolívares
-  paymentCurrencyType: ExpensePaymentCurrency; // 'BS' | 'USDT' | 'EFECTIVO_BS' | 'EFECTIVO_USD'
+  paymentCurrencyType: ExpensePaymentCurrency; // 'BS' | 'PUNTO_VENTA' | 'USDT' | 'EFECTIVO_BS' | 'EFECTIVO_USD'
   paymentMethod: ExpensePaymentMethod;
+  cardBank?: string; // Banco de la tarjeta usada cuando se paga por Punto de Venta (ej. Banesco Personal, Provincial o banco agregado)
   reference?: string; // Número de referencia o comprobante
   notes?: string;
   treasuryAccountId?: string; // Cuenta de Tesorería de la cual se descontó el gasto
@@ -570,7 +583,89 @@ export interface TreasuryMovement {
   saleInvoiceNumber?: string;
   salaryAdvanceCommitmentId?: string; // Compromiso de sueldo/gasto fijo descontado por vale
   salaryAdvanceAppliedUSD?: number; // Monto USD descontado al compromiso por este vale
+  debtId?: string; // ID de la deuda vinculada cuando es un abono o pago de deuda
   notes?: string;
   createdAt: string;
   updatedAt?: string;
 }
+
+export const DEFAULT_DEBT_CATEGORIES: string[] = [
+  'Préstamo Bancario',
+  'Proveedores / Mercancía',
+  'Socios / Capital',
+  'Alquiler / Local',
+  'Impuestos / Seniat',
+  'Servicios Atrasados',
+  'Equipos / Financiamiento',
+  'Otras Deudas',
+];
+
+export type DebtPriority = 'ALTA' | 'MEDIA' | 'BAJA';
+export type DebtStatus = 'ACTIVA' | 'EN_PLAN' | 'PAGADA';
+export type DebtPaymentStrategy = 'CUOTAS_IGUALES' | 'PAGO_UNICO' | 'FLEXIBLE';
+export type DebtPaymentFrequency = 'SEMANAL' | 'QUINCENAL' | 'MENSUAL' | 'UNICO';
+
+export interface DebtInstallment {
+  id: string;
+  number: number; // Cuota #1, #2, ...
+  dueDate: string; // YYYY-MM-DD
+  amountUSD: number;
+  status: 'PENDIENTE' | 'PAGADA';
+  paidAt?: string;
+  paidAccountId?: string;
+  paidAccountName?: string;
+  reference?: string;
+  linkedCommitmentId?: string; // Si fue agendada en Planificación de Pagos
+}
+
+export interface DebtPaymentPlan {
+  strategy: DebtPaymentStrategy;
+  frequency: DebtPaymentFrequency;
+  installmentsCount: number;
+  startDate: string; // YYYY-MM-DD
+  preferredAccountId?: string;
+  preferredAccountName?: string;
+  paymentCurrency: TreasuryCommitmentPaymentCurrency; // 'EFECTIVO_USD' | 'BS'
+  exchangeRateType?: TreasuryCommitmentRateType; // 'BCV' | 'EURO' | 'USDT'
+  appliedExchangeRate?: number;
+  installments: DebtInstallment[];
+  notes?: string;
+  updatedAt?: string;
+}
+
+export interface DebtPaymentRecord {
+  id: string;
+  date: string; // YYYY-MM-DD
+  amountUSD: number;
+  amountBs: number;
+  bcvRate: number;
+  accountId: string;
+  accountName: string;
+  reference?: string;
+  notes?: string;
+  installmentId?: string;
+  installmentNumber?: number;
+  treasuryMovementId?: string;
+  createdAt: string;
+}
+
+export interface TreasuryDebt {
+  id: string;
+  debtNumber: string; // DEU-2026-0001
+  title: string; // Concepto de la deuda
+  creditor: string; // Acreedor (banco, persona, proveedor)
+  category: string; // Categoría editable
+  priority: DebtPriority;
+  totalAmountUSD: number; // Monto total original de la deuda
+  paidAmountUSD: number; // Total abonado/pagado acumulado
+  remainingAmountUSD: number; // Saldo pendiente por pagar
+  status: DebtStatus; // 'ACTIVA' | 'EN_PLAN' | 'PAGADA'
+  startDate: string; // Fecha en que se adquirió/registró YYYY-MM-DD
+  dueDate?: string; // Fecha límite objetivo YYYY-MM-DD
+  paymentPlan?: DebtPaymentPlan;
+  payments: DebtPaymentRecord[];
+  notes?: string;
+  createdAt: string;
+  updatedAt?: string;
+}
+

@@ -13,6 +13,7 @@ import {
 } from '../../types';
 import { formatUSD, formatBs } from '../../utils/whatsapp';
 import { fetchOfficialEuroBcvRate } from '../../services/bcvService';
+import { TreasuryDebtsSection } from './TreasuryDebtsSection';
 import {
   Landmark,
   Wallet,
@@ -192,6 +193,8 @@ function getCommitmentDisplayStatus(commitment: TreasuryCommitment): {
   status: TreasuryCommitmentDisplayStatus;
   daysLeft: number;
   label: string;
+  shortLabel: string;
+  textClass: string;
   badgeClass: string;
 } {
   if (commitment.isPaid) {
@@ -199,6 +202,8 @@ function getCommitmentDisplayStatus(commitment: TreasuryCommitment): {
       status: 'PAGADO',
       daysLeft: 0,
       label: 'Pagado',
+      shortLabel: 'Pagado',
+      textClass: 'text-emerald-700',
       badgeClass: 'bg-emerald-50 text-emerald-700 border-emerald-200',
     };
   }
@@ -208,6 +213,8 @@ function getCommitmentDisplayStatus(commitment: TreasuryCommitment): {
       status: 'PROXIMO_VENCER',
       daysLeft,
       label: `Vencido (${Math.abs(daysLeft)}d)`,
+      shortLabel: `Vencido ${Math.abs(daysLeft)}d`,
+      textClass: 'text-rose-700',
       badgeClass: 'bg-rose-50 text-rose-700 border-rose-200',
     };
   }
@@ -216,6 +223,8 @@ function getCommitmentDisplayStatus(commitment: TreasuryCommitment): {
       status: 'PROXIMO_VENCER',
       daysLeft,
       label: daysLeft === 0 ? 'Vence hoy' : `Próximo a vencer (${daysLeft}d)`,
+      shortLabel: daysLeft === 0 ? 'Vence hoy' : `Vence en ${daysLeft}d`,
+      textClass: 'text-amber-700',
       badgeClass: 'bg-amber-50 text-amber-800 border-amber-200',
     };
   }
@@ -223,6 +232,8 @@ function getCommitmentDisplayStatus(commitment: TreasuryCommitment): {
     status: 'PENDIENTE',
     daysLeft,
     label: 'Pendiente',
+    shortLabel: 'Pendiente',
+    textClass: 'text-slate-600',
     badgeClass: 'bg-slate-100 text-slate-700 border-slate-200',
   };
 }
@@ -913,6 +924,41 @@ export const TreasuryFinanceView: React.FC = () => {
     setIsMovementModalOpen(true);
   };
 
+  const openValeModalForCommitment = (cm: TreasuryCommitment) => {
+    let accounts = treasuryAccounts;
+    if (accounts.length === 0) {
+      accounts = initializeDefaultTreasuryAccounts();
+    }
+    const preferredAccount =
+      cm.paymentCurrency === 'BS'
+        ? accounts.find((a) => a.currency === 'BS' && a.group === 'BANCO_NACIONAL') ||
+          accounts.find((a) => a.currency === 'BS') ||
+          accounts[0]
+        : accounts.find((a) => a.currency === 'USD' && a.group === 'EFECTIVO') ||
+          accounts.find((a) => a.currency === 'USD') ||
+          accounts[0];
+
+    const workerLabel = cm.workerName?.trim() || cm.title;
+    const valeCategory =
+      expenseCategories.find((cat) => cat.toLowerCase().includes('vale')) ||
+      'Vales / Adelantos de Sueldo';
+
+    setMovType('GASTO');
+    setMovAccountId(preferredAccount?.id || '');
+    setMovInputCurrency(preferredAccount?.currency || 'USD');
+    setMovDate(todayStr);
+    setMovCategory(valeCategory);
+    setMovDescription(`Vale / adelanto de sueldo - ${workerLabel}`);
+    setMovBeneficiary(workerLabel);
+    setMovAmountInput('');
+    setMovReference('');
+    setMovSyncExpense(true);
+    setMovIsSalaryAdvance(true);
+    setMovLinkedCommitmentId(cm.id);
+    setMovError('');
+    setIsMovementModalOpen(true);
+  };
+
   const handleSelectMovSalaryCommitment = (commitmentId: string) => {
     setMovLinkedCommitmentId(commitmentId);
     if (movError) setMovError('');
@@ -1431,20 +1477,20 @@ export const TreasuryFinanceView: React.FC = () => {
       </section>
 
       {/* 3. Main Split Body: Left (Planificación de Pagos y Gastos Fijos) + Right (Progreso de Cobertura Mensual) */}
-      <div className="grid grid-cols-1 xl:grid-cols-12 gap-6 items-start">
-        {/* Left Section: Planificación de Pagos y Gastos Fijos (8 cols) */}
-        <section className="xl:col-span-8 bg-white rounded-2xl border border-slate-200 overflow-hidden">
-          <div className="p-5 border-b border-slate-200 space-y-4">
-            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-              <div>
+      <div className="grid grid-cols-1 xl:grid-cols-12 gap-5 items-start">
+        {/* Left Section: Planificación de Pagos y Gastos Fijos (8 cols on xl, 9 cols on 2xl) */}
+        <section className="xl:col-span-8 2xl:col-span-9 bg-white rounded-2xl border border-slate-200 overflow-hidden">
+          <div className="p-4 sm:p-5 border-b border-slate-200 space-y-3.5">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="min-w-0">
                 <h2 className="text-base font-bold text-slate-900">
                   Planificación de Pagos y Gastos Fijos
                 </h2>
                 <p className="text-xs text-slate-500">
-                  Compromisos categorizados en Gastos Fijos, Nómina/Sueldos y Proveedores
+                  Control de Gastos Fijos, Nómina/Sueldos y Proveedores con acciones rápidas sin desplazamiento
                 </p>
               </div>
-              <div className="flex flex-wrap items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2 shrink-0">
                 {unimportedUnpaidPurchaseCount > 0 && (
                   <button
                     type="button"
@@ -1455,25 +1501,25 @@ export const TreasuryFinanceView: React.FC = () => {
                         `Se importaron ${count} cuentas por pagar de Proveedores.`
                       );
                     }}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-50 hover:bg-amber-100 border border-amber-200 text-xs font-semibold text-amber-900 cursor-pointer whitespace-nowrap"
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-amber-50 hover:bg-amber-100 border border-amber-200 text-xs font-semibold text-amber-900 cursor-pointer whitespace-nowrap shrink-0"
                   >
-                    <Truck className="w-3.5 h-3.5 text-amber-600" />
+                    <Truck className="w-3.5 h-3.5 text-amber-600 shrink-0" />
                     Importar Proveedores ({unimportedUnpaidPurchaseCount})
                   </button>
                 )}
                 <button
                   type="button"
                   onClick={openNewCommitmentModal}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold cursor-pointer whitespace-nowrap"
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold cursor-pointer whitespace-nowrap shrink-0"
                 >
-                  <Plus className="w-3.5 h-3.5 text-amber-400" />
+                  <Plus className="w-3.5 h-3.5 text-amber-400 shrink-0" />
                   Nuevo Compromiso
                 </button>
               </div>
             </div>
 
             {/* Category + Status Filters */}
-            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2.5">
+            <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="flex flex-wrap items-center gap-1.5">
                 {(
                   [
@@ -1487,7 +1533,7 @@ export const TreasuryFinanceView: React.FC = () => {
                     key={tab.id}
                     type="button"
                     onClick={() => setCommitmentCategoryFilter(tab.id)}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
+                    className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
                       commitmentCategoryFilter === tab.id
                         ? 'bg-slate-900 text-white'
                         : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
@@ -1498,7 +1544,7 @@ export const TreasuryFinanceView: React.FC = () => {
                 ))}
               </div>
 
-              <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-lg self-start sm:self-auto">
+              <div className="flex items-center gap-1 bg-slate-100 p-1 rounded-lg shrink-0">
                 {(
                   [
                     { id: 'ALL', label: 'Todos' },
@@ -1510,7 +1556,7 @@ export const TreasuryFinanceView: React.FC = () => {
                     key={st.id}
                     type="button"
                     onClick={() => setCommitmentStatusFilter(st.id)}
-                    className={`px-2.5 py-1 rounded-md text-[11px] font-semibold transition-colors cursor-pointer ${
+                    className={`px-2.5 py-1 rounded-md text-[11px] font-semibold transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
                       commitmentStatusFilter === st.id
                         ? 'bg-white text-slate-900 shadow-xs'
                         : 'text-slate-600 hover:text-slate-900'
@@ -1523,7 +1569,7 @@ export const TreasuryFinanceView: React.FC = () => {
             </div>
           </div>
 
-          {/* Interactive Table */}
+          {/* Zero-Horizontal-Scroll Interactive Ledger List */}
           {filteredCommitments.length === 0 ? (
             <div className="py-12 px-6 text-center space-y-3">
               <CalendarClock className="w-9 h-9 text-slate-300 mx-auto" />
@@ -1538,92 +1584,109 @@ export const TreasuryFinanceView: React.FC = () => {
               <button
                 type="button"
                 onClick={openNewCommitmentModal}
-                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold cursor-pointer"
+                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold cursor-pointer whitespace-nowrap"
               >
                 <Plus className="w-3.5 h-3.5 text-amber-400" />
                 Agregar Compromiso
               </button>
             </div>
           ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse">
-                <thead>
-                  <tr className="border-b border-slate-200 bg-slate-50/70 text-[11px] font-bold text-slate-500 uppercase tracking-wider">
-                    <th className="py-3 px-4">Concepto / Categoría</th>
-                    <th className="py-3 px-3 whitespace-nowrap">Fecha Límite</th>
-                    <th className="py-3 px-3 text-right whitespace-nowrap">Monto</th>
-                    <th className="py-3 px-3 whitespace-nowrap">Estado</th>
-                    <th className="py-3 px-4 text-right whitespace-nowrap">Acción</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100 text-xs">
-                  {filteredCommitments.map((cm) => {
-                    const catMeta = COMMITMENT_CATEGORY_META[cm.category];
-                    const statusInfo = getCommitmentDisplayStatus(cm);
-                    const isBsCommitment = cm.paymentCurrency === 'BS';
-                    const rateType: TreasuryCommitmentRateType = cm.exchangeRateType || 'BCV';
-                    const rateMeta = COMMITMENT_RATE_META[rateType];
-                    const effectiveBsRate = isBsCommitment
-                      ? getEffectiveCommitmentBsRate(cm, bcvRate)
-                      : null;
-                    return (
-                      <tr
-                        key={cm.id}
-                        className="hover:bg-slate-50/80 transition-colors"
-                      >
-                        <td className="py-3.5 px-4">
-                          <div className="space-y-1">
-                            <p className="font-semibold text-slate-900 leading-snug">
-                              {cm.title}
-                            </p>
-                            <div className="flex flex-wrap items-center gap-1.5">
-                              <span
-                                className={`inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-semibold border ${catMeta.chipClass}`}
-                              >
-                                {catMeta.label}
+            <div>
+              {/* Compact Column Guide Header (visible on md+) */}
+              <div className="hidden md:flex items-center justify-between gap-3 px-4 sm:px-5 py-2.5 border-b border-slate-200 bg-slate-50/70 text-[11px] font-semibold text-slate-500">
+                <span>Concepto, detalle y vencimiento</span>
+                <div className="flex items-center gap-3 shrink-0">
+                  <span className="w-28 text-right">Monto</span>
+                  <span className="w-[224px] text-right">Herramientas</span>
+                </div>
+              </div>
+
+              <div className="divide-y divide-slate-100">
+                {filteredCommitments.map((cm) => {
+                  const catMeta = COMMITMENT_CATEGORY_META[cm.category];
+                  const statusInfo = getCommitmentDisplayStatus(cm);
+                  const isBsCommitment = cm.paymentCurrency === 'BS';
+                  const rateType: TreasuryCommitmentRateType = cm.exchangeRateType || 'BCV';
+                  const rateMeta = COMMITMENT_RATE_META[rateType];
+                  const effectiveBsRate = isBsCommitment
+                    ? getEffectiveCommitmentBsRate(cm, bcvRate)
+                    : null;
+                  const canTakeVale = !cm.isPaid && cm.category !== 'PROVEEDORES';
+
+                  return (
+                    <div
+                      key={cm.id}
+                      className="px-4 sm:px-5 py-3.5 hover:bg-slate-50/80 transition-colors flex flex-col md:flex-row md:items-center justify-between gap-3"
+                    >
+                      {/* Left: Title, Status, and Clean Inline Metadata */}
+                      <div className="min-w-0 flex-1 space-y-1">
+                        <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1">
+                          <p className="text-[13px] font-semibold text-slate-900 leading-snug break-words">
+                            {cm.title}
+                          </p>
+                          <span
+                            className={`inline-flex items-center gap-1 text-[11px] font-semibold whitespace-nowrap shrink-0 ${statusInfo.textClass}`}
+                          >
+                            {statusInfo.status === 'PAGADO' && (
+                              <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                            )}
+                            {statusInfo.status === 'PROXIMO_VENCER' && (
+                              <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                            )}
+                            {statusInfo.status === 'PENDIENTE' && (
+                              <Clock className="w-3.5 h-3.5 shrink-0" />
+                            )}
+                            {statusInfo.shortLabel}
+                          </span>
+                        </div>
+
+                        {/* Unboxed Metadata Line with Typographic Separators */}
+                        <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-slate-500">
+                          <span className="font-medium text-slate-700">{catMeta.shortLabel}</span>
+                          {cm.workerName && (
+                            <>
+                              <span aria-hidden="true" className="text-slate-300">·</span>
+                              <span className="font-medium text-indigo-700">{cm.workerName}</span>
+                            </>
+                          )}
+                          <span aria-hidden="true" className="text-slate-300">·</span>
+                          <span className="font-mono tabular-nums text-slate-600">
+                            Límite {cm.dueDate}
+                          </span>
+                          <span aria-hidden="true" className="text-slate-300">·</span>
+                          <span className={isBsCommitment ? 'text-blue-700 font-medium' : 'text-emerald-700 font-medium'}>
+                            {isBsCommitment ? `Bs (${rateMeta.shortLabel})` : 'Efectivo $'}
+                          </span>
+                          {(cm.advancesTotalUSD || 0) > 0 && (
+                            <>
+                              <span aria-hidden="true" className="text-slate-300">·</span>
+                              <span className="font-mono font-semibold text-indigo-700 tabular-nums">
+                                Vales: -{formatUSD(cm.advancesTotalUSD || 0)}
                               </span>
-                              {cm.workerName && (
-                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-semibold border bg-slate-50 text-slate-700 border-slate-200">
-                                  <UserCheck className="w-3 h-3 text-indigo-600 shrink-0" />
-                                  {cm.workerName}
-                                </span>
-                              )}
-                              {isBsCommitment ? (
-                                <span
-                                  className={`inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-semibold border ${rateMeta.badgeClass}`}
-                                >
-                                  Bs · {rateMeta.label}
-                                </span>
-                              ) : (
-                                <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-semibold border bg-emerald-50 text-emerald-700 border-emerald-200">
-                                  Efectivo USD ($)
-                                </span>
-                              )}
-                              {(cm.advancesTotalUSD || 0) > 0 && (
-                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-semibold border bg-indigo-50 text-indigo-700 border-indigo-200 font-mono tabular-nums">
-                                  Vales: -{formatUSD(cm.advancesTotalUSD || 0)}
-                                </span>
-                              )}
-                              {!cm.isPaid && (cm.reservedUSD || 0) > 0 && (
-                                <span className="text-[11px] text-emerald-700 font-mono tabular-nums">
-                                  Apartado: {formatUSD(cm.reservedUSD || 0)}
-                                </span>
-                              )}
-                              {cm.isPaid && cm.paidAccountName && (
-                                <span className="text-[11px] text-slate-500">
-                                  Vía {cm.paidAccountName}
-                                </span>
-                              )}
-                            </div>
-                          </div>
-                        </td>
+                            </>
+                          )}
+                          {!cm.isPaid && (cm.reservedUSD || 0) > 0 && (
+                            <>
+                              <span aria-hidden="true" className="text-slate-300">·</span>
+                              <span className="font-mono font-semibold text-emerald-700 tabular-nums">
+                                Apartado: {formatUSD(cm.reservedUSD || 0)}
+                              </span>
+                            </>
+                          )}
+                          {cm.isPaid && cm.paidAccountName && (
+                            <>
+                              <span aria-hidden="true" className="text-slate-300">·</span>
+                              <span className="text-slate-500">Vía {cm.paidAccountName}</span>
+                            </>
+                          )}
+                        </div>
+                      </div>
 
-                        <td className="py-3.5 px-3 font-mono text-slate-700 tabular-nums whitespace-nowrap">
-                          {cm.dueDate}
-                        </td>
-
-                        <td className="py-3.5 px-3 text-right whitespace-nowrap">
-                          <p className="font-bold text-slate-900 font-mono tabular-nums">
+                      {/* Right: Amount + Complete Toolbar (Always Visible, Zero Overflow) */}
+                      <div className="flex flex-wrap sm:flex-nowrap items-center justify-between md:justify-end gap-3 shrink-0 pt-2 md:pt-0 border-t border-slate-100 md:border-t-0">
+                        {/* Amount Column */}
+                        <div className="text-left md:text-right md:w-28 shrink-0">
+                          <p className="text-sm font-bold text-slate-900 font-mono tabular-nums leading-tight">
                             {formatUSD(cm.amountUSD)}
                           </p>
                           {(cm.advancesTotalUSD || 0) > 0 && (
@@ -1636,97 +1699,91 @@ export const TreasuryFinanceView: React.FC = () => {
                             </p>
                           )}
                           {isBsCommitment && effectiveBsRate ? (
-                            <p className="text-[11px] text-slate-600 font-mono tabular-nums">
-                              {formatBs(cm.amountUSD * effectiveBsRate)}{' '}
-                              <span className="text-[10px] text-slate-400">
-                                ({rateMeta.shortLabel} {effectiveBsRate.toFixed(2)})
-                              </span>
+                            <p className="text-[10px] text-slate-500 font-mono tabular-nums">
+                              {formatBs(cm.amountUSD * effectiveBsRate)}
                             </p>
                           ) : (
-                            <p className="text-[11px] text-emerald-700 font-medium">
+                            <p className="text-[10px] text-emerald-700 font-medium">
                               Efectivo $
                             </p>
                           )}
-                        </td>
+                        </div>
 
-                        <td className="py-3.5 px-3 whitespace-nowrap">
-                          <span
-                            className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-[11px] font-semibold border ${statusInfo.badgeClass}`}
+                        {/* All Action Tools — Compact, Accessible, Zero Scroll */}
+                        <div className="flex items-center justify-end gap-1 md:w-[224px] shrink-0">
+                          {!cm.isPaid ? (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => openPayCommitmentModal(cm)}
+                                className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-bold transition-colors cursor-pointer whitespace-nowrap shrink-0"
+                                title="Marcar compromiso como pagado desde una cuenta"
+                              >
+                                <Check className="w-3.5 h-3.5 shrink-0" />
+                                Pagar
+                              </button>
+                              {canTakeVale && (
+                                <button
+                                  type="button"
+                                  onClick={() => openValeModalForCommitment(cm)}
+                                  className="inline-flex items-center gap-1 px-2 py-1.5 rounded-lg border border-indigo-200 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 text-[11px] font-bold transition-colors cursor-pointer whitespace-nowrap shrink-0"
+                                  title="Registrar vale / adelanto a este sueldo o gasto fijo"
+                                >
+                                  <UserCheck className="w-3.5 h-3.5 shrink-0" />
+                                  Vale
+                                </button>
+                              )}
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setReservingCommitment(cm);
+                                  setReserveInput(String(cm.reservedUSD || 0));
+                                }}
+                                className="p-1.5 rounded-lg border border-slate-200 text-slate-500 hover:text-emerald-700 hover:bg-emerald-50 transition-colors cursor-pointer shrink-0"
+                                title="Apartar monto para cobertura"
+                                aria-label="Apartar monto para cobertura"
+                              >
+                                <PiggyBank className="w-3.5 h-3.5" />
+                              </button>
+                            </>
+                          ) : (
+                            <span className="text-[11px] text-emerald-700 font-semibold px-2 whitespace-nowrap">
+                              Liquidado
+                            </span>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => openEditCommitmentModal(cm)}
+                            className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition-colors cursor-pointer shrink-0"
+                            title="Editar compromiso"
+                            aria-label="Editar compromiso"
                           >
-                            {statusInfo.status === 'PAGADO' && (
-                              <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
-                            )}
-                            {statusInfo.status === 'PROXIMO_VENCER' && (
-                              <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
-                            )}
-                            {statusInfo.status === 'PENDIENTE' && (
-                              <Clock className="w-3.5 h-3.5 shrink-0" />
-                            )}
-                            {statusInfo.label}
-                          </span>
-                        </td>
-
-                        <td className="py-3.5 px-4 text-right whitespace-nowrap">
-                          <div className="inline-flex items-center justify-end gap-1.5">
-                            {!cm.isPaid ? (
-                              <>
-                                <button
-                                  type="button"
-                                  onClick={() => openPayCommitmentModal(cm)}
-                                  className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-bold transition-colors cursor-pointer whitespace-nowrap"
-                                >
-                                  <Check className="w-3.5 h-3.5" />
-                                  Marcar Pagado
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setReservingCommitment(cm);
-                                    setReserveInput(String(cm.reservedUSD || 0));
-                                  }}
-                                  className="p-1.5 rounded-lg border border-slate-200 text-slate-500 hover:text-emerald-700 hover:bg-emerald-50 cursor-pointer"
-                                  title="Apartar monto para cobertura"
-                                >
-                                  <PiggyBank className="w-3.5 h-3.5" />
-                                </button>
-                              </>
-                            ) : (
-                              <span className="text-[11px] text-emerald-700 font-semibold px-2">
-                                Liquidado
-                              </span>
-                            )}
-                            <button
-                              type="button"
-                              onClick={() => openEditCommitmentModal(cm)}
-                              className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 cursor-pointer"
-                              title="Editar compromiso"
-                            >
-                              <Pencil className="w-3.5 h-3.5" />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                deleteTreasuryCommitment(cm.id);
-                                showBanner('info', `Compromiso "${cm.title}" eliminado.`);
-                              }}
-                              className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 cursor-pointer"
-                              title="Eliminar compromiso"
-                            >
-                              <Trash2 className="w-3.5 h-3.5" />
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+                            <Pencil className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              deleteTreasuryCommitment(cm.id);
+                              showBanner('info', `Compromiso "${cm.title}" eliminado.`);
+                            }}
+                            className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer shrink-0"
+                            title="Eliminar compromiso"
+                            aria-label="Eliminar compromiso"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           )}
         </section>
 
-        {/* Right Section: Progreso de Cobertura Mensual (4 cols) */}
-        <section className="xl:col-span-4 bg-white rounded-2xl border border-slate-200 p-5 space-y-5">
+        {/* Right Section: Progreso de Cobertura Mensual (4 cols on xl, 3 cols on 2xl) */}
+        <section className="xl:col-span-4 2xl:col-span-3 bg-white rounded-2xl border border-slate-200 p-5 space-y-5">
           <div className="flex items-start justify-between gap-2">
             <div>
               <h2 className="text-base font-bold text-slate-900">
@@ -1858,6 +1915,9 @@ export const TreasuryFinanceView: React.FC = () => {
           </div>
         </section>
       </div>
+
+      {/* 3.5. Deudas y Planificación de Pago */}
+      <TreasuryDebtsSection showBanner={showBanner} />
 
       {/* 4. Bottom Section: Movimientos Recientes + Primary Action Button */}
       <section className="bg-white rounded-2xl border border-slate-200 overflow-hidden">

@@ -3,6 +3,7 @@ import { useApp } from '../../context/AppContext';
 import {
   BusinessExpense,
   DEFAULT_EXPENSE_CATEGORIES,
+  DEFAULT_EXPENSE_POS_BANKS,
   ExpensePaymentCurrency,
   ExpensePaymentMethod,
 } from '../../types';
@@ -22,6 +23,7 @@ import {
   Banknote,
   Coins,
   Smartphone,
+  CreditCard,
   DollarSign,
   FolderPlus,
   AlertCircle,
@@ -47,6 +49,14 @@ const EXPENSE_PAYMENT_OPTIONS: PaymentOptionConfig[] = [
     helper: 'Transferencia bancaria o Pago Móvil en Bs',
     primaryInput: 'BS',
     icon: Smartphone,
+  },
+  {
+    type: 'PUNTO_VENTA',
+    shortLabel: 'Punto de Venta (Tarjeta)',
+    method: 'Punto de Venta (Bs)',
+    helper: 'Tarjeta de débito / crédito en Bs',
+    primaryInput: 'BS',
+    icon: CreditCard,
   },
   {
     type: 'USDT',
@@ -82,6 +92,9 @@ export const ExpensesView: React.FC = () => {
     expenseCategories,
     addExpenseCategory,
     deleteExpenseCategory,
+    expensePosBanks,
+    addExpensePosBank,
+    deleteExpensePosBank,
     addExpense,
     updateExpense,
     deleteExpense,
@@ -115,6 +128,9 @@ export const ExpensesView: React.FC = () => {
   const [formDescription, setFormDescription] = useState('');
   const [formBeneficiary, setFormBeneficiary] = useState('');
   const [formPaymentType, setFormPaymentType] = useState<ExpensePaymentCurrency>('EFECTIVO_USD');
+  const [formCardBank, setFormCardBank] = useState<string>(DEFAULT_EXPENSE_POS_BANKS[0]);
+  const [showInlineNewBank, setShowInlineNewBank] = useState(false);
+  const [inlineNewBankName, setInlineNewBankName] = useState('');
   const [formRate, setFormRate] = useState<string>(bcvRate.toFixed(2));
   const [formAmountUSD, setFormAmountUSD] = useState<string>('');
   const [formAmountBs, setFormAmountBs] = useState<string>('');
@@ -144,6 +160,11 @@ export const ExpensesView: React.FC = () => {
       expenseCategories.filter((c) => !defaultsLower.has(c.toLowerCase())).map((c) => c.toLowerCase())
     );
   }, [expenseCategories]);
+
+  const defaultPosBankSet = useMemo(
+    () => new Set(DEFAULT_EXPENSE_POS_BANKS.map((b) => b.toLowerCase())),
+    []
+  );
 
   // Filtered expenses
   const filteredExpenses = useMemo(() => {
@@ -175,6 +196,7 @@ export const ExpensesView: React.FC = () => {
           ex.description,
           ex.beneficiary || '',
           ex.paymentMethod,
+          ex.cardBank || '',
           ex.reference || '',
           ex.notes || '',
         ]
@@ -207,6 +229,7 @@ export const ExpensesView: React.FC = () => {
   const paymentBreakdown = useMemo(() => {
     const sums: Record<ExpensePaymentCurrency, { usd: number; bs: number; count: number }> = {
       BS: { usd: 0, bs: 0, count: 0 },
+      PUNTO_VENTA: { usd: 0, bs: 0, count: 0 },
       USDT: { usd: 0, bs: 0, count: 0 },
       EFECTIVO_BS: { usd: 0, bs: 0, count: 0 },
       EFECTIVO_USD: { usd: 0, bs: 0, count: 0 },
@@ -234,7 +257,10 @@ export const ExpensesView: React.FC = () => {
 
   const topCategory = categoryBreakdown[0] || null;
 
-  const findSuggestedAccountId = (paymentType: ExpensePaymentCurrency): string => {
+  const findSuggestedAccountId = (
+    paymentType: ExpensePaymentCurrency,
+    cardBankName?: string
+  ): string => {
     if (treasuryAccounts.length === 0) return '';
     if (paymentType === 'EFECTIVO_USD') {
       return (
@@ -246,6 +272,20 @@ export const ExpensesView: React.FC = () => {
     if (paymentType === 'EFECTIVO_BS') {
       return (
         treasuryAccounts.find((a) => a.currency === 'BS' && a.group === 'EFECTIVO')?.id ||
+        treasuryAccounts.find((a) => a.currency === 'BS')?.id ||
+        treasuryAccounts[0].id
+      );
+    }
+    if (paymentType === 'PUNTO_VENTA') {
+      const needle = (cardBankName || '').trim().toLowerCase();
+      if (needle) {
+        const matched = treasuryAccounts.find((a) =>
+          `${a.name} ${a.institution || ''}`.toLowerCase().includes(needle)
+        );
+        if (matched) return matched.id;
+      }
+      return (
+        treasuryAccounts.find((a) => a.currency === 'BS' && a.group === 'BANCO_NACIONAL')?.id ||
         treasuryAccounts.find((a) => a.currency === 'BS')?.id ||
         treasuryAccounts[0].id
       );
@@ -307,6 +347,9 @@ export const ExpensesView: React.FC = () => {
     setFormBeneficiary('');
     const initialPaymentType: ExpensePaymentCurrency = 'EFECTIVO_USD';
     setFormPaymentType(initialPaymentType);
+    setFormCardBank(expensePosBanks[0] || DEFAULT_EXPENSE_POS_BANKS[0]);
+    setShowInlineNewBank(false);
+    setInlineNewBankName('');
     setFormRate(bcvRate.toFixed(2));
     setFormAmountUSD('');
     setFormAmountBs('');
@@ -330,6 +373,11 @@ export const ExpensesView: React.FC = () => {
     setFormBeneficiary(expense.beneficiary || '');
     const payType = expense.paymentCurrencyType || 'EFECTIVO_USD';
     setFormPaymentType(payType);
+    const initialBank =
+      expense.cardBank || expensePosBanks[0] || DEFAULT_EXPENSE_POS_BANKS[0];
+    setFormCardBank(initialBank);
+    setShowInlineNewBank(false);
+    setInlineNewBankName('');
     const r = expense.bcvRate || bcvRate;
     setFormRate(r.toFixed(2));
     setFormAmountUSD((Number(expense.amountUSD) || 0).toFixed(2));
@@ -338,7 +386,9 @@ export const ExpensesView: React.FC = () => {
     setFormNotes(expense.notes || '');
     const isLinked = Boolean(expense.deductedFromTreasury || expense.treasuryMovementId);
     setFormDeductTreasury(isLinked);
-    setFormTreasuryAccountId(expense.treasuryAccountId || findSuggestedAccountId(payType));
+    setFormTreasuryAccountId(
+      expense.treasuryAccountId || findSuggestedAccountId(payType, initialBank)
+    );
     setFormIsSalaryAdvance(Boolean(expense.isSalaryAdvance && expense.linkedCommitmentId));
     setFormLinkedCommitmentId(expense.linkedCommitmentId || '');
     setFormError('');
@@ -395,6 +445,18 @@ export const ExpensesView: React.FC = () => {
     setShowInlineNewCat(false);
   };
 
+  const handleInlineAddPosBank = () => {
+    const trimmed = inlineNewBankName.trim();
+    if (!trimmed) return;
+    const res = addExpensePosBank(trimmed);
+    setFormCardBank(res.bank);
+    const suggested = findSuggestedAccountId('PUNTO_VENTA', res.bank);
+    if (suggested) setFormTreasuryAccountId(suggested);
+    setInlineNewBankName('');
+    setShowInlineNewBank(false);
+    if (formError) setFormError('');
+  };
+
   const handleSaveExpense = (e: React.FormEvent) => {
     e.preventDefault();
     if (!formCategory.trim()) {
@@ -429,9 +491,22 @@ export const ExpensesView: React.FC = () => {
       return;
     }
 
+    let finalCardBank: string | undefined = undefined;
+    if (formPaymentType === 'PUNTO_VENTA') {
+      if (showInlineNewBank && inlineNewBankName.trim()) {
+        const res = addExpensePosBank(inlineNewBankName.trim());
+        finalCardBank = res.bank;
+      } else if (formCardBank.trim()) {
+        finalCardBank = formCardBank.trim();
+      } else {
+        setFormError('Selecciona o agrega el banco de la tarjeta usada en el Punto de Venta.');
+        return;
+      }
+    }
+
     const opt =
       EXPENSE_PAYMENT_OPTIONS.find((o) => o.type === formPaymentType) ||
-      EXPENSE_PAYMENT_OPTIONS[3];
+      EXPENSE_PAYMENT_OPTIONS[EXPENSE_PAYMENT_OPTIONS.length - 1];
 
     if (editingExpense) {
       updateExpense(editingExpense.id, {
@@ -444,6 +519,7 @@ export const ExpensesView: React.FC = () => {
         bcvRate: rate,
         paymentCurrencyType: opt.type,
         paymentMethod: opt.method,
+        cardBank: finalCardBank,
         reference: formReference.trim() || undefined,
         notes: formNotes.trim() || undefined,
         deductedFromTreasury: formDeductTreasury,
@@ -462,6 +538,7 @@ export const ExpensesView: React.FC = () => {
         bcvRate: rate,
         paymentCurrencyType: opt.type,
         paymentMethod: opt.method,
+        cardBank: finalCardBank,
         reference: formReference.trim() || undefined,
         notes: formNotes.trim() || undefined,
         deductFromTreasury: formDeductTreasury,
@@ -493,6 +570,8 @@ export const ExpensesView: React.FC = () => {
     switch (type) {
       case 'BS':
         return 'bg-blue-50 text-blue-800 border-blue-200';
+      case 'PUNTO_VENTA':
+        return 'bg-indigo-50 text-indigo-800 border-indigo-200';
       case 'USDT':
         return 'bg-teal-50 text-teal-800 border-teal-200';
       case 'EFECTIVO_BS':
@@ -509,7 +588,8 @@ export const ExpensesView: React.FC = () => {
   };
 
   const selectedPaymentOption =
-    EXPENSE_PAYMENT_OPTIONS.find((o) => o.type === formPaymentType) || EXPENSE_PAYMENT_OPTIONS[3];
+    EXPENSE_PAYMENT_OPTIONS.find((o) => o.type === formPaymentType) ||
+    EXPENSE_PAYMENT_OPTIONS[EXPENSE_PAYMENT_OPTIONS.length - 1];
 
   return (
     <div className="space-y-6">
@@ -524,7 +604,7 @@ export const ExpensesView: React.FC = () => {
             <span>Gastos del Negocio</span>
           </h1>
           <p className="text-xs text-slate-500 mt-1">
-            Control de sueldos, papelería, limpieza, servicios y egresos en Bs, USDT, Efectivo Bs o Efectivo en Dólares. Tasa BCV activa:{' '}
+            Control de sueldos, papelería, limpieza y egresos en Bs, Punto de Venta, USDT, Efectivo Bs o Dólares. Tasa BCV activa:{' '}
             <strong className="font-mono text-slate-800">Bs. {bcvRate.toFixed(2)}</strong>
           </p>
         </div>
@@ -651,9 +731,9 @@ export const ExpensesView: React.FC = () => {
               </span>
             </div>
             <div className="flex items-center justify-between text-slate-700">
-              <span>USDT:</span>
-              <span className="font-bold text-teal-700">
-                {formatUSD(paymentBreakdown.USDT.usd)}
+              <span>Punto:</span>
+              <span className="font-bold text-indigo-700">
+                {formatUSD(paymentBreakdown.PUNTO_VENTA.usd)}
               </span>
             </div>
             <div className="flex items-center justify-between text-slate-700">
@@ -663,6 +743,12 @@ export const ExpensesView: React.FC = () => {
               </span>
             </div>
             <div className="flex items-center justify-between text-slate-700">
+              <span>USDT:</span>
+              <span className="font-bold text-teal-700">
+                {formatUSD(paymentBreakdown.USDT.usd)}
+              </span>
+            </div>
+            <div className="flex items-center justify-between text-slate-700 col-span-2">
               <span>Efec. Bs:</span>
               <span className="font-bold text-amber-700">
                 {formatUSD(paymentBreakdown.EFECTIVO_BS.usd)}
@@ -894,6 +980,12 @@ export const ExpensesView: React.FC = () => {
                       >
                         {getPaymentShortLabel(expense.paymentCurrencyType)}
                       </span>
+                      {expense.paymentCurrencyType === 'PUNTO_VENTA' && expense.cardBank && (
+                        <span className="flex items-center gap-1 text-[10px] text-indigo-700 font-semibold mt-1">
+                          <CreditCard className="w-3 h-3 shrink-0" />
+                          <span>Tarjeta: {expense.cardBank}</span>
+                        </span>
+                      )}
                       {expense.deductedFromTreasury && expense.treasuryAccountName && (
                         <span className="flex items-center gap-1 text-[10px] text-emerald-700 font-medium mt-1">
                           <Landmark className="w-3 h-3 shrink-0" />
@@ -1227,51 +1319,166 @@ export const ExpensesView: React.FC = () => {
                 );
               })()}
 
-              {/* Row 3: Cómo se pagó (4 botones claros) */}
-              <div>
-                <label className="block text-xs font-bold text-slate-800 mb-2">
-                  ¿Cómo se pagó el gasto? *
-                </label>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                  {EXPENSE_PAYMENT_OPTIONS.map((opt) => {
-                    const Icon = opt.icon;
-                    const active = formPaymentType === opt.type;
-                    return (
-                      <button
-                        key={opt.type}
-                        type="button"
-                        onClick={() => {
-                          setFormPaymentType(opt.type);
-                          const suggested = findSuggestedAccountId(opt.type);
-                          if (suggested) setFormTreasuryAccountId(suggested);
-                        }}
-                        className={`p-3 rounded-xl border text-left transition-all flex items-start gap-3 cursor-pointer ${
-                          active
-                            ? 'bg-slate-900 text-white border-slate-900'
-                            : 'bg-white hover:bg-slate-50 text-slate-800 border-slate-200'
-                        }`}
-                      >
-                        <div
-                          className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${
-                            active ? 'bg-amber-500 text-slate-950' : 'bg-slate-100 text-slate-600'
+              {/* Row 3: Cómo se pagó (5 métodos incluyendo Punto de Venta) */}
+              <div className="space-y-3">
+                <div>
+                  <label className="block text-xs font-bold text-slate-800 mb-2">
+                    ¿Cómo se pagó el gasto? *
+                  </label>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                    {EXPENSE_PAYMENT_OPTIONS.map((opt) => {
+                      const Icon = opt.icon;
+                      const active = formPaymentType === opt.type;
+                      return (
+                        <button
+                          key={opt.type}
+                          type="button"
+                          onClick={() => {
+                            setFormPaymentType(opt.type);
+                            const bankForSuggestion =
+                              opt.type === 'PUNTO_VENTA'
+                                ? formCardBank || expensePosBanks[0] || DEFAULT_EXPENSE_POS_BANKS[0]
+                                : undefined;
+                            if (opt.type === 'PUNTO_VENTA' && !formCardBank) {
+                              setFormCardBank(bankForSuggestion || DEFAULT_EXPENSE_POS_BANKS[0]);
+                            }
+                            const suggested = findSuggestedAccountId(opt.type, bankForSuggestion);
+                            if (suggested) setFormTreasuryAccountId(suggested);
+                            if (formError) setFormError('');
+                          }}
+                          className={`p-3 rounded-xl border text-left transition-all flex items-start gap-3 cursor-pointer ${
+                            active
+                              ? 'bg-slate-900 text-white border-slate-900'
+                              : 'bg-white hover:bg-slate-50 text-slate-800 border-slate-200'
                           }`}
                         >
-                          <Icon className="w-4 h-4" />
-                        </div>
-                        <div className="min-w-0">
-                          <span className="text-xs font-bold block truncate">{opt.shortLabel}</span>
-                          <span
-                            className={`text-[11px] block mt-0.5 ${
-                              active ? 'text-slate-300' : 'text-slate-500'
+                          <div
+                            className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${
+                              active ? 'bg-amber-500 text-slate-950' : 'bg-slate-100 text-slate-600'
                             }`}
                           >
-                            {opt.helper}
-                          </span>
-                        </div>
-                      </button>
-                    );
-                  })}
+                            <Icon className="w-4 h-4" />
+                          </div>
+                          <div className="min-w-0">
+                            <span className="text-xs font-bold block truncate">{opt.shortLabel}</span>
+                            <span
+                              className={`text-[11px] block mt-0.5 ${
+                                active ? 'text-slate-300' : 'text-slate-500'
+                              }`}
+                            >
+                              {opt.helper}
+                            </span>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
                 </div>
+
+                {/* Selector de Banco de la Tarjeta cuando el pago es por Punto de Venta */}
+                {formPaymentType === 'PUNTO_VENTA' && (
+                  <div className="p-4 bg-indigo-50/70 rounded-xl border border-indigo-200 space-y-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <label className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
+                        <CreditCard className="w-4 h-4 text-indigo-700 shrink-0" />
+                        <span>¿Tarjeta de qué banco se usó? *</span>
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => setShowInlineNewBank((prev) => !prev)}
+                        className="text-[11px] font-bold text-indigo-700 hover:text-indigo-900 flex items-center gap-1 cursor-pointer"
+                      >
+                        <Plus className="w-3.5 h-3.5" />
+                        <span>{showInlineNewBank ? 'Cancelar' : 'Agregar nuevo banco'}</span>
+                      </button>
+                    </div>
+
+                    <div className="flex flex-wrap gap-2">
+                      {expensePosBanks.map((bank) => {
+                        const isSelected =
+                          formCardBank.trim().toLowerCase() === bank.trim().toLowerCase();
+                        const isCustomBank = !defaultPosBankSet.has(bank.trim().toLowerCase());
+                        return (
+                          <div
+                            key={bank}
+                            className={`inline-flex items-center rounded-xl border text-xs font-semibold transition-all ${
+                              isSelected
+                                ? 'bg-indigo-700 text-white border-indigo-700 shadow-2xs'
+                                : 'bg-white text-slate-800 border-indigo-200 hover:border-indigo-400'
+                            }`}
+                          >
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setFormCardBank(bank);
+                                const suggested = findSuggestedAccountId('PUNTO_VENTA', bank);
+                                if (suggested) setFormTreasuryAccountId(suggested);
+                                if (formError) setFormError('');
+                              }}
+                              className="px-3 py-1.5 flex items-center gap-1.5 cursor-pointer"
+                            >
+                              {isSelected && <Check className="w-3.5 h-3.5 shrink-0" />}
+                              <span>{bank}</span>
+                            </button>
+                            {isCustomBank && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  deleteExpensePosBank(bank);
+                                  if (isSelected) {
+                                    const fallback = DEFAULT_EXPENSE_POS_BANKS[0];
+                                    setFormCardBank(fallback);
+                                    const suggested = findSuggestedAccountId('PUNTO_VENTA', fallback);
+                                    if (suggested) setFormTreasuryAccountId(suggested);
+                                  }
+                                }}
+                                title={`Eliminar banco "${bank}"`}
+                                className={`pr-2 pl-0.5 py-1.5 cursor-pointer ${
+                                  isSelected
+                                    ? 'text-indigo-200 hover:text-white'
+                                    : 'text-slate-400 hover:text-rose-600'
+                                }`}
+                              >
+                                <X className="w-3 h-3" />
+                              </button>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    {showInlineNewBank && (
+                      <div className="flex items-center gap-2 pt-1">
+                        <input
+                          type="text"
+                          value={inlineNewBankName}
+                          onChange={(e) => setInlineNewBankName(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              handleInlineAddPosBank();
+                            }
+                          }}
+                          placeholder="Ej: Mercantil, Banco de Venezuela, BNC, Bancamiga..."
+                          autoFocus
+                          className="flex-1 px-3 py-2 bg-white border border-indigo-400 rounded-xl text-xs text-slate-900 focus:outline-hidden focus:ring-2 focus:ring-indigo-500"
+                        />
+                        <button
+                          type="button"
+                          onClick={handleInlineAddPosBank}
+                          className="px-3 py-2 bg-indigo-700 hover:bg-indigo-800 text-white text-xs font-bold rounded-xl cursor-pointer flex items-center gap-1 shrink-0"
+                        >
+                          <Check className="w-3.5 h-3.5" />
+                          <span>Agregar</span>
+                        </button>
+                      </div>
+                    )}
+
+                    <p className="text-[11px] text-indigo-900/75">
+                      Al elegir la tarjeta, se sugiere automáticamente la cuenta bancaria correspondiente en Tesorería para descontar tu saldo.
+                    </p>
+                  </div>
+                )}
               </div>
 
               {/* Row 3.5: Conexión directa con Tesorería y Finanzas (Descuento de Liquidez) */}
@@ -1338,13 +1545,22 @@ export const ExpensesView: React.FC = () => {
                                 const created = initializeDefaultTreasuryAccounts();
                                 if (created.length > 0) {
                                   const match =
-                                    formPaymentType === 'BS'
-                                      ? created.find((a) => a.currency === 'BS' && a.group === 'BANCO_NACIONAL')
-                                      : formPaymentType === 'EFECTIVO_BS'
-                                        ? created.find((a) => a.currency === 'BS' && a.group === 'EFECTIVO')
-                                        : formPaymentType === 'USDT'
-                                          ? created.find((a) => a.currency === 'USDT')
-                                          : created.find((a) => a.currency === 'USD' && a.group === 'EFECTIVO');
+                                    formPaymentType === 'PUNTO_VENTA'
+                                      ? created.find((a) =>
+                                          `${a.name} ${a.institution || ''}`
+                                            .toLowerCase()
+                                            .includes((formCardBank || '').toLowerCase())
+                                        ) ||
+                                        created.find(
+                                          (a) => a.currency === 'BS' && a.group === 'BANCO_NACIONAL'
+                                        )
+                                      : formPaymentType === 'BS'
+                                        ? created.find((a) => a.currency === 'BS' && a.group === 'BANCO_NACIONAL')
+                                        : formPaymentType === 'EFECTIVO_BS'
+                                          ? created.find((a) => a.currency === 'BS' && a.group === 'EFECTIVO')
+                                          : formPaymentType === 'USDT'
+                                            ? created.find((a) => a.currency === 'USDT')
+                                            : created.find((a) => a.currency === 'USD' && a.group === 'EFECTIVO');
                                   setFormTreasuryAccountId((match || created[0]).id);
                                 }
                               }}

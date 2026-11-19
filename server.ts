@@ -94,6 +94,7 @@ interface DeletedIdsMap {
   treasuryAccounts: string[];
   treasuryCommitments: string[];
   treasuryMovements: string[];
+  treasuryDebts: string[];
 }
 
 const EMPTY_DELETED_IDS: DeletedIdsMap = {
@@ -111,6 +112,7 @@ const EMPTY_DELETED_IDS: DeletedIdsMap = {
   treasuryAccounts: [],
   treasuryCommitments: [],
   treasuryMovements: [],
+  treasuryDebts: [],
 };
 
 function mergeDeletedIds(a?: Partial<DeletedIdsMap>, b?: Partial<DeletedIdsMap>): DeletedIdsMap {
@@ -129,6 +131,7 @@ function mergeDeletedIds(a?: Partial<DeletedIdsMap>, b?: Partial<DeletedIdsMap>)
     treasuryAccounts: Array.from(new Set([...(a?.treasuryAccounts || []), ...(b?.treasuryAccounts || [])])),
     treasuryCommitments: Array.from(new Set([...(a?.treasuryCommitments || []), ...(b?.treasuryCommitments || [])])),
     treasuryMovements: Array.from(new Set([...(a?.treasuryMovements || []), ...(b?.treasuryMovements || [])])),
+    treasuryDebts: Array.from(new Set([...(a?.treasuryDebts || []), ...(b?.treasuryDebts || [])])),
   };
 }
 
@@ -148,6 +151,7 @@ interface AppDatabase {
   treasuryAccounts: any[];
   treasuryCommitments: any[];
   treasuryMovements: any[];
+  treasuryDebts: any[];
   users: any[];
   deletedIds: DeletedIdsMap;
   updatedAt: string;
@@ -170,6 +174,7 @@ function getInitialDatabase(): AppDatabase {
     treasuryAccounts: [],
     treasuryCommitments: [],
     treasuryMovements: [],
+    treasuryDebts: [],
     users: [DEFAULT_ADMIN_USER],
     deletedIds: { ...EMPTY_DELETED_IDS, sales: ['sale-102', 'sale-103'] },
     updatedAt: new Date().toISOString(),
@@ -209,6 +214,7 @@ function readDatabase(): AppDatabase {
       const deletedTreasuryAccountSet = new Set(deletedIds.treasuryAccounts);
       const deletedTreasuryCommitmentSet = new Set(deletedIds.treasuryCommitments);
       const deletedTreasuryMovementSet = new Set(deletedIds.treasuryMovements);
+      const deletedTreasuryDebtSet = new Set(deletedIds.treasuryDebts);
 
       return {
         settings: parsed.settings || INITIAL_SETTINGS,
@@ -226,6 +232,7 @@ function readDatabase(): AppDatabase {
         treasuryAccounts: (Array.isArray(parsed.treasuryAccounts) ? parsed.treasuryAccounts : []).filter((acc: any) => !deletedTreasuryAccountSet.has(acc.id)),
         treasuryCommitments: (Array.isArray(parsed.treasuryCommitments) ? parsed.treasuryCommitments : []).filter((cm: any) => !deletedTreasuryCommitmentSet.has(cm.id)),
         treasuryMovements: (Array.isArray(parsed.treasuryMovements) ? parsed.treasuryMovements : []).filter((mv: any) => !deletedTreasuryMovementSet.has(mv.id)),
+        treasuryDebts: (Array.isArray(parsed.treasuryDebts) ? parsed.treasuryDebts : []).filter((d: any) => !deletedTreasuryDebtSet.has(d.id)),
         users: guaranteedUsers,
         deletedIds,
         updatedAt: parsed.updatedAt || new Date().toISOString(),
@@ -307,6 +314,7 @@ function writeDatabase(
     const deletedTreasuryAccountSet = new Set(mergedDeletedIds.treasuryAccounts);
     const deletedTreasuryCommitmentSet = new Set(mergedDeletedIds.treasuryCommitments);
     const deletedTreasuryMovementSet = new Set(mergedDeletedIds.treasuryMovements);
+    const deletedTreasuryDebtSet = new Set(mergedDeletedIds.treasuryDebts);
 
     const rawProducts = Array.isArray(data.products)
       ? mergeCollections
@@ -378,6 +386,11 @@ function writeDatabase(
         ? mergeCollectionById(current.treasuryMovements || [], data.treasuryMovements, deletedTreasuryMovementSet)
         : data.treasuryMovements
       : current.treasuryMovements || [];
+    const rawTreasuryDebts = Array.isArray(data.treasuryDebts)
+      ? mergeCollections
+        ? mergeCollectionById(current.treasuryDebts || [], data.treasuryDebts, deletedTreasuryDebtSet)
+        : data.treasuryDebts
+      : current.treasuryDebts || [];
 
     const updated: AppDatabase = {
       ...current,
@@ -396,6 +409,7 @@ function writeDatabase(
       treasuryAccounts: Array.isArray(rawTreasuryAccounts) ? rawTreasuryAccounts.filter((acc: any) => !deletedTreasuryAccountSet.has(acc.id)) : [],
       treasuryCommitments: Array.isArray(rawTreasuryCommitments) ? rawTreasuryCommitments.filter((cm: any) => !deletedTreasuryCommitmentSet.has(cm.id)) : [],
       treasuryMovements: Array.isArray(rawTreasuryMovements) ? rawTreasuryMovements.filter((mv: any) => !deletedTreasuryMovementSet.has(mv.id)) : [],
+      treasuryDebts: Array.isArray(rawTreasuryDebts) ? rawTreasuryDebts.filter((d: any) => !deletedTreasuryDebtSet.has(d.id)) : [],
       deletedIds: mergedDeletedIds,
       updatedAt: new Date().toISOString(),
     };

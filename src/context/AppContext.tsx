@@ -29,6 +29,7 @@ import {
   PurchasePaymentCurrency,
   PurchasePaymentRecord,
   DEFAULT_EXPENSE_CATEGORIES,
+  DEFAULT_EXPENSE_POS_BANKS,
   ExpensePaymentCurrency,
   ExpensePaymentMethod,
   BusinessExpense,
@@ -40,6 +41,12 @@ import {
   TreasuryCommitment,
   TreasuryMovementType,
   TreasuryMovement,
+  DEFAULT_DEBT_CATEGORIES,
+  DebtPriority,
+  DebtStatus,
+  DebtPaymentPlan,
+  DebtPaymentRecord,
+  TreasuryDebt,
 } from '../types';
 import {
   INITIAL_SETTINGS,
@@ -69,6 +76,7 @@ import {
   subscribeToTreasuryAccounts,
   subscribeToTreasuryCommitments,
   subscribeToTreasuryMovements,
+  subscribeToTreasuryDebts,
   subscribeToDeletedIds,
   fetchDeletedIdsFromFirestore,
   syncProductToFirestore,
@@ -100,6 +108,8 @@ import {
   removeTreasuryCommitmentFromFirestore,
   syncTreasuryMovementToFirestore,
   removeTreasuryMovementFromFirestore,
+  syncTreasuryDebtToFirestore,
+  removeTreasuryDebtFromFirestore,
   recordDeletedIdsInFirestore,
   clearDeletedIdsInFirestore,
   uploadAllToFirestore,
@@ -174,6 +184,7 @@ function mergeDeletedMaps(a?: Partial<DeletedIdsMap>, b?: Partial<DeletedIdsMap>
     treasuryAccounts: Array.from(new Set([...(a?.treasuryAccounts || []), ...(b?.treasuryAccounts || [])])),
     treasuryCommitments: Array.from(new Set([...(a?.treasuryCommitments || []), ...(b?.treasuryCommitments || [])])),
     treasuryMovements: Array.from(new Set([...(a?.treasuryMovements || []), ...(b?.treasuryMovements || [])])),
+    treasuryDebts: Array.from(new Set([...(a?.treasuryDebts || []), ...(b?.treasuryDebts || [])])),
   };
 }
 
@@ -438,6 +449,9 @@ interface AppContextType {
   expenseCategories: string[];
   addExpenseCategory: (categoryName: string) => { added: boolean; category: string };
   deleteExpenseCategory: (categoryName: string) => void;
+  expensePosBanks: string[];
+  addExpensePosBank: (bankName: string) => { added: boolean; bank: string };
+  deleteExpensePosBank: (bankName: string) => void;
   addExpense: (expenseData: {
     date: string;
     category: string;
@@ -448,6 +462,7 @@ interface AppContextType {
     bcvRate?: number;
     paymentCurrencyType: ExpensePaymentCurrency;
     paymentMethod: ExpensePaymentMethod;
+    cardBank?: string;
     reference?: string;
     notes?: string;
     treasuryAccountId?: string;
@@ -546,6 +561,60 @@ interface AppContextType {
   pendingCommitmentsBs: number;
   projectedFreeBalanceUSD: number;
   projectedFreeBalanceBs: number;
+
+  // Treasury Debts & Debt Payment Planning
+  treasuryDebts: TreasuryDebt[];
+  debtCategories: string[];
+  addDebtCategory: (name: string) => { added: boolean; category: string };
+  renameDebtCategory: (
+    oldName: string,
+    newName: string
+  ) => { renamed: boolean; updatedCount: number; newCategory?: string };
+  deleteDebtCategory: (name: string) => void;
+  addTreasuryDebt: (data: {
+    title: string;
+    creditor: string;
+    category: string;
+    priority?: DebtPriority;
+    totalAmountUSD: number;
+    initialPaidUSD?: number;
+    startDate?: string;
+    dueDate?: string;
+    notes?: string;
+    paymentPlan?: DebtPaymentPlan;
+  }) => TreasuryDebt;
+  updateTreasuryDebt: (
+    id: string,
+    updates: Partial<Omit<TreasuryDebt, 'id' | 'debtNumber' | 'createdAt'>>
+  ) => TreasuryDebt | null;
+  deleteTreasuryDebt: (id: string) => void;
+  saveDebtPaymentPlan: (debtId: string, plan: DebtPaymentPlan) => TreasuryDebt | null;
+  recordDebtPayment: (
+    debtId: string,
+    data: {
+      date: string;
+      amountInput: number;
+      inputCurrency?: 'USD' | 'BS' | 'USDT';
+      bcvRate?: number;
+      accountId: string;
+      installmentId?: string;
+      reference?: string;
+      notes?: string;
+      syncToExpense?: boolean;
+    }
+  ) => {
+    debt: TreasuryDebt;
+    payment: DebtPaymentRecord;
+    movement: TreasuryMovement;
+    account: TreasuryAccount;
+    expense?: BusinessExpense;
+  } | null;
+  scheduleDebtInstallmentToCommitments: (
+    debtId: string,
+    installmentId: string
+  ) => TreasuryCommitment | null;
+  totalPendingDebtsUSD: number;
+  totalPendingDebtsBs: number;
 
   // Modals & UI triggers
   selectedInvoice: Sale | null;
@@ -649,6 +718,8 @@ const STORAGE_KEYS = {
   TREASURY_ACCOUNTS: 'servimotos_treasury_accounts_ve_v1',
   TREASURY_COMMITMENTS: 'servimotos_treasury_commitments_ve_v1',
   TREASURY_MOVEMENTS: 'servimotos_treasury_movements_ve_v1',
+  TREASURY_DEBTS: 'servimotos_treasury_debts_ve_v1',
+  DEBT_CATEGORIES: 'servimotos_debt_categories_ve_v1',
   CART: 'servimotos_cart_ve_v2',
   ML_ENTRIES: 'servimotos_ml_entries_ve_v2',
   DELETED_IDS: 'servimotos_deleted_ids_v1',
@@ -1471,6 +1542,31 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     return [];
   });
 
+  const [treasuryDebts, setTreasuryDebts] = useState<TreasuryDebt[]>(() => {
+    try {
+      const delSet = new Set(deletedIdsRef.current.treasuryDebts);
+      const stored = localStorage.getItem(STORAGE_KEYS.TREASURY_DEBTS);
+      if (stored) {
+        const parsed: TreasuryDebt[] = JSON.parse(stored);
+        return Array.isArray(parsed) ? parsed.filter((d) => !delSet.has(d.id)) : [];
+      }
+    } catch {}
+    return [];
+  });
+
+  const [customDebtCategories, setCustomDebtCategories] = useState<string[]>(() => {
+    try {
+      const stored = localStorage.getItem(STORAGE_KEYS.DEBT_CATEGORIES);
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed.filter((c) => typeof c === 'string' && c.trim().length > 0);
+        }
+      }
+    } catch {}
+    return [...DEFAULT_DEBT_CATEGORIES];
+  });
+
   const isInitialLoaded = useRef(false);
   const saveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -1528,6 +1624,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
   const pendingSyncTreasuryAccountIdsRef = useRef<Set<string>>(new Set());
   const pendingSyncTreasuryCommitmentIdsRef = useRef<Set<string>>(new Set());
   const pendingSyncTreasuryMovementIdsRef = useRef<Set<string>>(new Set());
+  const pendingSyncTreasuryDebtIdsRef = useRef<Set<string>>(new Set());
 
   // Live refs so concurrent callbacks never read stale closures
   const salesRef = useRef<Sale[]>(sales);
@@ -1544,6 +1641,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
   const treasuryAccountsRef = useRef<TreasuryAccount[]>(treasuryAccounts);
   const treasuryCommitmentsRef = useRef<TreasuryCommitment[]>(treasuryCommitments);
   const treasuryMovementsRef = useRef<TreasuryMovement[]>(treasuryMovements);
+  const treasuryDebtsRef = useRef<TreasuryDebt[]>(treasuryDebts);
   const settingsRef = useRef<BusinessSettings>(settings);
 
   // Sync to LocalStorage and live refs immediately on any state change
@@ -1621,6 +1719,15 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     treasuryMovementsRef.current = treasuryMovements;
     localStorage.setItem(STORAGE_KEYS.TREASURY_MOVEMENTS, JSON.stringify(treasuryMovements));
   }, [treasuryMovements]);
+
+  useEffect(() => {
+    treasuryDebtsRef.current = treasuryDebts;
+    localStorage.setItem(STORAGE_KEYS.TREASURY_DEBTS, JSON.stringify(treasuryDebts));
+  }, [treasuryDebts]);
+
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEYS.DEBT_CATEGORIES, JSON.stringify(customDebtCategories));
+  }, [customDebtCategories]);
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEYS.CART, JSON.stringify(cart));
@@ -1726,6 +1833,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
           const deletedTreasuryAccountSet = new Set(mergedDeleted.treasuryAccounts);
           const deletedTreasuryCommitmentSet = new Set(mergedDeleted.treasuryCommitments);
           const deletedTreasuryMovementSet = new Set(mergedDeleted.treasuryMovements);
+          const deletedTreasuryDebtSet = new Set(mergedDeleted.treasuryDebts);
 
           // Merge products (excluding demo & deleted products)
           if (Array.isArray(serverDb.products)) {
@@ -1803,10 +1911,17 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
                   ...(Array.isArray(prev.customExpenseCategories) ? prev.customExpenseCategories : []),
                 ])
               );
+              const mergedCustomPosBanks = Array.from(
+                new Set([
+                  ...(Array.isArray(serverDb.settings.customExpensePosBanks) ? serverDb.settings.customExpensePosBanks : []),
+                  ...(Array.isArray(prev.customExpensePosBanks) ? prev.customExpensePosBanks : []),
+                ])
+              );
               const nextSettings: BusinessSettings = {
                 ...serverDb.settings,
                 ...(mergedCustom.length > 0 ? { customCategories: mergedCustom } : {}),
                 ...(mergedCustomExpenses.length > 0 ? { customExpenseCategories: mergedCustomExpenses } : {}),
+                ...(mergedCustomPosBanks.length > 0 ? { customExpensePosBanks: mergedCustomPosBanks } : {}),
               };
               localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(nextSettings));
               return nextSettings;
@@ -2111,6 +2226,39 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
               return mergedList;
             });
           }
+
+          // Treasury Debts (excluding deleted)
+          if (Array.isArray(serverDb.treasuryDebts)) {
+            const validServerDebts = serverDb.treasuryDebts.filter(
+              (d: TreasuryDebt) => !deletedTreasuryDebtSet.has(d.id)
+            );
+            setTreasuryDebts((current) => {
+              const serverById = new Map<string, TreasuryDebt>(
+                validServerDebts.map((d: TreasuryDebt) => [d.id, d])
+              );
+              const mergedList: TreasuryDebt[] = [];
+              const seenIds = new Set<string>();
+              for (const localDebt of current) {
+                if (deletedTreasuryDebtSet.has(localDebt.id)) continue;
+                seenIds.add(localDebt.id);
+                const serverDebt = serverById.get(localDebt.id);
+                if (!serverDebt || pendingSyncTreasuryDebtIdsRef.current.has(localDebt.id)) {
+                  mergedList.push(localDebt);
+                } else {
+                  mergedList.push(serverDebt);
+                }
+              }
+              for (const serverDebt of validServerDebts) {
+                if (!seenIds.has(serverDebt.id) && !deletedTreasuryDebtSet.has(serverDebt.id)) {
+                  mergedList.push(serverDebt);
+                }
+              }
+              mergedList.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
+              treasuryDebtsRef.current = mergedList;
+              localStorage.setItem(STORAGE_KEYS.TREASURY_DEBTS, JSON.stringify(mergedList));
+              return mergedList;
+            });
+          }
         }
       } catch (err) {
         console.warn('Servidor de datos no respondió, usando datos locales:', err);
@@ -2138,6 +2286,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
                 treasuryAccounts: treasuryAccountsRef.current,
                 treasuryCommitments: treasuryCommitmentsRef.current,
                 treasuryMovements: treasuryMovementsRef.current,
+                treasuryDebts: treasuryDebtsRef.current,
                 deletedIds: deletedIdsRef.current,
               }),
             }).catch(() => {});
@@ -2171,6 +2320,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     treasuryAccounts: false,
     treasuryCommitments: false,
     treasuryMovements: false,
+    treasuryDebts: false,
   });
   const seenFirestoreIdsRef = useRef<{
     products: Set<string>;
@@ -2187,6 +2337,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     treasuryAccounts: Set<string>;
     treasuryCommitments: Set<string>;
     treasuryMovements: Set<string>;
+    treasuryDebts: Set<string>;
   }>({
     products: new Set(),
     customers: new Set(),
@@ -2202,6 +2353,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     treasuryAccounts: new Set(),
     treasuryCommitments: new Set(),
     treasuryMovements: new Set(),
+    treasuryDebts: new Set(),
   });
 
   useEffect(() => {
@@ -2223,6 +2375,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       const delTreasuryAccounts = new Set(merged.treasuryAccounts);
       const delTreasuryCommitments = new Set(merged.treasuryCommitments);
       const delTreasuryMovements = new Set(merged.treasuryMovements);
+      const delTreasuryDebts = new Set(merged.treasuryDebts);
 
       setSales((prev) => prev.filter((s) => !delSales.has(s.id)));
       setProducts((prev) => prev.filter((p) => !delProds.has(p.id)));
@@ -2238,6 +2391,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       setTreasuryAccounts((prev) => prev.filter((acc) => !delTreasuryAccounts.has(acc.id)));
       setTreasuryCommitments((prev) => prev.filter((cm) => !delTreasuryCommitments.has(cm.id)));
       setTreasuryMovements((prev) => prev.filter((mv) => !delTreasuryMovements.has(mv.id)));
+      setTreasuryDebts((prev) => prev.filter((d) => !delTreasuryDebts.has(d.id)));
     };
 
     async function initFirestore() {
@@ -2341,11 +2495,23 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
               const mergedCustomExpenses = Array.from(
                 new Set([...remoteCustomExpenses, ...localCustomExpenses])
               );
+              const remoteCustomPosBanks = Array.isArray(firestoreSettings.customExpensePosBanks)
+                ? firestoreSettings.customExpensePosBanks
+                : [];
+              const localCustomPosBanks = Array.isArray(prev.customExpensePosBanks)
+                ? prev.customExpensePosBanks
+                : [];
+              const mergedCustomPosBanks = Array.from(
+                new Set([...remoteCustomPosBanks, ...localCustomPosBanks])
+              );
               const nextSettings: BusinessSettings = {
                 ...firestoreSettings,
                 ...(mergedCustom.length > 0 ? { customCategories: mergedCustom } : {}),
                 ...(mergedCustomExpenses.length > 0
                   ? { customExpenseCategories: mergedCustomExpenses }
+                  : {}),
+                ...(mergedCustomPosBanks.length > 0
+                  ? { customExpensePosBanks: mergedCustomPosBanks }
                   : {}),
               };
               settingsRef.current = nextSettings;
@@ -3109,6 +3275,76 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
           setFirebaseSyncStatus('synced');
         });
 
+        // 16. Real-time treasury debts listener
+        const unsubTreasuryDebts = subscribeToTreasuryDebts((firestoreDebts, meta) => {
+          if (!Array.isArray(firestoreDebts)) return;
+          const delSet = new Set(deletedIdsRef.current.treasuryDebts);
+          firestoreDebts.forEach((d) => {
+            if (delSet.has(d.id)) {
+              removeTreasuryDebtFromFirestore(d.id).catch(() => {});
+            }
+          });
+          const cleanDebts = firestoreDebts.filter((d) => !delSet.has(d.id));
+          const remoteById = new Map(cleanDebts.map((d) => [d.id, d]));
+          const remoteIdSet = new Set(cleanDebts.map((d) => d.id));
+          const prevSeen = seenFirestoreIdsRef.current.treasuryDebts;
+          const isServerConfirmed = !meta?.fromCache && !meta?.hasPendingWrites;
+
+          if (isServerConfirmed) {
+            remoteIdSet.forEach((id) => pendingSyncTreasuryDebtIdsRef.current.delete(id));
+          }
+
+          setTreasuryDebts((prev) => {
+            const toUpload: TreasuryDebt[] = [];
+            const mergedMap = new Map<string, TreasuryDebt>();
+
+            for (const rd of cleanDebts) {
+              mergedMap.set(rd.id, rd);
+            }
+
+            for (const ld of prev) {
+              if (delSet.has(ld.id)) continue;
+              const rd = remoteById.get(ld.id);
+              const isPendingLocal = pendingSyncTreasuryDebtIdsRef.current.has(ld.id);
+              const isNewerLocal =
+                rd && ld.updatedAt && (!rd.updatedAt || ld.updatedAt > rd.updatedAt);
+
+              if (!rd) {
+                if (isPendingLocal || !isServerConfirmed || !prevSeen.has(ld.id)) {
+                  mergedMap.set(ld.id, ld);
+                  toUpload.push(ld);
+                }
+              } else if (isPendingLocal || isNewerLocal) {
+                mergedMap.set(ld.id, ld);
+                toUpload.push(ld);
+              }
+            }
+
+            if (toUpload.length > 0 && isServerConfirmed) {
+              queueMicrotask(() => {
+                toUpload.forEach((d) => {
+                  pendingSyncTreasuryDebtIdsRef.current.add(d.id);
+                  syncTreasuryDebtToFirestore(d)
+                    .then(() => pendingSyncTreasuryDebtIdsRef.current.delete(d.id))
+                    .catch(() => {});
+                });
+              });
+            }
+
+            const merged = Array.from(mergedMap.values()).sort((a, b) =>
+              (b.createdAt || '').localeCompare(a.createdAt || '')
+            );
+            treasuryDebtsRef.current = merged;
+            return merged;
+          });
+
+          if (isServerConfirmed) {
+            seenFirestoreIdsRef.current.treasuryDebts = remoteIdSet;
+            firestoreSyncedFlags.current.treasuryDebts = true;
+          }
+          setFirebaseSyncStatus('synced');
+        });
+
         unsubs = [
           unsubDeleted,
           unsubProducts,
@@ -3126,6 +3362,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
           unsubTreasuryAccounts,
           unsubTreasuryCommitments,
           unsubTreasuryMovements,
+          unsubTreasuryDebts,
         ];
       } catch (err) {
         console.warn('Error starting Firestore real-time listeners:', err);
@@ -3163,6 +3400,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
         treasuryAccounts,
         treasuryCommitments,
         treasuryMovements,
+        treasuryDebts,
         deletedIds: deletedIdsRef.current,
       });
       if (result.success) {
@@ -3205,6 +3443,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
           treasuryAccounts,
           treasuryCommitments,
           treasuryMovements,
+          treasuryDebts,
           deletedIds: deletedIdsRef.current,
         }),
       }).catch((err) => {
@@ -3217,7 +3456,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
         clearTimeout(saveTimeoutRef.current);
       }
     };
-  }, [settings, products, customers, sales, serviceOrders, onlineOrders, technicians, serviceCommissions, technicianPayouts, suppliers, purchaseOrders, expenses, treasuryAccounts, treasuryCommitments, treasuryMovements, deletedIds]);
+  }, [settings, products, customers, sales, serviceOrders, onlineOrders, technicians, serviceCommissions, technicianPayouts, suppliers, purchaseOrders, expenses, treasuryAccounts, treasuryCommitments, treasuryMovements, treasuryDebts, deletedIds]);
 
   // Guarantee save before tab/window is closed
   useEffect(() => {
@@ -3239,6 +3478,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
           treasuryAccounts,
           treasuryCommitments,
           treasuryMovements,
+          treasuryDebts,
           deletedIds: deletedIdsRef.current,
         });
 
@@ -3260,7 +3500,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     return () => {
       window.removeEventListener('beforeunload', handleBeforeUnload);
     };
-  }, [settings, products, customers, sales, serviceOrders, onlineOrders, technicians, serviceCommissions, technicianPayouts, suppliers, purchaseOrders, expenses, treasuryAccounts, treasuryCommitments, treasuryMovements, deletedIds]);
+  }, [settings, products, customers, sales, serviceOrders, onlineOrders, technicians, serviceCommissions, technicianPayouts, suppliers, purchaseOrders, expenses, treasuryAccounts, treasuryCommitments, treasuryMovements, treasuryDebts, deletedIds]);
 
   // Online products: strictly filter where stock > 0 and sort alphabetically (A-Z) by name
   const onlineProducts = useMemo(() => {
@@ -6138,9 +6378,87 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     });
   };
 
+  const expensePosBanks = useMemo<string[]>(() => {
+    const result: string[] = [];
+    const seenLower = new Set<string>();
+    const registerBank = (bank?: string) => {
+      const cleaned = (bank || '').trim().replace(/\s+/g, ' ');
+      if (!cleaned) return;
+      const key = cleaned.toLowerCase();
+      if (seenLower.has(key)) return;
+      seenLower.add(key);
+      result.push(cleaned);
+    };
+    DEFAULT_EXPENSE_POS_BANKS.forEach(registerBank);
+    if (Array.isArray(settings.customExpensePosBanks)) {
+      settings.customExpensePosBanks.forEach(registerBank);
+    }
+    expenses.forEach((ex) => registerBank(ex.cardBank));
+    return result;
+  }, [settings.customExpensePosBanks, expenses]);
+
+  const addExpensePosBank = (bankName: string): { added: boolean; bank: string } => {
+    const cleaned = bankName.trim().replace(/\s+/g, ' ');
+    if (!cleaned) {
+      return { added: false, bank: DEFAULT_EXPENSE_POS_BANKS[0] };
+    }
+    const existing = expensePosBanks.find(
+      (b) => b.trim().toLowerCase() === cleaned.toLowerCase()
+    );
+    if (existing) {
+      return { added: false, bank: existing };
+    }
+    const formatted =
+      cleaned === cleaned.toLowerCase()
+        ? cleaned.charAt(0).toUpperCase() + cleaned.slice(1)
+        : cleaned;
+
+    setSettings((prev) => {
+      const prevCustom = Array.isArray(prev.customExpensePosBanks)
+        ? prev.customExpensePosBanks
+        : [];
+      if (prevCustom.some((b) => b.trim().toLowerCase() === formatted.toLowerCase())) {
+        return prev;
+      }
+      const updated: BusinessSettings = {
+        ...prev,
+        customExpensePosBanks: [...prevCustom, formatted],
+      };
+      try {
+        localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(updated));
+      } catch {}
+      syncSettingsToFirestore(updated).catch((err) =>
+        console.warn('Firestore custom POS bank sync error:', err)
+      );
+      return updated;
+    });
+
+    return { added: true, bank: formatted };
+  };
+
+  const deleteExpensePosBank = (bankName: string) => {
+    const targetLower = bankName.trim().toLowerCase();
+    setSettings((prev) => {
+      const prevCustom = Array.isArray(prev.customExpensePosBanks)
+        ? prev.customExpensePosBanks
+        : [];
+      const nextCustom = prevCustom.filter((b) => b.trim().toLowerCase() !== targetLower);
+      const updated: BusinessSettings = {
+        ...prev,
+        customExpensePosBanks: nextCustom,
+      };
+      try {
+        localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(updated));
+      } catch {}
+      syncSettingsToFirestore(updated).catch(() => {});
+      return updated;
+    });
+  };
+
   const resolveTreasuryAccountForExpense = (
     paymentCurrencyType: ExpensePaymentCurrency,
-    preferredAccountId?: string
+    preferredAccountId?: string,
+    cardBank?: string
   ): TreasuryAccount | undefined => {
     if (treasuryAccountsRef.current.length === 0) {
       initializeDefaultTreasuryAccounts();
@@ -6163,6 +6481,21 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     if (paymentCurrencyType === 'EFECTIVO_BS') {
       return (
         accounts.find((a) => a.currency === 'BS' && a.group === 'EFECTIVO') ||
+        accounts.find((a) => a.currency === 'BS') ||
+        accounts[0]
+      );
+    }
+    if (paymentCurrencyType === 'PUNTO_VENTA') {
+      const bankNeedle = (cardBank || '').trim().toLowerCase();
+      if (bankNeedle) {
+        const matchedByBank = accounts.find((a) => {
+          const hay = `${a.name} ${a.institution || ''}`.toLowerCase();
+          return hay.includes(bankNeedle);
+        });
+        if (matchedByBank) return matchedByBank;
+      }
+      return (
+        accounts.find((a) => a.currency === 'BS' && a.group === 'BANCO_NACIONAL') ||
         accounts.find((a) => a.currency === 'BS') ||
         accounts[0]
       );
@@ -6352,16 +6685,23 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       expenseData.skipTreasuryDeduction && (expenseData.treasuryAccountId || expenseData.treasuryMovementId)
     );
 
+    const cleanCardBank =
+      expenseData.paymentCurrencyType === 'PUNTO_VENTA' && expenseData.cardBank?.trim()
+        ? expenseData.cardBank.trim()
+        : undefined;
+
     const shouldDeduct = !expenseData.skipTreasuryDeduction && expenseData.deductFromTreasury !== false;
     if (shouldDeduct && amountUSD > 0) {
       const targetAccount = resolveTreasuryAccountForExpense(
         expenseData.paymentCurrencyType,
-        expenseData.treasuryAccountId
+        expenseData.treasuryAccountId,
+        cleanCardBank
       );
       if (targetAccount) {
         const nativeDelta = targetAccount.currency === 'BS' ? -amountBs : -amountUSD;
         applyAccountDelta(targetAccount, -amountUSD, activeRate, nativeDelta);
 
+        const cardNoteSuffix = cleanCardBank ? ` · Punto de Venta (Tarjeta ${cleanCardBank})` : '';
         const advanceNoteSuffix =
           isSalaryAdvance && linkedCommitmentTitle
             ? ` · Vale descontado de: ${linkedCommitmentTitle}`
@@ -6388,7 +6728,9 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
             (expenseData.notes?.trim() ||
               (expenseData.beneficiary?.trim()
                 ? `Gasto ${expenseNumber} · Pagado a: ${expenseData.beneficiary.trim()}`
-                : `Gasto del negocio ${expenseNumber}`)) + advanceNoteSuffix,
+                : `Gasto del negocio ${expenseNumber}`)) +
+            cardNoteSuffix +
+            advanceNoteSuffix,
           createdAt: now,
           updatedAt: now,
         };
@@ -6427,6 +6769,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       amountBs,
       paymentCurrencyType: expenseData.paymentCurrencyType,
       paymentMethod: expenseData.paymentMethod,
+      cardBank: cleanCardBank,
       reference: expenseData.reference?.trim() || undefined,
       notes: expenseData.notes?.trim() || undefined,
       treasuryAccountId: linkedAccountId,
@@ -6541,6 +6884,13 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
         ? treasuryMovementsRef.current.find((m) => m.id === existing.treasuryMovementId)
         : undefined) || treasuryMovementsRef.current.find((m) => m.expenseId === id);
 
+    const nextCardBank =
+      nextPaymentCurrencyType === 'PUNTO_VENTA'
+        ? (updates.cardBank !== undefined ? updates.cardBank : existing.cardBank)?.trim() ||
+          undefined
+        : undefined;
+    const cardNoteSuffix = nextCardBank ? ` · Punto de Venta (Tarjeta ${nextCardBank})` : '';
+
     const wantsTreasuryLink =
       updates.deductedFromTreasury !== undefined
         ? updates.deductedFromTreasury
@@ -6583,7 +6933,8 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
             : linkedMovement.accountId;
       const targetAccount = resolveTreasuryAccountForExpense(
         nextPaymentCurrencyType,
-        preferredAccountId
+        preferredAccountId,
+        nextCardBank
       );
       if (targetAccount) {
         const freshTarget =
@@ -6606,10 +6957,10 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
           salaryAdvanceCommitmentId: nextLinkedCommitmentId,
           salaryAdvanceAppliedUSD: nextSalaryAdvanceAppliedUSD,
           notes:
-            nextNotes ||
-            (nextBeneficiary
-              ? `Gasto ${existing.expenseNumber} · Pagado a: ${nextBeneficiary}`
-              : linkedMovement.notes),
+            (nextNotes ||
+              (nextBeneficiary
+                ? `Gasto ${existing.expenseNumber} · Pagado a: ${nextBeneficiary}`
+                : `Gasto del negocio ${existing.expenseNumber}`)) + cardNoteSuffix,
           updatedAt: now,
         };
 
@@ -6638,7 +6989,8 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     } else if (!linkedMovement && wantsTreasuryLink && nextUSD > 0) {
       const targetAccount = resolveTreasuryAccountForExpense(
         nextPaymentCurrencyType,
-        updates.treasuryAccountId || existing.treasuryAccountId
+        updates.treasuryAccountId || existing.treasuryAccountId,
+        nextCardBank
       );
       if (targetAccount) {
         const nativeDelta = targetAccount.currency === 'BS' ? -nextBs : -nextUSD;
@@ -6662,10 +7014,10 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
           salaryAdvanceCommitmentId: nextLinkedCommitmentId,
           salaryAdvanceAppliedUSD: nextSalaryAdvanceAppliedUSD,
           notes:
-            nextNotes ||
-            (nextBeneficiary
-              ? `Gasto ${existing.expenseNumber} · Pagado a: ${nextBeneficiary}`
-              : `Gasto del negocio ${existing.expenseNumber}`),
+            (nextNotes ||
+              (nextBeneficiary
+                ? `Gasto ${existing.expenseNumber} · Pagado a: ${nextBeneficiary}`
+                : `Gasto del negocio ${existing.expenseNumber}`)) + cardNoteSuffix,
           createdAt: now,
           updatedAt: now,
         };
@@ -6699,6 +7051,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       category: nextCategory,
       description: nextDescription,
       beneficiary: nextBeneficiary,
+      cardBank: nextCardBank,
       reference: nextReference,
       notes: nextNotes,
       amountUSD: nextUSD,
@@ -7796,6 +8149,73 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
         syncSaleWithRetry(unlinkedSale);
       }
     }
+
+    // If a TreasuryDebt payment pointed to this movement, revert that payment on the debt
+    if (existing?.debtId) {
+      const linkedDebt = treasuryDebtsRef.current.find((d) => d.id === existing.debtId);
+      if (linkedDebt) {
+        const removedPayment = (linkedDebt.payments || []).find(
+          (p) => p.treasuryMovementId === id
+        );
+        if (removedPayment) {
+          const remainingPayments = (linkedDebt.payments || []).filter(
+            (p) => p.treasuryMovementId !== id
+          );
+          const nextPaidUSD =
+            Math.round(
+              Math.max(0, (Number(linkedDebt.paidAmountUSD) || 0) - (Number(removedPayment.amountUSD) || 0)) *
+                100
+            ) / 100;
+          const nextRemainingUSD =
+            Math.round(Math.max(0, (Number(linkedDebt.totalAmountUSD) || 0) - nextPaidUSD) * 100) /
+            100;
+          const nextPlan = linkedDebt.paymentPlan
+            ? {
+                ...linkedDebt.paymentPlan,
+                installments: linkedDebt.paymentPlan.installments.map((inst) =>
+                  removedPayment.installmentId && inst.id === removedPayment.installmentId
+                    ? {
+                        ...inst,
+                        status: 'PENDIENTE' as const,
+                        paidAt: undefined,
+                        paidAccountId: undefined,
+                        paidAccountName: undefined,
+                        reference: undefined,
+                      }
+                    : inst
+                ),
+              }
+            : undefined;
+          const nextStatus: DebtStatus =
+            nextRemainingUSD <= 0.009
+              ? 'PAGADA'
+              : nextPlan && nextPlan.installments.length > 0
+                ? 'EN_PLAN'
+                : 'ACTIVA';
+          const updatedDebt: TreasuryDebt = {
+            ...linkedDebt,
+            payments: remainingPayments,
+            paidAmountUSD: nextPaidUSD,
+            remainingAmountUSD: nextRemainingUSD,
+            status: nextStatus,
+            paymentPlan: nextPlan,
+            updatedAt: new Date().toISOString(),
+          };
+          pendingSyncTreasuryDebtIdsRef.current.add(updatedDebt.id);
+          const nextDebts = treasuryDebtsRef.current.map((d) =>
+            d.id === updatedDebt.id ? updatedDebt : d
+          );
+          treasuryDebtsRef.current = nextDebts;
+          setTreasuryDebts(nextDebts);
+          try {
+            localStorage.setItem(STORAGE_KEYS.TREASURY_DEBTS, JSON.stringify(nextDebts));
+          } catch {}
+          syncTreasuryDebtToFirestore(updatedDebt)
+            .then(() => pendingSyncTreasuryDebtIdsRef.current.delete(updatedDebt.id))
+            .catch(() => {});
+        }
+      }
+    }
   };
 
   const importUnpaidPurchaseOrdersToCommitments = (): number => {
@@ -7857,6 +8277,531 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
   const projectedFreeBalanceUSD =
     Math.round((totalLiquidityUSD - pendingCommitmentsUSD) * 100) / 100;
   const projectedFreeBalanceBs = projectedFreeBalanceUSD * settings.bcvRate;
+
+  // =========================================================================
+  // TREASURY DEBTS & DEBT PAYMENT PLANNING
+  // =========================================================================
+  const debtCategories = useMemo<string[]>(() => {
+    const result: string[] = [];
+    const seen = new Set<string>();
+    const addUnique = (raw?: string) => {
+      const cleaned = (raw || '').trim().replace(/\s+/g, ' ');
+      if (!cleaned) return;
+      const key = cleaned.toLowerCase();
+      if (seen.has(key)) return;
+      seen.add(key);
+      result.push(cleaned);
+    };
+    customDebtCategories.forEach(addUnique);
+    treasuryDebts.forEach((d) => addUnique(d.category));
+    if (result.length === 0) {
+      DEFAULT_DEBT_CATEGORIES.forEach(addUnique);
+    }
+    return result;
+  }, [customDebtCategories, treasuryDebts]);
+
+  const addDebtCategory = (name: string): { added: boolean; category: string } => {
+    const cleaned = (name || '').trim().replace(/\s+/g, ' ');
+    if (!cleaned) return { added: false, category: '' };
+    const existing = debtCategories.find((c) => c.toLowerCase() === cleaned.toLowerCase());
+    if (existing) return { added: false, category: existing };
+    setCustomDebtCategories((prev) => {
+      const next = [...prev, cleaned];
+      try {
+        localStorage.setItem(STORAGE_KEYS.DEBT_CATEGORIES, JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+    return { added: true, category: cleaned };
+  };
+
+  const renameDebtCategory = (
+    oldName: string,
+    newName: string
+  ): { renamed: boolean; updatedCount: number; newCategory?: string } => {
+    const oldClean = (oldName || '').trim();
+    const newClean = (newName || '').trim().replace(/\s+/g, ' ');
+    if (!oldClean || !newClean || oldClean.toLowerCase() === newClean.toLowerCase()) {
+      return { renamed: false, updatedCount: 0 };
+    }
+
+    setCustomDebtCategories((prev) => {
+      const seen = new Set<string>();
+      const next: string[] = [];
+      const source = prev.length > 0 ? prev : [...DEFAULT_DEBT_CATEGORIES];
+      source.forEach((cat) => {
+        const replaced = cat.toLowerCase() === oldClean.toLowerCase() ? newClean : cat;
+        const key = replaced.toLowerCase();
+        if (!seen.has(key)) {
+          seen.add(key);
+          next.push(replaced);
+        }
+      });
+      if (!seen.has(newClean.toLowerCase())) {
+        next.push(newClean);
+      }
+      try {
+        localStorage.setItem(STORAGE_KEYS.DEBT_CATEGORIES, JSON.stringify(next));
+      } catch {}
+      return next;
+    });
+
+    const now = new Date().toISOString();
+    let updatedCount = 0;
+    const touchedDebts: TreasuryDebt[] = [];
+    const nextDebts = treasuryDebtsRef.current.map((debt) => {
+      if ((debt.category || '').trim().toLowerCase() !== oldClean.toLowerCase()) return debt;
+      updatedCount += 1;
+      const updated: TreasuryDebt = {
+        ...debt,
+        category: newClean,
+        updatedAt: now,
+      };
+      touchedDebts.push(updated);
+      return updated;
+    });
+
+    if (touchedDebts.length > 0) {
+      treasuryDebtsRef.current = nextDebts;
+      setTreasuryDebts(nextDebts);
+      try {
+        localStorage.setItem(STORAGE_KEYS.TREASURY_DEBTS, JSON.stringify(nextDebts));
+      } catch {}
+      touchedDebts.forEach((d) => {
+        pendingSyncTreasuryDebtIdsRef.current.add(d.id);
+        syncTreasuryDebtToFirestore(d)
+          .then(() => pendingSyncTreasuryDebtIdsRef.current.delete(d.id))
+          .catch(() => {});
+      });
+    }
+
+    return { renamed: true, updatedCount, newCategory: newClean };
+  };
+
+  const deleteDebtCategory = (name: string) => {
+    const target = (name || '').trim().toLowerCase();
+    if (!target) return;
+    setCustomDebtCategories((prev) => {
+      const next = prev.filter((c) => c.trim().toLowerCase() !== target);
+      const safeNext = next.length > 0 ? next : ['Otras Deudas'];
+      try {
+        localStorage.setItem(STORAGE_KEYS.DEBT_CATEGORIES, JSON.stringify(safeNext));
+      } catch {}
+      return safeNext;
+    });
+  };
+
+  const nextDebtNumber = (): string => {
+    const year = new Date().getFullYear();
+    const prefix = `DEU-${year}-`;
+    let maxNum = 0;
+    treasuryDebtsRef.current.forEach((d) => {
+      if (d.debtNumber?.startsWith(prefix)) {
+        const n = parseInt(d.debtNumber.slice(prefix.length), 10);
+        if (!Number.isNaN(n) && n > maxNum) maxNum = n;
+      }
+    });
+    return `${prefix}${String(maxNum + 1).padStart(4, '0')}`;
+  };
+
+  const addTreasuryDebt: AppContextType['addTreasuryDebt'] = (data) => {
+    const now = new Date().toISOString();
+    const totalAmountUSD = Math.round(Math.max(0, Number(data.totalAmountUSD) || 0) * 100) / 100;
+    const paidAmountUSD =
+      Math.round(
+        Math.min(totalAmountUSD, Math.max(0, Number(data.initialPaidUSD) || 0)) * 100
+      ) / 100;
+    const remainingAmountUSD = Math.round(Math.max(0, totalAmountUSD - paidAmountUSD) * 100) / 100;
+    const cleanedCategory = (data.category || '').trim() || 'Otras Deudas';
+    addDebtCategory(cleanedCategory);
+
+    const status: DebtStatus =
+      remainingAmountUSD <= 0.009
+        ? 'PAGADA'
+        : data.paymentPlan && data.paymentPlan.installments.length > 0
+          ? 'EN_PLAN'
+          : 'ACTIVA';
+
+    const newDebt: TreasuryDebt = {
+      id: `deu-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      debtNumber: nextDebtNumber(),
+      title: data.title.trim(),
+      creditor: data.creditor.trim() || 'Acreedor general',
+      category: cleanedCategory,
+      priority: data.priority || 'MEDIA',
+      totalAmountUSD,
+      paidAmountUSD,
+      remainingAmountUSD,
+      status,
+      startDate: data.startDate || now.split('T')[0],
+      dueDate: data.dueDate || undefined,
+      paymentPlan: data.paymentPlan,
+      payments: [],
+      notes: data.notes?.trim() || undefined,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    pendingSyncTreasuryDebtIdsRef.current.add(newDebt.id);
+    const nextList = [newDebt, ...treasuryDebtsRef.current];
+    treasuryDebtsRef.current = nextList;
+    setTreasuryDebts(nextList);
+    try {
+      localStorage.setItem(STORAGE_KEYS.TREASURY_DEBTS, JSON.stringify(nextList));
+    } catch {}
+    syncTreasuryDebtToFirestore(newDebt)
+      .then(() => pendingSyncTreasuryDebtIdsRef.current.delete(newDebt.id))
+      .catch(() => {});
+
+    return newDebt;
+  };
+
+  const updateTreasuryDebt: AppContextType['updateTreasuryDebt'] = (id, updates) => {
+    const existing = treasuryDebtsRef.current.find((d) => d.id === id);
+    if (!existing) return null;
+
+    if (updates.category) {
+      addDebtCategory(updates.category);
+    }
+
+    const totalAmountUSD =
+      updates.totalAmountUSD !== undefined
+        ? Math.round(Math.max(0, Number(updates.totalAmountUSD) || 0) * 100) / 100
+        : existing.totalAmountUSD;
+    const paidAmountUSD =
+      updates.paidAmountUSD !== undefined
+        ? Math.round(Math.max(0, Number(updates.paidAmountUSD) || 0) * 100) / 100
+        : existing.paidAmountUSD;
+    const remainingAmountUSD = Math.round(Math.max(0, totalAmountUSD - paidAmountUSD) * 100) / 100;
+
+    const effectivePlan =
+      updates.paymentPlan !== undefined ? updates.paymentPlan : existing.paymentPlan;
+    const computedStatus: DebtStatus =
+      remainingAmountUSD <= 0.009
+        ? 'PAGADA'
+        : effectivePlan && effectivePlan.installments.length > 0
+          ? 'EN_PLAN'
+          : 'ACTIVA';
+
+    const updatedDebt: TreasuryDebt = {
+      ...existing,
+      ...updates,
+      title: updates.title !== undefined ? updates.title.trim() : existing.title,
+      creditor: updates.creditor !== undefined ? updates.creditor.trim() : existing.creditor,
+      category: updates.category !== undefined ? updates.category.trim() : existing.category,
+      totalAmountUSD,
+      paidAmountUSD,
+      remainingAmountUSD,
+      status: updates.status || computedStatus,
+      updatedAt: new Date().toISOString(),
+    };
+
+    pendingSyncTreasuryDebtIdsRef.current.add(updatedDebt.id);
+    const nextList = treasuryDebtsRef.current.map((d) => (d.id === id ? updatedDebt : d));
+    treasuryDebtsRef.current = nextList;
+    setTreasuryDebts(nextList);
+    try {
+      localStorage.setItem(STORAGE_KEYS.TREASURY_DEBTS, JSON.stringify(nextList));
+    } catch {}
+    syncTreasuryDebtToFirestore(updatedDebt)
+      .then(() => pendingSyncTreasuryDebtIdsRef.current.delete(updatedDebt.id))
+      .catch(() => {});
+
+    return updatedDebt;
+  };
+
+  const deleteTreasuryDebt = (id: string) => {
+    recordDeleted('treasuryDebts', [id]);
+    removeTreasuryDebtFromFirestore(id).catch(() => {});
+    const nextList = treasuryDebtsRef.current.filter((d) => d.id !== id);
+    treasuryDebtsRef.current = nextList;
+    setTreasuryDebts(nextList);
+    try {
+      localStorage.setItem(STORAGE_KEYS.TREASURY_DEBTS, JSON.stringify(nextList));
+    } catch {}
+  };
+
+  const saveDebtPaymentPlan: AppContextType['saveDebtPaymentPlan'] = (debtId, plan) => {
+    const existing = treasuryDebtsRef.current.find((d) => d.id === debtId);
+    if (!existing) return null;
+
+    const sortedInstallments = [...(plan.installments || [])]
+      .sort((a, b) => (a.dueDate || '').localeCompare(b.dueDate || ''))
+      .map((inst, idx) => ({
+        ...inst,
+        number: idx + 1,
+        amountUSD: Math.round(Math.max(0, Number(inst.amountUSD) || 0) * 100) / 100,
+      }));
+
+    const lastDueDate =
+      sortedInstallments.length > 0
+        ? sortedInstallments[sortedInstallments.length - 1].dueDate
+        : existing.dueDate;
+
+    const normalizedPlan: DebtPaymentPlan = {
+      ...plan,
+      installmentsCount: sortedInstallments.length,
+      installments: sortedInstallments,
+      updatedAt: new Date().toISOString(),
+    };
+
+    return updateTreasuryDebt(debtId, {
+      paymentPlan: normalizedPlan,
+      dueDate: lastDueDate || existing.dueDate,
+      status:
+        existing.remainingAmountUSD <= 0.009
+          ? 'PAGADA'
+          : sortedInstallments.length > 0
+            ? 'EN_PLAN'
+            : 'ACTIVA',
+    });
+  };
+
+  const recordDebtPayment: AppContextType['recordDebtPayment'] = (debtId, data) => {
+    const debt = treasuryDebtsRef.current.find((d) => d.id === debtId);
+    const account = treasuryAccountsRef.current.find((a) => a.id === data.accountId);
+    if (!debt || !account) return null;
+
+    const rate =
+      Number(data.bcvRate) > 0 ? Number(data.bcvRate) : settingsRef.current.bcvRate || 1;
+    const rawInput = Math.max(0, Number(data.amountInput) || 0);
+    if (rawInput <= 0) return null;
+
+    const effectiveCurrency = data.inputCurrency || account.currency;
+    const amountUSD =
+      effectiveCurrency === 'BS'
+        ? Math.round((rawInput / rate) * 100) / 100
+        : Math.round(rawInput * 100) / 100;
+    const amountBs =
+      effectiveCurrency === 'BS'
+        ? Math.round(rawInput * 100) / 100
+        : Math.round(amountUSD * rate * 100) / 100;
+
+    if (amountUSD <= 0) return null;
+
+    const explicitNativeDelta =
+      account.currency === 'BS' && effectiveCurrency === 'BS'
+        ? -Math.round(rawInput * 100) / 100
+        : account.currency !== 'BS' && effectiveCurrency !== 'BS'
+          ? -Math.round(rawInput * 100) / 100
+          : undefined;
+
+    // 1. Deduct from selected Treasury Account
+    const updatedAccount = applyAccountDelta(account, -amountUSD, rate, explicitNativeDelta);
+
+    const now = new Date().toISOString();
+    const payDate = data.date || now.split('T')[0];
+    const movementId = `mov-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+
+    const matchedInstallment = data.installmentId
+      ? debt.paymentPlan?.installments.find((inst) => inst.id === data.installmentId)
+      : undefined;
+
+    const descriptionText = matchedInstallment
+      ? `Pago Deuda (${debt.debtNumber}): ${debt.title} · Cuota #${matchedInstallment.number}`
+      : `Abono a Deuda (${debt.debtNumber}): ${debt.title}`;
+
+    // 2. Optionally mirror into Gastos del Negocio
+    let createdExpense: BusinessExpense | undefined;
+    if (data.syncToExpense) {
+      const mapped = mapAccountToExpensePayment(account);
+      createdExpense = addExpense({
+        date: payDate,
+        category: `Pago de Deuda · ${debt.category}`,
+        description: descriptionText,
+        beneficiary: debt.creditor || undefined,
+        amountUSD,
+        amountBs,
+        bcvRate: rate,
+        paymentCurrencyType: mapped.currencyType,
+        paymentMethod: mapped.method,
+        reference: data.reference?.trim() || undefined,
+        notes: data.notes?.trim() || undefined,
+        treasuryAccountId: account.id,
+        treasuryAccountName: account.name,
+        treasuryMovementId: movementId,
+        skipTreasuryDeduction: true,
+        skipCommitmentDeduction: true,
+      });
+    }
+
+    // 3. Create TreasuryMovement
+    const newMovement: TreasuryMovement = {
+      id: movementId,
+      movementNumber: nextMovementNumber(),
+      date: payDate,
+      type: 'PAGO_PLANIFICADO',
+      accountId: account.id,
+      accountName: account.name,
+      accountGroup: account.group,
+      category: `Deuda · ${debt.category}`,
+      description: descriptionText,
+      amountUSD,
+      bcvRate: rate,
+      amountBs,
+      reference: data.reference?.trim() || undefined,
+      expenseId: createdExpense?.id,
+      debtId: debt.id,
+      notes: data.notes?.trim() || (debt.creditor ? `Acreedor: ${debt.creditor}` : undefined),
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    pendingSyncTreasuryMovementIdsRef.current.add(newMovement.id);
+    const nextMovements = [newMovement, ...treasuryMovementsRef.current].sort(
+      (a, b) =>
+        (b.date || b.createdAt || '').localeCompare(a.date || a.createdAt || '') ||
+        (b.createdAt || '').localeCompare(a.createdAt || '')
+    );
+    treasuryMovementsRef.current = nextMovements;
+    setTreasuryMovements(nextMovements);
+    try {
+      localStorage.setItem(STORAGE_KEYS.TREASURY_MOVEMENTS, JSON.stringify(nextMovements));
+    } catch {}
+    syncTreasuryMovementToFirestore(newMovement)
+      .then(() => pendingSyncTreasuryMovementIdsRef.current.delete(newMovement.id))
+      .catch(() => {});
+
+    // 4. Update linked commitment if this installment had been scheduled
+    if (matchedInstallment?.linkedCommitmentId) {
+      const linkedCm = treasuryCommitmentsRef.current.find(
+        (c) => c.id === matchedInstallment.linkedCommitmentId
+      );
+      if (linkedCm && !linkedCm.isPaid) {
+        updateTreasuryCommitment(linkedCm.id, {
+          isPaid: true,
+          paidAt: now,
+          paidAccountId: account.id,
+          paidAccountName: account.name,
+          reservedUSD: linkedCm.amountUSD,
+        });
+      }
+    }
+
+    // 5. Update Debt record
+    const paymentRecord: DebtPaymentRecord = {
+      id: `dpay-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      date: payDate,
+      amountUSD,
+      amountBs,
+      bcvRate: rate,
+      accountId: account.id,
+      accountName: account.name,
+      reference: data.reference?.trim() || undefined,
+      notes: data.notes?.trim() || undefined,
+      installmentId: matchedInstallment?.id,
+      installmentNumber: matchedInstallment?.number,
+      treasuryMovementId: newMovement.id,
+      createdAt: now,
+    };
+
+    const nextPaidUSD =
+      Math.round(((Number(debt.paidAmountUSD) || 0) + amountUSD) * 100) / 100;
+    const nextRemainingUSD =
+      Math.round(Math.max(0, (Number(debt.totalAmountUSD) || 0) - nextPaidUSD) * 100) / 100;
+
+    let nextPlan = debt.paymentPlan;
+    if (nextPlan && matchedInstallment) {
+      nextPlan = {
+        ...nextPlan,
+        installments: nextPlan.installments.map((inst) =>
+          inst.id === matchedInstallment.id
+            ? {
+                ...inst,
+                status: 'PAGADA' as const,
+                paidAt: now,
+                paidAccountId: account.id,
+                paidAccountName: account.name,
+                reference: data.reference?.trim() || undefined,
+              }
+            : inst
+        ),
+        updatedAt: now,
+      };
+    }
+
+    const updatedDebt = updateTreasuryDebt(debt.id, {
+      paidAmountUSD: nextPaidUSD,
+      remainingAmountUSD: nextRemainingUSD,
+      paymentPlan: nextPlan,
+      payments: [paymentRecord, ...(debt.payments || [])],
+      status:
+        nextRemainingUSD <= 0.009
+          ? 'PAGADA'
+          : nextPlan && nextPlan.installments.length > 0
+            ? 'EN_PLAN'
+            : 'ACTIVA',
+    });
+
+    return {
+      debt: updatedDebt || debt,
+      payment: paymentRecord,
+      movement: newMovement,
+      account: updatedAccount,
+      expense: createdExpense,
+    };
+  };
+
+  const scheduleDebtInstallmentToCommitments: AppContextType['scheduleDebtInstallmentToCommitments'] = (
+    debtId,
+    installmentId
+  ) => {
+    const debt = treasuryDebtsRef.current.find((d) => d.id === debtId);
+    if (!debt || !debt.paymentPlan) return null;
+    const inst = debt.paymentPlan.installments.find((i) => i.id === installmentId);
+    if (!inst || inst.status === 'PAGADA') return null;
+
+    if (inst.linkedCommitmentId) {
+      const existing = treasuryCommitmentsRef.current.find(
+        (c) => c.id === inst.linkedCommitmentId
+      );
+      if (existing) return existing;
+    }
+
+    const plan = debt.paymentPlan;
+    const isBs = plan.paymentCurrency === 'BS';
+    const rate =
+      isBs && Number(plan.appliedExchangeRate) > 0
+        ? Number(plan.appliedExchangeRate)
+        : settingsRef.current.bcvRate || 1;
+
+    const createdCommitment = addTreasuryCommitment({
+      title: `Deuda: ${debt.title} · Cuota #${inst.number}`,
+      category: 'GASTOS_FIJOS',
+      dueDate: inst.dueDate,
+      amountUSD: inst.amountUSD,
+      bcvRate: rate,
+      paymentCurrency: isBs ? 'BS' : 'EFECTIVO_USD',
+      exchangeRateType: isBs ? plan.exchangeRateType || 'BCV' : undefined,
+      appliedExchangeRate: isBs ? rate : undefined,
+      notes: `Plan de pago ${debt.debtNumber} · Acreedor: ${debt.creditor} · Categoría: ${debt.category}`,
+    });
+
+    const updatedPlan: DebtPaymentPlan = {
+      ...plan,
+      installments: plan.installments.map((item) =>
+        item.id === installmentId
+          ? { ...item, linkedCommitmentId: createdCommitment.id }
+          : item
+      ),
+      updatedAt: new Date().toISOString(),
+    };
+
+    updateTreasuryDebt(debt.id, { paymentPlan: updatedPlan });
+    return createdCommitment;
+  };
+
+  const totalPendingDebtsUSD = useMemo(() => {
+    return (
+      Math.round(
+        treasuryDebts
+          .filter((d) => d.status !== 'PAGADA' && d.remainingAmountUSD > 0.009)
+          .reduce((sum, d) => sum + (Number(d.remainingAmountUSD) || 0), 0) * 100
+      ) / 100
+    );
+  }, [treasuryDebts]);
+
+  const totalPendingDebtsBs = totalPendingDebtsUSD * settings.bcvRate;
 
   // Online Store Orders
   const placeOnlineOrder = (
@@ -8011,6 +8956,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     setTreasuryAccounts([]);
     setTreasuryCommitments([]);
     setTreasuryMovements([]);
+    setTreasuryDebts([]);
     setCart([]);
     localStorage.clear();
   };
@@ -8109,6 +9055,9 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
         expenseCategories,
         addExpenseCategory,
         deleteExpenseCategory,
+        expensePosBanks,
+        addExpensePosBank,
+        deleteExpensePosBank,
         addExpense,
         updateExpense,
         deleteExpense,
@@ -8136,6 +9085,19 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
         pendingCommitmentsBs,
         projectedFreeBalanceUSD,
         projectedFreeBalanceBs,
+        treasuryDebts,
+        debtCategories,
+        addDebtCategory,
+        renameDebtCategory,
+        deleteDebtCategory,
+        addTreasuryDebt,
+        updateTreasuryDebt,
+        deleteTreasuryDebt,
+        saveDebtPaymentPlan,
+        recordDebtPayment,
+        scheduleDebtInstallmentToCommitments,
+        totalPendingDebtsUSD,
+        totalPendingDebtsBs,
         onlineOrders,
         placeOnlineOrder,
         updateOrderStatus,

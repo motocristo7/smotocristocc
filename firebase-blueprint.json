@@ -280,7 +280,7 @@
     },
     "BusinessExpense": {
       "title": "BusinessExpense",
-      "description": "Gasto operativo del negocio (sueldos, papelería, limpieza, servicios) con método de pago en Bs, USDT, Efectivo Bs o Efectivo USD",
+      "description": "Gasto operativo del negocio (sueldos, papelería, limpieza, servicios) con método de pago en Bs, Punto de Venta (Tarjeta), USDT, Efectivo Bs o Efectivo USD",
       "type": "object",
       "properties": {
         "id": { "type": "string", "description": "ID único del gasto" },
@@ -292,8 +292,9 @@
         "amountUSD": { "type": "number", "description": "Monto en USD" },
         "bcvRate": { "type": "number", "description": "Tasa BCV aplicada" },
         "amountBs": { "type": "number", "description": "Monto equivalente en Bolívares" },
-        "paymentCurrencyType": { "type": "string", "description": "BS, USDT, EFECTIVO_BS o EFECTIVO_USD" },
+        "paymentCurrencyType": { "type": "string", "description": "BS, PUNTO_VENTA, USDT, EFECTIVO_BS o EFECTIVO_USD" },
         "paymentMethod": { "type": "string", "description": "Descripción del método de pago" },
+        "cardBank": { "type": "string", "description": "Banco de la tarjeta usada en Punto de Venta (Banesco Personal, Provincial u otro banco registrado)" },
         "reference": { "type": "string", "description": "Referencia de pago" },
         "treasuryAccountId": { "type": "string", "description": "ID de la cuenta de tesorería de donde se descontó el gasto" },
         "treasuryAccountName": { "type": "string", "description": "Nombre de la cuenta de tesorería afectada" },
@@ -369,9 +370,31 @@
         "saleInvoiceNumber": { "type": "string", "description": "Número de factura de la venta vinculada" },
         "salaryAdvanceCommitmentId": { "type": "string", "description": "ID del compromiso de sueldo descontado por vale" },
         "salaryAdvanceAppliedUSD": { "type": "number", "description": "Monto USD descontado del compromiso de sueldo" },
+        "debtId": { "type": "string", "description": "ID de la deuda vinculada al pago o abono" },
         "createdAt": { "type": "string", "description": "Fecha de creación ISO" }
       },
       "required": ["id", "movementNumber", "date", "type", "accountId", "description", "amountUSD", "createdAt"]
+    },
+    "TreasuryDebt": {
+      "title": "TreasuryDebt",
+      "description": "Deuda del negocio con categoría editable, plan de pago en cuotas/abonos e historial de pagos descontados de cuentas de tesorería",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "ID único de la deuda" },
+        "debtNumber": { "type": "string", "description": "Correlativo DEU-YYYY-XXXX" },
+        "title": { "type": "string", "description": "Concepto o motivo de la deuda" },
+        "creditor": { "type": "string", "description": "Acreedor (banco, proveedor, socio o persona)" },
+        "category": { "type": "string", "description": "Categoría editable de la deuda" },
+        "priority": { "type": "string", "description": "ALTA, MEDIA o BAJA" },
+        "totalAmountUSD": { "type": "number", "description": "Monto total original en USD" },
+        "paidAmountUSD": { "type": "number", "description": "Monto acumulado pagado en USD" },
+        "remainingAmountUSD": { "type": "number", "description": "Saldo restante por pagar en USD" },
+        "status": { "type": "string", "description": "ACTIVA, EN_PLAN o PAGADA" },
+        "startDate": { "type": "string", "description": "Fecha de registro YYYY-MM-DD" },
+        "dueDate": { "type": "string", "description": "Fecha límite objetivo YYYY-MM-DD" },
+        "createdAt": { "type": "string", "description": "Fecha de creación ISO" }
+      },
+      "required": ["id", "debtNumber", "title", "creditor", "category", "totalAmountUSD", "paidAmountUSD", "remainingAmountUSD", "status", "createdAt"]
     }
   },
   "firestore": {
@@ -442,6 +465,10 @@
     "/treasuryMovements/{movementId}": {
       "schema": { "$ref": "#/entities/TreasuryMovement" },
       "description": "Historial de ingresos, egresos y pagos ejecutados en tesorería"
+    },
+    "/treasuryDebts/{debtId}": {
+      "schema": { "$ref": "#/entities/TreasuryDebt" },
+      "description": "Deudas del negocio con categorías editables y planificación de pagos"
     }
   }
 }

@@ -1140,7 +1140,8 @@ export const PosView: React.FC = () => {
                 />
                 <input
                   type="number"
-                  step="0.5"
+                  step="any"
+                  min="0"
                   required
                   value={customServicePriceUSD}
                   onChange={(e) => setCustomServicePriceUSD(Number(e.target.value))}
@@ -1643,7 +1644,7 @@ export const PosView: React.FC = () => {
                               <span className="text-[11px] font-bold text-slate-400 mr-0.5">$</span>
                               <input
                                 type="number"
-                                step="0.01"
+                                step="any"
                                 min="0"
                                 value={item.customPrice !== undefined ? item.customPrice : item.product.salePrice}
                                 onChange={(e) => handleUpdateUnitPrice(item.product.id, e.target.value)}
@@ -1833,7 +1834,7 @@ export const PosView: React.FC = () => {
                         <div className="relative">
                           <input
                             type="number"
-                            step="0.5"
+                            step="any"
                             min="0"
                             max="100"
                             value={mlCommissionRate}
@@ -1853,7 +1854,7 @@ export const PosView: React.FC = () => {
                           <span className="absolute left-2 top-1.5 text-xs text-slate-400 font-bold">$</span>
                           <input
                             type="number"
-                            step="0.01"
+                            step="any"
                             min="0"
                             value={mlCommissionUSD}
                             onChange={(e) => setMlCommissionUSD(e.target.value === '' ? '' : Number(e.target.value))}
@@ -1998,7 +1999,7 @@ export const PosView: React.FC = () => {
                       </label>
                       <input
                         type="number"
-                        step="1"
+                        step="any"
                         min="0"
                         max={totalUSD}
                         value={creditPaidAmount}
@@ -2068,7 +2069,8 @@ export const PosView: React.FC = () => {
                   <label className="block text-[10px] font-semibold text-slate-600 mb-1">Descuento ($ USD):</label>
                   <input
                     type="number"
-                    step="0.5"
+                    step="any"
+                    min="0"
                     value={discountUSD || ''}
                     onChange={(e) => setDiscountUSD(Number(e.target.value))}
                     placeholder="0.00"
@@ -2396,8 +2398,8 @@ export const PosView: React.FC = () => {
                       <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-400">$</span>
                       <input
                         type="number"
-                        step="0.01"
-                        min="0.01"
+                        step="any"
+                        min="0"
                         required
                         value={quickPriceUSD}
                         onChange={(e) => setQuickPriceUSD(e.target.value === '' ? '' : Number(e.target.value))}
@@ -2415,7 +2417,7 @@ export const PosView: React.FC = () => {
                       <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-400">$</span>
                       <input
                         type="number"
-                        step="0.01"
+                        step="any"
                         min="0"
                         value={quickCostUSD}
                         onChange={(e) => setQuickCostUSD(e.target.value === '' ? '' : Number(e.target.value))}
@@ -2726,7 +2728,7 @@ export const PosView: React.FC = () => {
                       <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-400">$</span>
                       <input
                         type="number"
-                        step="0.01"
+                        step="any"
                         min="0"
                         required
                         value={editPriceUSD}
@@ -2744,7 +2746,7 @@ export const PosView: React.FC = () => {
                       <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs font-bold text-slate-400">$</span>
                       <input
                         type="number"
-                        step="0.01"
+                        step="any"
                         min="0"
                         value={editCostUSD}
                         onChange={(e) => setEditCostUSD(e.target.value === '' ? '' : Number(e.target.value))}

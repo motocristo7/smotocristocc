@@ -1074,7 +1074,8 @@ export const InventoryView: React.FC = () => {
                   <label className="block font-semibold text-slate-700 mb-1">Precio Costo ($ USD)</label>
                   <input
                     type="number"
-                    step="0.5"
+                    step="any"
+                    min="0"
                     value={formData.costPrice}
                     onChange={(e) => setFormData({ ...formData, costPrice: Number(e.target.value) })}
                     className="w-full p-2.5 rounded-lg border border-slate-200 bg-slate-50 font-mono"
@@ -1085,7 +1086,8 @@ export const InventoryView: React.FC = () => {
                   <label className="block font-semibold text-slate-700 mb-1">Precio Venta ($ USD) *</label>
                   <input
                     type="number"
-                    step="0.5"
+                    step="any"
+                    min="0"
                     required
                     value={formData.salePrice}
                     onChange={(e) => setFormData({ ...formData, salePrice: Number(e.target.value) })}

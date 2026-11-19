@@ -2212,7 +2212,7 @@ export const PurchaseOrdersView: React.FC = () => {
                         </label>
                         <input
                           type="number"
-                          step="0.01"
+                          step="any"
                           min={0}
                           value={customPartCost}
                           onChange={(e) => setCustomPartCost(e.target.value)}
@@ -2226,8 +2226,8 @@ export const PurchaseOrdersView: React.FC = () => {
                         </label>
                         <input
                           type="number"
-                          step="0.01"
-                          min={0.01}
+                          step="any"
+                          min={0}
                           value={customPartSalePrice}
                           onChange={(e) => setCustomPartSalePrice(e.target.value)}
                           placeholder="0.00"
@@ -2375,7 +2375,7 @@ export const PurchaseOrdersView: React.FC = () => {
                                   </span>
                                   <input
                                     type="number"
-                                    step="0.01"
+                                    step="any"
                                     min={0}
                                     value={it.unitCostUSD}
                                     onChange={(e) =>
@@ -2390,7 +2390,7 @@ export const PurchaseOrdersView: React.FC = () => {
                                   </span>
                                   <input
                                     type="number"
-                                    step="0.01"
+                                    step="any"
                                     min={0}
                                     value={it.salePriceUSD ?? ''}
                                     onChange={(e) =>
@@ -2894,8 +2894,8 @@ export const PurchaseOrdersView: React.FC = () => {
                           <div className="flex items-center gap-3">
                             <input
                               type="number"
-                              step="0.01"
-                              min={0.01}
+                              step="any"
+                              min={0}
                               max={ordTotalUSD || undefined}
                               value={ordInitialPaidUSD}
                               onChange={(e) => setOrdInitialPaidUSD(e.target.value)}
@@ -3116,8 +3116,8 @@ export const PurchaseOrdersView: React.FC = () => {
                 </div>
                 <input
                   type="number"
-                  step="0.01"
-                  min={0.01}
+                  step="any"
+                  min={0}
                   required
                   value={abonoAmountUSD}
                   onChange={(e) => setAbonoAmountUSD(e.target.value)}

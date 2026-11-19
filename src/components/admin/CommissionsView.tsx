@@ -1707,7 +1707,7 @@ export const CommissionsView: React.FC = () => {
                       required
                       min="0"
                       max="100"
-                      step="0.5"
+                      step="any"
                       value={techForm.commissionRate}
                       onChange={(e) => setTechForm({ ...techForm, commissionRate: e.target.value })}
                       className="w-full py-2.5 bg-transparent font-mono font-bold text-slate-900 focus:outline-none"
@@ -1954,8 +1954,8 @@ export const CommissionsView: React.FC = () => {
                     <input
                       type="number"
                       required
-                      min="0.01"
-                      step="0.01"
+                      min="0"
+                      step="any"
                       value={commForm.baseAmountUSD}
                       onChange={(e) => setCommForm({ ...commForm, baseAmountUSD: e.target.value })}
                       className="w-full py-2.5 bg-transparent font-mono font-bold text-slate-900 focus:outline-none"
@@ -1973,7 +1973,7 @@ export const CommissionsView: React.FC = () => {
                       required
                       min="0"
                       max="100"
-                      step="0.5"
+                      step="any"
                       value={commForm.commissionRate}
                       onChange={(e) => setCommForm({ ...commForm, commissionRate: e.target.value })}
                       className="w-full py-2.5 bg-transparent font-mono font-bold text-slate-900 focus:outline-none"

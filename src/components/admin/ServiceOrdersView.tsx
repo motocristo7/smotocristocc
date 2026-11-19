@@ -907,7 +907,7 @@ const ServicePartsPicker: React.FC<ServicePartsPickerProps> = ({
                 <span className="text-slate-400 text-xs font-mono mr-1">$</span>
                 <input
                   type="number"
-                  step="0.5"
+                  step="any"
                   min="0"
                   value={customPrice}
                   onChange={(e) => setCustomPrice(e.target.value)}
@@ -1034,7 +1034,7 @@ const SelectedPartsTable: React.FC<SelectedPartsTableProps> = ({
                   <span className="text-slate-400 font-mono text-[10px]">$</span>
                   <input
                     type="number"
-                    step="0.5"
+                    step="any"
                     min="0"
                     value={item.unitPrice}
                     onChange={(e) => onUpdatePrice(pIdx, parseFloat(e.target.value) || 0)}
@@ -3354,7 +3354,7 @@ export const ServiceOrdersView: React.FC = () => {
                         <span className="text-slate-400 text-xs font-mono mr-1">$</span>
                         <input
                           type="number"
-                          step="0.5"
+                          step="any"
                           min="0"
                           value={newServiceCost}
                           onChange={(e) => setNewServiceCost(e.target.value)}
@@ -3432,7 +3432,7 @@ export const ServiceOrdersView: React.FC = () => {
                                 <span className="text-slate-400 font-mono text-[10px]">$</span>
                                 <input
                                   type="number"
-                                  step="0.5"
+                                  step="any"
                                   min="0"
                                   value={srv.cost}
                                   onChange={(e) =>
@@ -3471,7 +3471,8 @@ export const ServiceOrdersView: React.FC = () => {
                     </label>
                     <input
                       type="number"
-                      step="0.5"
+                      step="any"
+                      min="0"
                       required
                       readOnly={orderForm.servicesList.length > 0}
                       value={
@@ -3761,7 +3762,7 @@ export const ServiceOrdersView: React.FC = () => {
                         <span className="text-slate-400 text-xs font-mono mr-1">$</span>
                         <input
                           type="number"
-                          step="0.5"
+                          step="any"
                           min="0"
                           value={editServiceCost}
                           onChange={(e) => setEditServiceCost(e.target.value)}
@@ -3846,7 +3847,7 @@ export const ServiceOrdersView: React.FC = () => {
                                 <span className="text-slate-400 font-mono text-[10px]">$</span>
                                 <input
                                   type="number"
-                                  step="0.5"
+                                  step="any"
                                   min="0"
                                   value={srv.cost}
                                   onChange={(e) => handleUpdateServiceCostInEdit(sIdx, parseFloat(e.target.value) || 0)}
@@ -3882,7 +3883,7 @@ export const ServiceOrdersView: React.FC = () => {
                       <span className="font-mono font-bold text-slate-500">$</span>
                       <input
                         type="number"
-                        step="0.5"
+                        step="any"
                         min="0"
                         value={editForm.laborCost}
                         onChange={(e) => setEditForm({ ...editForm, laborCost: parseFloat(e.target.value) || 0 })}

@@ -391,7 +391,8 @@
         "remainingAmountUSD": { "type": "number", "description": "Saldo restante por pagar en USD" },
         "status": { "type": "string", "description": "ACTIVA, EN_PLAN o PAGADA" },
         "startDate": { "type": "string", "description": "Fecha de registro YYYY-MM-DD" },
-        "dueDate": { "type": "string", "description": "Fecha límite objetivo YYYY-MM-DD" },
+        "dueDate": { "type": "string", "description": "Fecha límite objetivo / fin estimado del plan YYYY-MM-DD" },
+        "paymentPlan": { "type": "object", "description": "Plan de pago con frecuencia (semanal/quincenal/mensual), monto por cuota, días seleccionados, cuotas y fecha estimada de finalización" },
         "createdAt": { "type": "string", "description": "Fecha de creación ISO" }
       },
       "required": ["id", "debtNumber", "title", "creditor", "category", "totalAmountUSD", "paidAmountUSD", "remainingAmountUSD", "status", "createdAt"]

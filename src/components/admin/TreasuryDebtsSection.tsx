@@ -32,6 +32,8 @@ import {
   Receipt,
   SlidersHorizontal,
   History,
+  Calculator,
+  Flag,
 } from 'lucide-react';
 
 interface TreasuryDebtsSectionProps {
@@ -60,31 +62,90 @@ const FREQUENCY_LABELS: Record<DebtPaymentFrequency, string> = {
   UNICO: 'Pago único',
 };
 
-function addDaysToIso(isoDate: string, days: number): string {
+const MAX_PLAN_INSTALLMENTS = 120;
+
+const WEEKDAY_OPTIONS: { value: number; short: string; label: string }[] = [
+  { value: 1, short: 'Lun', label: 'Lunes' },
+  { value: 2, short: 'Mar', label: 'Martes' },
+  { value: 3, short: 'Mié', label: 'Miércoles' },
+  { value: 4, short: 'Jue', label: 'Jueves' },
+  { value: 5, short: 'Vie', label: 'Viernes' },
+  { value: 6, short: 'Sáb', label: 'Sábado' },
+  { value: 0, short: 'Dom', label: 'Domingo' },
+];
+
+const WEEKDAY_SHORT_BY_INDEX = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];
+const MONTH_SHORT_ES = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
+
+interface ScheduleDayOptions {
+  paymentWeekdays: number[];
+  biweeklyMode: 'FIXED_DAYS' | 'EVERY_15_DAYS';
+  biweeklyDays: [number, number];
+  monthlyDay: number;
+}
+
+function round2(n: number): number {
+  return Math.round(n * 100) / 100;
+}
+
+function parseIsoLocal(isoDate: string): Date {
   const parts = isoDate.split('-').map(Number);
-  const d =
-    parts.length === 3 && !parts.some(Number.isNaN)
-      ? new Date(parts[0], parts[1] - 1, parts[2])
-      : new Date();
-  d.setDate(d.getDate() + days);
+  if (parts.length === 3 && !parts.some(Number.isNaN)) {
+    return new Date(parts[0], parts[1] - 1, parts[2]);
+  }
+  const now = new Date();
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate());
+}
+
+function formatIsoLocal(d: Date): string {
   const y = d.getFullYear();
   const m = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');
   return `${y}-${m}-${day}`;
 }
 
+function formatPrettyDateES(isoDate?: string): string {
+  if (!isoDate) return '—';
+  const d = parseIsoLocal(isoDate);
+  return `${WEEKDAY_SHORT_BY_INDEX[d.getDay()]} ${String(d.getDate()).padStart(2, '0')} ${MONTH_SHORT_ES[d.getMonth()]} ${d.getFullYear()}`;
+}
+
+function getWeekdayShortES(isoDate?: string): string {
+  if (!isoDate) return '';
+  return WEEKDAY_SHORT_BY_INDEX[parseIsoLocal(isoDate).getDay()] || '';
+}
+
+function formatDurationBetweenES(startIso?: string, endIso?: string): string {
+  if (!startIso || !endIso) return '';
+  const start = parseIsoLocal(startIso);
+  const end = parseIsoLocal(endIso);
+  const diffDays = Math.max(0, Math.round((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)));
+  if (diffDays === 0) return 'mismo día';
+  if (diffDays < 7) return `${diffDays} día${diffDays === 1 ? '' : 's'}`;
+  if (diffDays < 60) {
+    const weeks = Math.floor(diffDays / 7);
+    const remDays = diffDays % 7;
+    if (remDays === 0) return `${weeks} semana${weeks === 1 ? '' : 's'} (${diffDays} días)`;
+    return `${weeks} sem y ${remDays} día${remDays === 1 ? '' : 's'} (${diffDays} días)`;
+  }
+  const months = Math.floor(diffDays / 30);
+  const remDays = diffDays % 30;
+  if (remDays === 0) return `${months} mes${months === 1 ? '' : 'es'} (${diffDays} días)`;
+  return `${months} mes${months === 1 ? '' : 'es'} y ${remDays} día${remDays === 1 ? '' : 's'}`;
+}
+
+function addDaysToIso(isoDate: string, days: number): string {
+  const d = parseIsoLocal(isoDate);
+  d.setDate(d.getDate() + days);
+  return formatIsoLocal(d);
+}
+
 function addMonthsToIso(isoDate: string, months: number): string {
-  const parts = isoDate.split('-').map(Number);
-  const baseYear = parts.length === 3 && !parts.some(Number.isNaN) ? parts[0] : new Date().getFullYear();
-  const baseMonth = parts.length === 3 && !parts.some(Number.isNaN) ? parts[1] - 1 : new Date().getMonth();
-  const baseDay = parts.length === 3 && !parts.some(Number.isNaN) ? parts[2] : new Date().getDate();
-  const target = new Date(baseYear, baseMonth + months, 1);
+  const base = parseIsoLocal(isoDate);
+  const target = new Date(base.getFullYear(), base.getMonth() + months, 1);
   const lastDay = new Date(target.getFullYear(), target.getMonth() + 1, 0).getDate();
-  target.setDate(Math.min(baseDay, lastDay));
-  const y = target.getFullYear();
-  const m = String(target.getMonth() + 1).padStart(2, '0');
-  const day = String(target.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
+  target.setDate(Math.min(base.getDate(), lastDay));
+  return formatIsoLocal(target);
 }
 
 function stepDateByFrequency(startDate: string, index: number, frequency: DebtPaymentFrequency): string {
@@ -94,34 +155,194 @@ function stepDateByFrequency(startDate: string, index: number, frequency: DebtPa
   return addMonthsToIso(startDate, index);
 }
 
-function generateInstallmentsSchedule(
+function generatePlanDates(
+  count: number,
+  startDate: string,
+  frequency: DebtPaymentFrequency,
+  dayOpts: ScheduleDayOptions
+): string[] {
+  const safeCount = Math.max(1, Math.min(MAX_PLAN_INSTALLMENTS, Math.floor(count) || 1));
+  const start = parseIsoLocal(startDate);
+  const startIso = formatIsoLocal(start);
+
+  if (frequency === 'UNICO') {
+    return [startIso];
+  }
+
+  if (frequency === 'SEMANAL') {
+    const activeWeekdays =
+      dayOpts.paymentWeekdays.length > 0 ? dayOpts.paymentWeekdays : [start.getDay()];
+    const activeSet = new Set(activeWeekdays);
+    const dates: string[] = [];
+    const cursor = new Date(start.getFullYear(), start.getMonth(), start.getDate());
+    let guard = 0;
+    while (dates.length < safeCount && guard < 3650) {
+      if (activeSet.has(cursor.getDay())) {
+        dates.push(formatIsoLocal(cursor));
+      }
+      cursor.setDate(cursor.getDate() + 1);
+      guard += 1;
+    }
+    return dates;
+  }
+
+  if (frequency === 'QUINCENAL') {
+    if (dayOpts.biweeklyMode === 'EVERY_15_DAYS') {
+      const dates: string[] = [];
+      for (let i = 0; i < safeCount; i++) {
+        dates.push(addDaysToIso(startIso, i * 15));
+      }
+      return dates;
+    }
+    const rawD1 = Math.max(1, Math.min(31, Math.floor(dayOpts.biweeklyDays[0]) || 15));
+    const rawD2 = Math.max(1, Math.min(31, Math.floor(dayOpts.biweeklyDays[1]) || 30));
+    const dates: string[] = [];
+    let year = start.getFullYear();
+    let month = start.getMonth();
+    let guard = 0;
+    while (dates.length < safeCount && guard < 180) {
+      const lastDay = new Date(year, month + 1, 0).getDate();
+      const candidates = Array.from(
+        new Set([Math.min(rawD1, lastDay), Math.min(rawD2, lastDay)])
+      ).sort((a, b) => a - b);
+      for (const day of candidates) {
+        const candidateIso = formatIsoLocal(new Date(year, month, day));
+        if (candidateIso >= startIso) {
+          dates.push(candidateIso);
+          if (dates.length >= safeCount) break;
+        }
+      }
+      month += 1;
+      if (month > 11) {
+        month = 0;
+        year += 1;
+      }
+      guard += 1;
+    }
+    return dates;
+  }
+
+  // MENSUAL
+  const targetDay = Math.max(1, Math.min(31, Math.floor(dayOpts.monthlyDay) || start.getDate()));
+  let year = start.getFullYear();
+  let month = start.getMonth();
+  const firstMonthLastDay = new Date(year, month + 1, 0).getDate();
+  const firstCandidate = formatIsoLocal(new Date(year, month, Math.min(targetDay, firstMonthLastDay)));
+  if (firstCandidate < startIso) {
+    month += 1;
+    if (month > 11) {
+      month = 0;
+      year += 1;
+    }
+  }
+  const dates: string[] = [];
+  for (let i = 0; i < safeCount; i++) {
+    const target = new Date(year, month + i, 1);
+    const lastDay = new Date(target.getFullYear(), target.getMonth() + 1, 0).getDate();
+    target.setDate(Math.min(targetDay, lastDay));
+    dates.push(formatIsoLocal(target));
+  }
+  return dates;
+}
+
+function buildInstallmentsByCount(
   remainingAmountUSD: number,
   count: number,
   startDate: string,
   frequency: DebtPaymentFrequency,
+  dayOpts: ScheduleDayOptions,
   existingPaidInstallments: DebtInstallment[] = []
 ): DebtInstallment[] {
-  const safeCount = Math.max(1, Math.min(48, Math.floor(count) || 1));
-  const safeAmount = Math.round(Math.max(0, remainingAmountUSD) * 100) / 100;
+  const safeCount =
+    frequency === 'UNICO' ? 1 : Math.max(1, Math.min(MAX_PLAN_INSTALLMENTS, Math.floor(count) || 1));
+  const safeAmount = round2(Math.max(0, remainingAmountUSD));
   const baseInstallment = Math.floor((safeAmount / safeCount) * 100) / 100;
   const remainderCents = Math.round((safeAmount - baseInstallment * safeCount) * 100);
-
-  const generatedPending: DebtInstallment[] = [];
+  const dates = generatePlanDates(safeCount, startDate, frequency, dayOpts);
   const startNumber = existingPaidInstallments.length + 1;
 
-  for (let i = 0; i < safeCount; i++) {
-    const extraCent = i === safeCount - 1 ? remainderCents / 100 : 0;
-    const amountUSD = Math.round((baseInstallment + extraCent) * 100) / 100;
+  const generatedPending: DebtInstallment[] = dates.map((dueDate, i) => {
+    const extraCent = i === dates.length - 1 ? remainderCents / 100 : 0;
+    const amountUSD = round2(baseInstallment + extraCent);
+    return {
+      id: `inst-${Date.now()}-${i}-${Math.random().toString(36).slice(2, 5)}`,
+      number: startNumber + i,
+      dueDate,
+      amountUSD,
+      status: 'PENDIENTE',
+    };
+  });
+
+  return [...existingPaidInstallments, ...generatedPending];
+}
+
+function buildInstallmentsByAmount(
+  remainingAmountUSD: number,
+  installmentAmountUSD: number,
+  startDate: string,
+  frequency: DebtPaymentFrequency,
+  dayOpts: ScheduleDayOptions,
+  existingPaidInstallments: DebtInstallment[] = []
+): { installments: DebtInstallment[]; count: number; rawCount: number; capped: boolean } {
+  const safeRemaining = round2(Math.max(0, remainingAmountUSD));
+  const safePerInstallment = round2(Math.max(0, installmentAmountUSD));
+
+  if (safeRemaining <= 0.009) {
+    return { installments: [...existingPaidInstallments], count: 0, rawCount: 0, capped: false };
+  }
+
+  if (frequency === 'UNICO' || safePerInstallment <= 0 || safePerInstallment >= safeRemaining - 0.009) {
+    const dates = generatePlanDates(1, startDate, frequency, dayOpts);
+    const startNumber = existingPaidInstallments.length + 1;
+    return {
+      installments: [
+        ...existingPaidInstallments,
+        {
+          id: `inst-${Date.now()}-0-${Math.random().toString(36).slice(2, 5)}`,
+          number: startNumber,
+          dueDate: dates[0],
+          amountUSD: safeRemaining,
+          status: 'PENDIENTE',
+        },
+      ],
+      count: 1,
+      rawCount: 1,
+      capped: false,
+    };
+  }
+
+  const fullCount = Math.floor((safeRemaining + 0.0001) / safePerInstallment);
+  const remainder = round2(safeRemaining - fullCount * safePerInstallment);
+  const rawCount = remainder > 0.009 ? fullCount + 1 : Math.max(1, fullCount);
+  const capped = rawCount > MAX_PLAN_INSTALLMENTS;
+  const effectiveCount = Math.min(MAX_PLAN_INSTALLMENTS, rawCount);
+  const dates = generatePlanDates(effectiveCount, startDate, frequency, dayOpts);
+  const startNumber = existingPaidInstallments.length + 1;
+
+  const generatedPending: DebtInstallment[] = [];
+  let accumulated = 0;
+
+  for (let i = 0; i < effectiveCount; i++) {
+    const isLast = i === effectiveCount - 1;
+    const amountUSD = isLast
+      ? round2(Math.max(0.01, safeRemaining - accumulated))
+      : safePerInstallment;
+    accumulated = round2(accumulated + amountUSD);
     generatedPending.push({
       id: `inst-${Date.now()}-${i}-${Math.random().toString(36).slice(2, 5)}`,
       number: startNumber + i,
-      dueDate: stepDateByFrequency(startDate, i, frequency),
+      dueDate: dates[i],
       amountUSD,
       status: 'PENDIENTE',
     });
   }
 
-  return [...existingPaidInstallments, ...generatedPending];
+  return {
+    installments: [...existingPaidInstallments, ...generatedPending],
+    count: effectiveCount,
+    rawCount,
+    capped,
+  };
 }
 
 export const TreasuryDebtsSection: React.FC<TreasuryDebtsSectionProps> = ({ showBanner }) => {
@@ -174,9 +395,20 @@ export const TreasuryDebtsSection: React.FC<TreasuryDebtsSectionProps> = ({ show
   // Modal 2: Payment Planner
   const [planModalDebt, setPlanModalDebt] = useState<TreasuryDebt | null>(null);
   const [planStrategy, setPlanStrategy] = useState<DebtPaymentStrategy>('CUOTAS_IGUALES');
-  const [planFrequency, setPlanFrequency] = useState<DebtPaymentFrequency>('MENSUAL');
+  const [planFrequency, setPlanFrequency] = useState<DebtPaymentFrequency>('SEMANAL');
+  const [planCalcMode, setPlanCalcMode] = useState<'BY_AMOUNT' | 'BY_COUNT'>('BY_AMOUNT');
+  const [planInstallmentAmount, setPlanInstallmentAmount] = useState('');
   const [planCount, setPlanCount] = useState('3');
   const [planStartDate, setPlanStartDate] = useState(todayStr);
+  const [planWeekdays, setPlanWeekdays] = useState<number[]>([parseIsoLocal(todayStr).getDay()]);
+  const [planBiweeklyMode, setPlanBiweeklyMode] = useState<'FIXED_DAYS' | 'EVERY_15_DAYS'>('FIXED_DAYS');
+  const [planBiweeklyDay1, setPlanBiweeklyDay1] = useState('15');
+  const [planBiweeklyDay2, setPlanBiweeklyDay2] = useState('30');
+  const [planMonthlyDay, setPlanMonthlyDay] = useState(String(parseIsoLocal(todayStr).getDate()));
+  const [planCappedInfo, setPlanCappedInfo] = useState<{ capped: boolean; rawCount: number }>({
+    capped: false,
+    rawCount: 0,
+  });
   const [planCurrency, setPlanCurrency] = useState<TreasuryCommitmentPaymentCurrency>('EFECTIVO_USD');
   const [planRateType, setPlanRateType] = useState<TreasuryCommitmentRateType>('BCV');
   const [planAppliedRate, setPlanAppliedRate] = useState(String(bcvRate));
@@ -213,6 +445,11 @@ export const TreasuryDebtsSection: React.FC<TreasuryDebtsSectionProps> = ({ show
       return { ...acc, liveUSD };
     });
   }, [treasuryAccounts, bcvRate]);
+
+  // All pending debts available to select inside the payment planner
+  const pendingDebtsList = useMemo(() => {
+    return treasuryDebts.filter((d) => d.status !== 'PAGADA' && d.remainingAmountUSD > 0.009);
+  }, [treasuryDebts]);
 
   // Summary Stats
   const debtStats = useMemo(() => {
@@ -403,15 +640,51 @@ export const TreasuryDebtsSection: React.FC<TreasuryDebtsSectionProps> = ({ show
   };
 
   // --- Handlers: Modal 2 (Payment Planner) ---
+  const getCurrentDayOpts = (overrides?: Partial<ScheduleDayOptions>): ScheduleDayOptions => {
+    const d1 = Math.max(1, Math.min(31, parseInt(planBiweeklyDay1, 10) || 15));
+    const d2 = Math.max(1, Math.min(31, parseInt(planBiweeklyDay2, 10) || 30));
+    const mDay = Math.max(
+      1,
+      Math.min(31, parseInt(planMonthlyDay, 10) || parseIsoLocal(planStartDate || todayStr).getDate())
+    );
+    return {
+      paymentWeekdays: overrides?.paymentWeekdays ?? planWeekdays,
+      biweeklyMode: overrides?.biweeklyMode ?? planBiweeklyMode,
+      biweeklyDays: overrides?.biweeklyDays ?? [d1, d2],
+      monthlyDay: overrides?.monthlyDay ?? mDay,
+    };
+  };
+
   const openPlannerModal = (debt: TreasuryDebt) => {
     setPlanModalDebt(debt);
+    setPlanCappedInfo({ capped: false, rawCount: 0 });
     const existing = debt.paymentPlan;
+
     if (existing) {
+      const startDate = existing.startDate || todayStr;
+      const startParsed = parseIsoLocal(startDate);
+      const pendingInst = existing.installments.filter((i) => i.status === 'PENDIENTE');
+      const countNum = Math.max(1, pendingInst.length || existing.installmentsCount || 3);
+      const inferredAmount =
+        existing.installmentAmountUSD && existing.installmentAmountUSD > 0
+          ? existing.installmentAmountUSD
+          : pendingInst[0]?.amountUSD || round2(debt.remainingAmountUSD / countNum);
+
       setPlanStrategy(existing.strategy);
       setPlanFrequency(existing.frequency);
-      const pendingCount = existing.installments.filter((i) => i.status === 'PENDIENTE').length;
-      setPlanCount(String(Math.max(1, pendingCount || existing.installmentsCount || 3)));
-      setPlanStartDate(existing.startDate || todayStr);
+      setPlanCalcMode(existing.calculationMode || 'BY_AMOUNT');
+      setPlanInstallmentAmount(String(round2(inferredAmount)));
+      setPlanCount(String(countNum));
+      setPlanStartDate(startDate);
+      setPlanWeekdays(
+        existing.paymentWeekdays && existing.paymentWeekdays.length > 0
+          ? existing.paymentWeekdays
+          : [startParsed.getDay()]
+      );
+      setPlanBiweeklyMode(existing.biweeklyMode || 'FIXED_DAYS');
+      setPlanBiweeklyDay1(String(existing.biweeklyDays?.[0] || 15));
+      setPlanBiweeklyDay2(String(existing.biweeklyDays?.[1] || 30));
+      setPlanMonthlyDay(String(existing.monthlyDay || startParsed.getDate()));
       setPlanCurrency(existing.paymentCurrency || 'EFECTIVO_USD');
       setPlanRateType(existing.exchangeRateType || 'BCV');
       setPlanAppliedRate(String(existing.appliedExchangeRate || bcvRate));
@@ -419,61 +692,239 @@ export const TreasuryDebtsSection: React.FC<TreasuryDebtsSectionProps> = ({ show
       setPlanNotes(existing.notes || '');
       setPlanInstallments(existing.installments.map((i) => ({ ...i })));
     } else {
-      const defaultFreq: DebtPaymentFrequency = 'MENSUAL';
-      const defaultCount = 3;
-      const defaultStart = debt.dueDate && debt.dueDate >= todayStr ? todayStr : todayStr;
+      const defaultFreq: DebtPaymentFrequency = 'SEMANAL';
+      const defaultStart = todayStr;
+      const startParsed = parseIsoLocal(defaultStart);
+      const defaultWeekdays = [startParsed.getDay()];
+      const defaultBiweeklyDays: [number, number] = [15, 30];
+      const defaultMonthlyDay = startParsed.getDate();
+      const suggestedCount = debt.remainingAmountUSD <= 50 ? 2 : 4;
+      const suggestedAmount = round2(debt.remainingAmountUSD / suggestedCount);
+
       setPlanStrategy('CUOTAS_IGUALES');
       setPlanFrequency(defaultFreq);
-      setPlanCount(String(defaultCount));
+      setPlanCalcMode('BY_AMOUNT');
+      setPlanInstallmentAmount(String(suggestedAmount));
       setPlanStartDate(defaultStart);
+      setPlanWeekdays(defaultWeekdays);
+      setPlanBiweeklyMode('FIXED_DAYS');
+      setPlanBiweeklyDay1(String(defaultBiweeklyDays[0]));
+      setPlanBiweeklyDay2(String(defaultBiweeklyDays[1]));
+      setPlanMonthlyDay(String(defaultMonthlyDay));
       setPlanCurrency('EFECTIVO_USD');
       setPlanRateType('BCV');
       setPlanAppliedRate(String(bcvRate));
       setPlanPreferredAccountId(treasuryAccounts[0]?.id || '');
       setPlanNotes('');
-      setPlanInstallments(
-        generateInstallmentsSchedule(debt.remainingAmountUSD, defaultCount, defaultStart, defaultFreq, [])
+
+      const built = buildInstallmentsByAmount(
+        debt.remainingAmountUSD,
+        suggestedAmount,
+        defaultStart,
+        defaultFreq,
+        {
+          paymentWeekdays: defaultWeekdays,
+          biweeklyMode: 'FIXED_DAYS',
+          biweeklyDays: defaultBiweeklyDays,
+          monthlyDay: defaultMonthlyDay,
+        },
+        []
       );
+      setPlanCount(String(Math.max(1, built.count)));
+      setPlanInstallments(built.installments);
     }
   };
 
-  const handleRegenerateSchedule = (
-    overrideStrategy?: DebtPaymentStrategy,
-    overrideFreq?: DebtPaymentFrequency,
-    overrideCount?: number,
-    overrideStart?: string
-  ) => {
-    if (!planModalDebt) return;
-    const strat = overrideStrategy || planStrategy;
-    const freq = strat === 'PAGO_UNICO' ? 'UNICO' : overrideFreq || planFrequency;
-    const count = strat === 'PAGO_UNICO' ? 1 : overrideCount ?? Math.max(1, parseInt(planCount, 10) || 1);
-    const start = overrideStart || planStartDate || todayStr;
-    const paidExisting = planInstallments.filter((i) => i.status === 'PAGADA');
-    const generated = generateInstallmentsSchedule(
-      planModalDebt.remainingAmountUSD,
-      count,
-      start,
-      freq,
-      paidExisting
-    );
-    setPlanInstallments(generated);
+  const handleOpenPlannerFromHeader = () => {
+    if (pendingDebtsList.length > 0) {
+      openPlannerModal(pendingDebtsList[0]);
+    } else {
+      showBanner(
+        'info',
+        'No tienes deudas pendientes por planificar. Registra primero una deuda para diseñar su plan de pagos.'
+      );
+      openNewDebtModal();
+    }
   };
 
-  const handleSelectPlanStrategy = (strategy: DebtPaymentStrategy) => {
-    setPlanStrategy(strategy);
-    if (strategy === 'PAGO_UNICO') {
-      setPlanFrequency('UNICO');
+  const handleSwitchPlannerDebt = (debtId: string) => {
+    const nextDebt = pendingDebtsList.find((d) => d.id === debtId);
+    if (nextDebt) {
+      openPlannerModal(nextDebt);
+    }
+  };
+
+  const recalculatePlanLive = (opts?: {
+    freq?: DebtPaymentFrequency;
+    calcMode?: 'BY_AMOUNT' | 'BY_COUNT';
+    amountPerInstallment?: number;
+    count?: number;
+    startDate?: string;
+    dayOpts?: Partial<ScheduleDayOptions>;
+    debt?: TreasuryDebt;
+  }) => {
+    const targetDebt = opts?.debt || planModalDebt;
+    if (!targetDebt) return;
+    const freq = opts?.freq ?? planFrequency;
+    const mode = freq === 'UNICO' ? 'BY_COUNT' : opts?.calcMode ?? planCalcMode;
+    const start = opts?.startDate ?? (planStartDate || todayStr);
+    const dayOpts = getCurrentDayOpts(opts?.dayOpts);
+    const paidExisting = opts?.debt ? [] : planInstallments.filter((i) => i.status === 'PAGADA');
+
+    if (freq === 'UNICO') {
+      const generated = buildInstallmentsByCount(
+        targetDebt.remainingAmountUSD,
+        1,
+        start,
+        'UNICO',
+        dayOpts,
+        paidExisting
+      );
+      setPlanStrategy('PAGO_UNICO');
       setPlanCount('1');
-      handleRegenerateSchedule('PAGO_UNICO', 'UNICO', 1, planStartDate);
-    } else if (strategy === 'CUOTAS_IGUALES') {
-      const nextFreq: DebtPaymentFrequency = planFrequency === 'UNICO' ? 'MENSUAL' : planFrequency;
-      const nextCount = Math.max(2, parseInt(planCount, 10) || 3);
-      setPlanFrequency(nextFreq);
-      setPlanCount(String(nextCount));
-      handleRegenerateSchedule('CUOTAS_IGUALES', nextFreq, nextCount, planStartDate);
+      setPlanInstallmentAmount(String(round2(targetDebt.remainingAmountUSD)));
+      setPlanCappedInfo({ capped: false, rawCount: 1 });
+      setPlanInstallments(generated);
+      return;
+    }
+
+    setPlanStrategy('CUOTAS_IGUALES');
+
+    if (mode === 'BY_AMOUNT') {
+      const amountVal =
+        opts?.amountPerInstallment !== undefined
+          ? opts.amountPerInstallment
+          : parseFloat(planInstallmentAmount);
+      if (Number.isNaN(amountVal) || amountVal <= 0) {
+        return;
+      }
+      const built = buildInstallmentsByAmount(
+        targetDebt.remainingAmountUSD,
+        amountVal,
+        start,
+        freq,
+        dayOpts,
+        paidExisting
+      );
+      setPlanCount(String(Math.max(1, built.count)));
+      setPlanCappedInfo({ capped: built.capped, rawCount: built.rawCount });
+      setPlanInstallments(built.installments);
     } else {
-      const nextFreq: DebtPaymentFrequency = planFrequency === 'UNICO' ? 'MENSUAL' : planFrequency;
-      setPlanFrequency(nextFreq);
+      const countVal =
+        opts?.count !== undefined ? opts.count : Math.max(1, parseInt(planCount, 10) || 1);
+      const safeCount = Math.max(1, Math.min(MAX_PLAN_INSTALLMENTS, countVal));
+      const generated = buildInstallmentsByCount(
+        targetDebt.remainingAmountUSD,
+        safeCount,
+        start,
+        freq,
+        dayOpts,
+        paidExisting
+      );
+      const firstPending = generated.find((i) => i.status === 'PENDIENTE');
+      if (firstPending) {
+        setPlanInstallmentAmount(String(round2(firstPending.amountUSD)));
+      }
+      setPlanCappedInfo({ capped: false, rawCount: safeCount });
+      setPlanInstallments(generated);
+    }
+  };
+
+  const handleSelectPlanFrequency = (freq: DebtPaymentFrequency) => {
+    setPlanFrequency(freq);
+    if (freq === 'UNICO') {
+      recalculatePlanLive({ freq: 'UNICO' });
+    } else {
+      const nextAmount =
+        parseFloat(planInstallmentAmount) > 0
+          ? parseFloat(planInstallmentAmount)
+          : planModalDebt
+          ? round2(planModalDebt.remainingAmountUSD / Math.max(2, parseInt(planCount, 10) || 4))
+          : 0;
+      if (planFrequency === 'UNICO' && planModalDebt) {
+        const autoAmt = round2(planModalDebt.remainingAmountUSD / 4);
+        setPlanCalcMode('BY_AMOUNT');
+        setPlanInstallmentAmount(String(autoAmt));
+        recalculatePlanLive({ freq, calcMode: 'BY_AMOUNT', amountPerInstallment: autoAmt });
+      } else {
+        recalculatePlanLive({ freq, amountPerInstallment: nextAmount });
+      }
+    }
+  };
+
+  const handleInstallmentAmountChange = (raw: string) => {
+    setPlanInstallmentAmount(raw);
+    setPlanCalcMode('BY_AMOUNT');
+    const parsed = parseFloat(raw);
+    if (!Number.isNaN(parsed) && parsed > 0) {
+      const effectiveFreq = planFrequency === 'UNICO' ? 'SEMANAL' : planFrequency;
+      if (planFrequency === 'UNICO') {
+        setPlanFrequency(effectiveFreq);
+      }
+      recalculatePlanLive({
+        freq: effectiveFreq,
+        calcMode: 'BY_AMOUNT',
+        amountPerInstallment: parsed,
+      });
+    }
+  };
+
+  const handleInstallmentCountChange = (raw: string) => {
+    setPlanCount(raw);
+    setPlanCalcMode('BY_COUNT');
+    const parsed = parseInt(raw, 10);
+    if (!Number.isNaN(parsed) && parsed >= 1) {
+      const effectiveFreq = planFrequency === 'UNICO' ? 'SEMANAL' : planFrequency;
+      if (planFrequency === 'UNICO') {
+        setPlanFrequency(effectiveFreq);
+      }
+      recalculatePlanLive({
+        freq: effectiveFreq,
+        calcMode: 'BY_COUNT',
+        count: parsed,
+      });
+    }
+  };
+
+  const handlePlanStartDateChange = (newStart: string) => {
+    setPlanStartDate(newStart);
+    if (!newStart) return;
+    recalculatePlanLive({ startDate: newStart });
+  };
+
+  const handleTogglePlanWeekday = (weekday: number) => {
+    const exists = planWeekdays.includes(weekday);
+    let next: number[];
+    if (exists) {
+      if (planWeekdays.length === 1) return; // keep at least 1 weekday active
+      next = planWeekdays.filter((w) => w !== weekday);
+    } else {
+      next = [...planWeekdays, weekday];
+    }
+    setPlanWeekdays(next);
+    recalculatePlanLive({ dayOpts: { paymentWeekdays: next } });
+  };
+
+  const handleBiweeklyModeChange = (mode: 'FIXED_DAYS' | 'EVERY_15_DAYS') => {
+    setPlanBiweeklyMode(mode);
+    recalculatePlanLive({ dayOpts: { biweeklyMode: mode } });
+  };
+
+  const handleBiweeklyDaysChange = (d1Str: string, d2Str: string) => {
+    setPlanBiweeklyDay1(d1Str);
+    setPlanBiweeklyDay2(d2Str);
+    const d1 = parseInt(d1Str, 10);
+    const d2 = parseInt(d2Str, 10);
+    if (!Number.isNaN(d1) && d1 >= 1 && d1 <= 31 && !Number.isNaN(d2) && d2 >= 1 && d2 <= 31) {
+      recalculatePlanLive({ dayOpts: { biweeklyMode: 'FIXED_DAYS', biweeklyDays: [d1, d2] } });
+    }
+  };
+
+  const handleMonthlyDayChange = (dayStr: string) => {
+    setPlanMonthlyDay(dayStr);
+    const dayNum = parseInt(dayStr, 10);
+    if (!Number.isNaN(dayNum) && dayNum >= 1 && dayNum <= 31) {
+      recalculatePlanLive({ dayOpts: { monthlyDay: dayNum } });
     }
   };
 
@@ -509,6 +960,7 @@ export const TreasuryDebtsSection: React.FC<TreasuryDebtsSectionProps> = ({ show
         return { ...inst, amountUSD: Number.isNaN(parsed) ? 0 : Math.max(0, parsed) };
       })
     );
+    setPlanStrategy('FLEXIBLE');
   };
 
   const handleAddManualInstallment = () => {
@@ -520,27 +972,32 @@ export const TreasuryDebtsSection: React.FC<TreasuryDebtsSectionProps> = ({ show
       .filter((i) => i.status === 'PENDIENTE')
       .reduce((s, i) => s + (Number(i.amountUSD) || 0), 0);
     const diff = planModalDebt
-      ? Math.max(0, Math.round((planModalDebt.remainingAmountUSD - pendingSum) * 100) / 100)
+      ? Math.max(0, round2(planModalDebt.remainingAmountUSD - pendingSum))
       : 0;
-    setPlanInstallments((prev) => [
-      ...prev,
+    const updated = [
+      ...planInstallments,
       {
         id: `inst-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
-        number: prev.length + 1,
+        number: planInstallments.length + 1,
         dueDate: nextDate,
         amountUSD: diff > 0 ? diff : 0,
-        status: 'PENDIENTE',
+        status: 'PENDIENTE' as const,
       },
-    ]);
+    ];
+    setPlanInstallments(updated);
+    setPlanCount(String(updated.filter((i) => i.status === 'PENDIENTE').length));
     setPlanStrategy('FLEXIBLE');
   };
 
   const handleRemoveInstallment = (instId: string) => {
-    setPlanInstallments((prev) =>
-      prev
+    setPlanInstallments((prev) => {
+      const next = prev
         .filter((i) => i.id !== instId)
-        .map((inst, idx) => ({ ...inst, number: idx + 1 }))
-    );
+        .map((inst, idx) => ({ ...inst, number: idx + 1 }));
+      setPlanCount(String(Math.max(1, next.filter((i) => i.status === 'PENDIENTE').length)));
+      return next;
+    });
+    setPlanStrategy('FLEXIBLE');
   };
 
   const handleBalanceLastInstallment = () => {
@@ -557,10 +1014,7 @@ export const TreasuryDebtsSection: React.FC<TreasuryDebtsSectionProps> = ({ show
       }
       return sum;
     }, 0);
-    const adjusted = Math.max(
-      0,
-      Math.round((planModalDebt.remainingAmountUSD - otherPendingSum) * 100) / 100
-    );
+    const adjusted = Math.max(0, round2(planModalDebt.remainingAmountUSD - otherPendingSum));
     setPlanInstallments((prev) =>
       prev.map((inst, idx) => (idx === lastPendingIdx ? { ...inst, amountUSD: adjusted } : inst))
     );
@@ -576,11 +1030,32 @@ export const TreasuryDebtsSection: React.FC<TreasuryDebtsSectionProps> = ({ show
 
     const prefAcc = treasuryAccounts.find((a) => a.id === planPreferredAccountId);
     const rateNum = parseFloat(planAppliedRate);
+    const parsedInstAmount = parseFloat(planInstallmentAmount);
+    const sortedDates = [...planInstallments]
+      .map((i) => i.dueDate)
+      .filter(Boolean)
+      .sort();
+    const estimatedEndDate = sortedDates[sortedDates.length - 1] || planStartDate || todayStr;
+    const dayOpts = getCurrentDayOpts();
+
     const plan: DebtPaymentPlan = {
-      strategy: planStrategy,
-      frequency: planStrategy === 'PAGO_UNICO' ? 'UNICO' : planFrequency,
+      strategy: planFrequency === 'UNICO' ? 'PAGO_UNICO' : planStrategy,
+      frequency: planFrequency,
       installmentsCount: planInstallments.length,
+      installmentAmountUSD:
+        !Number.isNaN(parsedInstAmount) && parsedInstAmount > 0
+          ? round2(parsedInstAmount)
+          : undefined,
+      calculationMode: planCalcMode,
       startDate: planStartDate || todayStr,
+      estimatedEndDate,
+      paymentWeekdays: planFrequency === 'SEMANAL' ? dayOpts.paymentWeekdays : undefined,
+      biweeklyMode: planFrequency === 'QUINCENAL' ? dayOpts.biweeklyMode : undefined,
+      biweeklyDays:
+        planFrequency === 'QUINCENAL' && dayOpts.biweeklyMode === 'FIXED_DAYS'
+          ? dayOpts.biweeklyDays
+          : undefined,
+      monthlyDay: planFrequency === 'MENSUAL' ? dayOpts.monthlyDay : undefined,
       preferredAccountId: prefAcc?.id,
       preferredAccountName: prefAcc?.name,
       paymentCurrency: planCurrency,
@@ -597,7 +1072,7 @@ export const TreasuryDebtsSection: React.FC<TreasuryDebtsSectionProps> = ({ show
     setPlanModalDebt(null);
     showBanner(
       'success',
-      `Plan de pago guardado para "${planModalDebt.title}" (${plan.installments.length} cuota${plan.installments.length === 1 ? '' : 's'}).`
+      `Plan de pago guardado para "${planModalDebt.title}" (${plan.installments.length} cuota${plan.installments.length === 1 ? '' : 's'} · Terminarías de pagar el ${formatPrettyDateES(estimatedEndDate)}).`
     );
   };
 
@@ -754,26 +1229,42 @@ export const TreasuryDebtsSection: React.FC<TreasuryDebtsSectionProps> = ({ show
   // Computed preview values inside Planner Modal
   const plannerSummary = useMemo(() => {
     if (!planModalDebt) return null;
-    const pendingList = planInstallments.filter((i) => i.status === 'PENDIENTE');
-    const pendingSum =
-      Math.round(pendingList.reduce((sum, i) => sum + (Number(i.amountUSD) || 0), 0) * 100) / 100;
-    const diff = Math.round((planModalDebt.remainingAmountUSD - pendingSum) * 100) / 100;
+    const pendingList = planInstallments
+      .filter((i) => i.status === 'PENDIENTE')
+      .sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+    const pendingSum = round2(
+      pendingList.reduce((sum, i) => sum + (Number(i.amountUSD) || 0), 0)
+    );
+    const diff = round2(planModalDebt.remainingAmountUSD - pendingSum);
     const firstPending = pendingList[0];
+    const lastPending = pendingList[pendingList.length - 1];
     const avgInstallment =
-      pendingList.length > 0 ? Math.round((pendingSum / pendingList.length) * 100) / 100 : 0;
-    const firstAmount = firstPending ? firstPending.amountUSD : 0;
+      pendingList.length > 0 ? round2(pendingSum / pendingList.length) : 0;
+    const firstAmount = firstPending ? round2(Number(firstPending.amountUSD) || 0) : 0;
+    const lastAmount = lastPending ? round2(Number(lastPending.amountUSD) || 0) : 0;
+    const hasPartialLast =
+      pendingList.length > 1 && Math.abs(firstAmount - lastAmount) > 0.02;
+    const firstDate = firstPending?.dueDate || planStartDate || todayStr;
+    const estimatedEndDate = lastPending?.dueDate || firstDate;
+    const durationLabel = formatDurationBetweenES(firstDate, estimatedEndDate);
     const fitsFreeBalance = projectedFreeBalanceUSD >= firstAmount && firstAmount > 0;
     const fitsLiquidity = totalLiquidityUSD >= firstAmount && firstAmount > 0;
+
     return {
       pendingCount: pendingList.length,
       pendingSum,
       diff,
       avgInstallment,
       firstAmount,
+      lastAmount,
+      hasPartialLast,
+      firstDate,
+      estimatedEndDate,
+      durationLabel,
       fitsFreeBalance,
       fitsLiquidity,
     };
-  }, [planModalDebt, planInstallments, projectedFreeBalanceUSD, totalLiquidityUSD]);
+  }, [planModalDebt, planInstallments, planStartDate, todayStr, projectedFreeBalanceUSD, totalLiquidityUSD]);
 
   // Computed preview values inside Pay Modal
   const payPreview = useMemo(() => {
@@ -810,6 +1301,14 @@ export const TreasuryDebtsSection: React.FC<TreasuryDebtsSectionProps> = ({ show
               </p>
             </div>
             <div className="flex flex-wrap items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={handleOpenPlannerFromHeader}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border border-emerald-200 bg-emerald-50 hover:bg-emerald-100 text-xs font-bold text-emerald-800 transition-colors cursor-pointer whitespace-nowrap shrink-0"
+              >
+                <Calculator className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                Planificar Pago
+              </button>
               <button
                 type="button"
                 onClick={() => setCategoryModalOpen(true)}
@@ -1144,7 +1643,7 @@ export const TreasuryDebtsSection: React.FC<TreasuryDebtsSectionProps> = ({ show
                       {plan && totalInstallments > 0 && (
                         <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[11px] text-slate-600 pt-0.5">
                           <span className="font-semibold text-slate-800">
-                            Plan: {STRATEGY_LABELS[plan.strategy]} ({FREQUENCY_LABELS[plan.frequency]})
+                            Plan {FREQUENCY_LABELS[plan.frequency]} ({totalInstallments} cuota{totalInstallments === 1 ? '' : 's'})
                           </span>
                           {nextInstallment && !isPaid && (
                             <>
@@ -1156,11 +1655,25 @@ export const TreasuryDebtsSection: React.FC<TreasuryDebtsSectionProps> = ({ show
                                     : 'text-slate-700'
                                 }
                               >
-                                Próxima Cuota #{nextInstallment.number}:{' '}
+                                Próxima #{nextInstallment.number}:{' '}
                                 <strong className="font-mono tabular-nums">
                                   {formatUSD(nextInstallment.amountUSD)}
                                 </strong>{' '}
                                 el <span className="font-mono">{nextInstallment.dueDate}</span>
+                              </span>
+                            </>
+                          )}
+                          {(plan.estimatedEndDate || plan.installments[plan.installments.length - 1]?.dueDate) && !isPaid && (
+                            <>
+                              <span className="text-slate-300">·</span>
+                              <span className="font-semibold text-emerald-700">
+                                Terminas el{' '}
+                                <span className="font-mono">
+                                  {formatPrettyDateES(
+                                    plan.estimatedEndDate ||
+                                      plan.installments[plan.installments.length - 1]?.dueDate
+                                  )}
+                                </span>
                               </span>
                             </>
                           )}
@@ -1715,10 +2228,10 @@ export const TreasuryDebtsSection: React.FC<TreasuryDebtsSectionProps> = ({ show
             <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between shrink-0">
               <div className="min-w-0">
                 <h3 className="text-base font-bold text-slate-900 truncate">
-                  Planificar Cómo Pagar: {planModalDebt.title}
+                  Planificador de Pagos de Deudas
                 </h3>
                 <p className="text-xs text-slate-500">
-                  {planModalDebt.debtNumber} · Acreedor: {planModalDebt.creditor} · Categoría: {planModalDebt.category}
+                  Elige la deuda, frecuencia, monto por cuota y días de pago para calcular cuántas cuotas son y cuándo terminas
                 </p>
               </div>
               <button
@@ -1731,77 +2244,88 @@ export const TreasuryDebtsSection: React.FC<TreasuryDebtsSectionProps> = ({ show
             </div>
 
             <form onSubmit={handleSavePlan} className="p-5 space-y-5 overflow-y-auto flex-1">
-              {/* Top Feasibility Strip */}
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 bg-slate-50 border border-slate-200 rounded-xl p-3">
+              {/* Step 1: Debt Selector + Balance Strip */}
+              <div className="space-y-3">
                 <div>
-                  <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
-                    Saldo a Planificar
-                  </p>
-                  <p className="text-base font-bold font-mono text-slate-900 tabular-nums">
-                    {formatUSD(planModalDebt.remainingAmountUSD)}
-                  </p>
-                </div>
-                <div>
-                  <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
-                    Liquidez Disponible
-                  </p>
-                  <p className="text-base font-bold font-mono text-emerald-700 tabular-nums">
-                    {formatUSD(totalLiquidityUSD)}
-                  </p>
-                </div>
-                <div>
-                  <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
-                    Saldo Libre Proyectado
-                  </p>
-                  <p
-                    className={`text-base font-bold font-mono tabular-nums ${
-                      projectedFreeBalanceUSD >= 0 ? 'text-slate-900' : 'text-rose-600'
-                    }`}
+                  <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
+                    1. Selecciona la Deuda a Planificar
+                  </label>
+                  <select
+                    value={planModalDebt.id}
+                    onChange={(e) => handleSwitchPlannerDebt(e.target.value)}
+                    className="w-full px-3 py-2.5 rounded-xl border border-slate-300 bg-white text-xs font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-slate-900/15"
                   >
-                    {formatUSD(projectedFreeBalanceUSD)}
-                  </p>
+                    {pendingDebtsList.map((d) => (
+                      <option key={d.id} value={d.id}>
+                        {d.debtNumber} · {d.title} ({d.creditor}) — Pendiente: {formatUSD(d.remainingAmountUSD)}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 bg-slate-50 border border-slate-200 rounded-xl p-3">
+                  <div>
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                      Saldo Pendiente
+                    </p>
+                    <p className="text-base font-bold font-mono text-slate-900 tabular-nums">
+                      {formatUSD(planModalDebt.remainingAmountUSD)}
+                    </p>
+                    <p className="text-[10px] text-slate-500 truncate">
+                      {planModalDebt.category} · {planModalDebt.creditor}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                      Liquidez Disponible
+                    </p>
+                    <p className="text-base font-bold font-mono text-emerald-700 tabular-nums">
+                      {formatUSD(totalLiquidityUSD)}
+                    </p>
+                  </div>
+                  <div>
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-500">
+                      Saldo Libre Proyectado
+                    </p>
+                    <p
+                      className={`text-base font-bold font-mono tabular-nums ${
+                        projectedFreeBalanceUSD >= 0 ? 'text-slate-900' : 'text-rose-600'
+                      }`}
+                    >
+                      {formatUSD(projectedFreeBalanceUSD)}
+                    </p>
+                  </div>
                 </div>
               </div>
 
-              {/* Step 1: Strategy */}
+              {/* Step 2: Frequency */}
               <div className="space-y-2">
                 <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider">
-                  1. Estrategia de Pago
+                  2. Frecuencia de las Cuotas
                 </label>
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                   {(
                     [
-                      {
-                        id: 'CUOTAS_IGUALES',
-                        title: 'Cuotas Iguales',
-                        desc: 'Divide el saldo en partes iguales',
-                      },
-                      {
-                        id: 'PAGO_UNICO',
-                        title: 'Pago Único',
-                        desc: 'Cancela el saldo total en una fecha',
-                      },
-                      {
-                        id: 'FLEXIBLE',
-                        title: 'Abonos Flexibles',
-                        desc: 'Edita fechas y montos libremente',
-                      },
+                      { id: 'SEMANAL', title: 'Semanal', desc: 'Cada semana' },
+                      { id: 'QUINCENAL', title: 'Quincenal', desc: 'Cada quincena' },
+                      { id: 'MENSUAL', title: 'Mensual', desc: 'Una vez al mes' },
+                      { id: 'UNICO', title: 'Pago Único', desc: 'Saldo completo' },
                     ] as const
                   ).map((opt) => (
                     <button
                       key={opt.id}
                       type="button"
-                      onClick={() => handleSelectPlanStrategy(opt.id)}
-                      className={`text-left p-3 rounded-xl border transition-colors cursor-pointer ${
-                        planStrategy === opt.id
+                      onClick={() => handleSelectPlanFrequency(opt.id)}
+                      className={`text-left px-3 py-2.5 rounded-xl border transition-colors cursor-pointer ${
+                        planFrequency === opt.id
                           ? 'border-slate-900 bg-slate-900 text-white'
                           : 'border-slate-200 bg-white hover:bg-slate-50 text-slate-800'
                       }`}
                     >
                       <p className="text-xs font-bold">{opt.title}</p>
                       <p
-                        className={`text-[11px] mt-0.5 ${
-                          planStrategy === opt.id ? 'text-slate-300' : 'text-slate-500'
+                        className={`text-[10px] mt-0.5 ${
+                          planFrequency === opt.id ? 'text-slate-300' : 'text-slate-500'
                         }`}
                       >
                         {opt.desc}
@@ -1811,75 +2335,390 @@ export const TreasuryDebtsSection: React.FC<TreasuryDebtsSectionProps> = ({ show
                 </div>
               </div>
 
-              {/* Step 2: Parameters */}
-              <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 items-end">
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">
-                    Frecuencia
-                  </label>
-                  <select
-                    disabled={planStrategy === 'PAGO_UNICO'}
-                    value={planStrategy === 'PAGO_UNICO' ? 'UNICO' : planFrequency}
-                    onChange={(e) => {
-                      const f = e.target.value as DebtPaymentFrequency;
-                      setPlanFrequency(f);
-                      handleRegenerateSchedule(planStrategy, f, parseInt(planCount, 10) || 1, planStartDate);
-                    }}
-                    className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs bg-white disabled:bg-slate-100 disabled:text-slate-400"
-                  >
-                    <option value="SEMANAL">Semanal (cada 7 días)</option>
-                    <option value="QUINCENAL">Quincenal (cada 15 días)</option>
-                    <option value="MENSUAL">Mensual (cada mes)</option>
-                    {planStrategy === 'PAGO_UNICO' && <option value="UNICO">Pago único</option>}
-                  </select>
-                </div>
+              {/* Step 3: Amount per Installment -> Auto Count */}
+              {planFrequency !== 'UNICO' && (
+                <div className="space-y-2.5 p-3.5 rounded-xl border border-slate-200 bg-slate-50/70">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <label className="text-xs font-bold text-slate-700 uppercase tracking-wider">
+                      3. Monto por Cuota y Cálculo Automático
+                    </label>
+                    <span className="text-[11px] font-medium text-slate-500">
+                      {planCalcMode === 'BY_AMOUNT'
+                        ? 'Calculando cuotas según tu monto'
+                        : 'Calculando monto según N° de cuotas'}
+                    </span>
+                  </div>
 
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">
-                    N° de Cuotas
-                  </label>
-                  <input
-                    type="number"
-                    min="1"
-                    max="48"
-                    step="1"
-                    disabled={planStrategy === 'PAGO_UNICO'}
-                    value={planStrategy === 'PAGO_UNICO' ? '1' : planCount}
-                    onChange={(e) => setPlanCount(e.target.value)}
-                    className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs font-mono disabled:bg-slate-100"
-                  />
-                </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="text-xs font-semibold text-slate-700">
+                          Monto por Cuota (USD) *
+                        </label>
+                        {planCalcMode === 'BY_COUNT' && (
+                          <span className="text-[10px] font-semibold text-emerald-700">
+                            Auto
+                          </span>
+                        )}
+                      </div>
+                      <div className="relative">
+                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 font-mono text-xs">
+                          $
+                        </span>
+                        <input
+                          type="number"
+                          step="any"
+                          min="0.01"
+                          value={planInstallmentAmount}
+                          onChange={(e) => handleInstallmentAmountChange(e.target.value)}
+                          placeholder="Ej: 50"
+                          className={`w-full pl-7 pr-3 py-2 rounded-xl border text-sm font-mono font-bold bg-white focus:outline-none focus:ring-2 focus:ring-slate-900/15 ${
+                            planCalcMode === 'BY_AMOUNT'
+                              ? 'border-slate-900 text-slate-900'
+                              : 'border-slate-200 text-slate-700'
+                          }`}
+                        />
+                      </div>
+                    </div>
 
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">
-                    Fecha 1ra Cuota
-                  </label>
-                  <input
-                    type="date"
-                    value={planStartDate}
-                    onChange={(e) => setPlanStartDate(e.target.value)}
-                    className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs font-mono"
-                  />
-                </div>
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="text-xs font-semibold text-slate-700">
+                          Número de Cuotas
+                        </label>
+                        {planCalcMode === 'BY_AMOUNT' && (
+                          <span className="text-[10px] font-semibold text-emerald-700">
+                            Automático
+                          </span>
+                        )}
+                      </div>
+                      <input
+                        type="number"
+                        min="1"
+                        max={MAX_PLAN_INSTALLMENTS}
+                        step="1"
+                        value={planCount}
+                        onChange={(e) => handleInstallmentCountChange(e.target.value)}
+                        className={`w-full px-3 py-2 rounded-xl border text-sm font-mono font-bold bg-white focus:outline-none focus:ring-2 focus:ring-slate-900/15 ${
+                          planCalcMode === 'BY_COUNT'
+                            ? 'border-slate-900 text-slate-900'
+                            : 'border-slate-200 text-slate-700'
+                        }`}
+                      />
+                    </div>
+                  </div>
 
-                <button
-                  type="button"
-                  onClick={() =>
-                    handleRegenerateSchedule(
-                      planStrategy,
-                      planFrequency,
-                      Math.max(1, parseInt(planCount, 10) || 1),
-                      planStartDate
-                    )
-                  }
-                  className="inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 text-xs font-bold cursor-pointer"
-                >
-                  <RefreshCw className="w-3.5 h-3.5" />
-                  Recalcular
-                </button>
+                  {/* Quick amount buttons */}
+                  <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+                    <span className="text-[11px] text-slate-500 mr-1">Sugeridos:</span>
+                    {[20, 25, 50, 100, 200]
+                      .filter((amt) => amt < planModalDebt.remainingAmountUSD - 0.5)
+                      .slice(0, 4)
+                      .map((amt) => (
+                        <button
+                          key={amt}
+                          type="button"
+                          onClick={() => handleInstallmentAmountChange(String(amt))}
+                          className="px-2 py-1 rounded-lg border border-slate-200 bg-white hover:bg-slate-100 text-[11px] font-mono font-semibold text-slate-700 cursor-pointer"
+                        >
+                          ${amt}/cuota
+                        </button>
+                      ))}
+                    {[2, 4, 6].map((div) => {
+                      const part = round2(planModalDebt.remainingAmountUSD / div);
+                      return (
+                        <button
+                          key={div}
+                          type="button"
+                          onClick={() => handleInstallmentCountChange(String(div))}
+                          className="px-2 py-1 rounded-lg border border-slate-200 bg-white hover:bg-slate-100 text-[11px] font-semibold text-slate-700 cursor-pointer"
+                        >
+                          {div} cuotas ({formatUSD(part)})
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  {plannerSummary && plannerSummary.pendingCount > 0 && (
+                    <p className="text-[11px] text-slate-600">
+                      {plannerSummary.hasPartialLast ? (
+                        <>
+                          Resultado:{' '}
+                          <strong className="text-slate-900">
+                            {plannerSummary.pendingCount - 1} cuota
+                            {plannerSummary.pendingCount - 1 === 1 ? '' : 's'} de{' '}
+                            <span className="font-mono">{formatUSD(plannerSummary.firstAmount)}</span>
+                          </strong>{' '}
+                          +{' '}
+                          <strong className="text-slate-900">
+                            1 última cuota de{' '}
+                            <span className="font-mono">{formatUSD(plannerSummary.lastAmount)}</span>
+                          </strong>{' '}
+                          (Total: {plannerSummary.pendingCount} cuotas).
+                        </>
+                      ) : (
+                        <>
+                          Resultado:{' '}
+                          <strong className="text-slate-900">
+                            {plannerSummary.pendingCount} cuota
+                            {plannerSummary.pendingCount === 1 ? '' : 's'} de{' '}
+                            <span className="font-mono">{formatUSD(plannerSummary.firstAmount)}</span>
+                          </strong>
+                          .
+                        </>
+                      )}
+                    </p>
+                  )}
+
+                  {planCappedInfo.capped && (
+                    <div className="flex items-start gap-1.5 text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1.5">
+                      <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                      <span>
+                        Con ese monto serían {planCappedInfo.rawCount} cuotas. El plan se limita a un máximo de {MAX_PLAN_INSTALLMENTS} cuotas (el saldo restante se consolida en la última cuota).
+                      </span>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Step 4: Start Date & Specific Payment Days */}
+              <div className="space-y-3 p-3.5 rounded-xl border border-slate-200 bg-white">
+                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider">
+                  {planFrequency === 'UNICO'
+                    ? '3. Fecha del Pago Único'
+                    : '4. Fecha de Inicio y Días en que Realizarías los Pagos'}
+                </label>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 items-start">
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">
+                      {planFrequency === 'UNICO' ? 'Fecha del pago' : 'Fecha desde cuando inicias'}
+                    </label>
+                    <input
+                      type="date"
+                      value={planStartDate}
+                      onChange={(e) => handlePlanStartDateChange(e.target.value)}
+                      className="w-full px-3 py-2 rounded-xl border border-slate-200 text-xs font-mono"
+                    />
+                  </div>
+
+                  {/* SEMANAL: Weekday Picker */}
+                  {planFrequency === 'SEMANAL' && (
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-700 mb-1">
+                        Días de la semana para pagar
+                      </label>
+                      <div className="grid grid-cols-7 gap-1">
+                        {WEEKDAY_OPTIONS.map((wd) => {
+                          const active = planWeekdays.includes(wd.value);
+                          return (
+                            <button
+                              key={wd.value}
+                              type="button"
+                              onClick={() => handleTogglePlanWeekday(wd.value)}
+                              title={wd.label}
+                              className={`py-2 rounded-lg text-[11px] font-bold border transition-colors cursor-pointer ${
+                                active
+                                  ? 'bg-slate-900 text-white border-slate-900'
+                                  : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
+                              }`}
+                            >
+                              {wd.short}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <p className="text-[10px] text-slate-500 mt-1">
+                        Puedes elegir uno o varios días (ej: todos los viernes, o martes y viernes).
+                      </p>
+                    </div>
+                  )}
+
+                  {/* QUINCENAL: Fixed Days vs Every 15 Days */}
+                  {planFrequency === 'QUINCENAL' && (
+                    <div className="space-y-2">
+                      <label className="block text-xs font-semibold text-slate-700">
+                        ¿Qué días realizas los pagos quincenales?
+                      </label>
+                      <div className="grid grid-cols-2 gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => handleBiweeklyModeChange('FIXED_DAYS')}
+                          className={`py-1.5 px-2 rounded-lg text-[11px] font-semibold border cursor-pointer ${
+                            planBiweeklyMode === 'FIXED_DAYS'
+                              ? 'bg-slate-900 text-white border-slate-900'
+                              : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                          }`}
+                        >
+                          Días fijos del mes
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleBiweeklyModeChange('EVERY_15_DAYS')}
+                          className={`py-1.5 px-2 rounded-lg text-[11px] font-semibold border cursor-pointer ${
+                            planBiweeklyMode === 'EVERY_15_DAYS'
+                              ? 'bg-slate-900 text-white border-slate-900'
+                              : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                          }`}
+                        >
+                          Cada 15 días exactos
+                        </button>
+                      </div>
+
+                      {planBiweeklyMode === 'FIXED_DAYS' && (
+                        <div className="space-y-1.5">
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => handleBiweeklyDaysChange('15', '30')}
+                              className={`px-2 py-1 rounded-md text-[11px] font-semibold border cursor-pointer ${
+                                planBiweeklyDay1 === '15' && planBiweeklyDay2 === '30'
+                                  ? 'bg-emerald-50 text-emerald-800 border-emerald-300'
+                                  : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
+                              }`}
+                            >
+                              Días 15 y 30
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleBiweeklyDaysChange('1', '15')}
+                              className={`px-2 py-1 rounded-md text-[11px] font-semibold border cursor-pointer ${
+                                planBiweeklyDay1 === '1' && planBiweeklyDay2 === '15'
+                                  ? 'bg-emerald-50 text-emerald-800 border-emerald-300'
+                                  : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
+                              }`}
+                            >
+                              Días 1 y 15
+                            </button>
+                          </div>
+                          <div className="grid grid-cols-2 gap-2">
+                            <div>
+                              <span className="block text-[10px] text-slate-500 mb-0.5">
+                                1er día del mes
+                              </span>
+                              <input
+                                type="number"
+                                min="1"
+                                max="31"
+                                value={planBiweeklyDay1}
+                                onChange={(e) =>
+                                  handleBiweeklyDaysChange(e.target.value, planBiweeklyDay2)
+                                }
+                                className="w-full px-2.5 py-1.5 rounded-lg border border-slate-200 text-xs font-mono"
+                              />
+                            </div>
+                            <div>
+                              <span className="block text-[10px] text-slate-500 mb-0.5">
+                                2do día del mes
+                              </span>
+                              <input
+                                type="number"
+                                min="1"
+                                max="31"
+                                value={planBiweeklyDay2}
+                                onChange={(e) =>
+                                  handleBiweeklyDaysChange(planBiweeklyDay1, e.target.value)
+                                }
+                                className="w-full px-2.5 py-1.5 rounded-lg border border-slate-200 text-xs font-mono"
+                              />
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* MENSUAL: Day of Month */}
+                  {planFrequency === 'MENSUAL' && (
+                    <div className="space-y-1.5">
+                      <label className="block text-xs font-semibold text-slate-700">
+                        Día del mes para pagar (1–31)
+                      </label>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="number"
+                          min="1"
+                          max="31"
+                          value={planMonthlyDay}
+                          onChange={(e) => handleMonthlyDayChange(e.target.value)}
+                          className="w-20 px-2.5 py-1.5 rounded-lg border border-slate-200 text-xs font-mono font-bold"
+                        />
+                        <div className="flex flex-wrap gap-1">
+                          {[
+                            { label: 'Día 1', val: '1' },
+                            { label: 'Día 15', val: '15' },
+                            { label: 'Fin de mes', val: '30' },
+                          ].map((p) => (
+                            <button
+                              key={p.val}
+                              type="button"
+                              onClick={() => handleMonthlyDayChange(p.val)}
+                              className={`px-2 py-1 rounded-md text-[11px] font-semibold border cursor-pointer ${
+                                planMonthlyDay === p.val
+                                  ? 'bg-emerald-50 text-emerald-800 border-emerald-300'
+                                  : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
+                              }`}
+                            >
+                              {p.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                      <p className="text-[10px] text-slate-500">
+                        Si el mes tiene menos días (ej. febrero), se ajusta al último día de ese mes.
+                      </p>
+                    </div>
+                  )}
+                </div>
               </div>
 
-              {/* Step 3: Payment Currency, Rate & Preferred Account */}
+              {/* Prominent Automatic Payoff Summary Banner */}
+              {plannerSummary && plannerSummary.pendingCount > 0 && (
+                <div className="rounded-xl bg-slate-900 text-white p-4 grid grid-cols-1 sm:grid-cols-3 gap-3 items-center">
+                  <div>
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                      Cuotas Calculadas
+                    </p>
+                    <p className="text-lg font-bold font-mono tabular-nums text-white mt-0.5">
+                      {plannerSummary.pendingCount} cuota
+                      {plannerSummary.pendingCount === 1 ? '' : 's'}
+                    </p>
+                    <p className="text-[11px] text-slate-300 font-mono tabular-nums">
+                      {plannerSummary.hasPartialLast
+                        ? `${formatUSD(plannerSummary.firstAmount)} (últ. ${formatUSD(plannerSummary.lastAmount)})`
+                        : `${formatUSD(plannerSummary.firstAmount)} c/u`}
+                    </p>
+                  </div>
+
+                  <div>
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+                      Primer Pago
+                    </p>
+                    <p className="text-sm font-bold text-slate-100 mt-0.5">
+                      {formatPrettyDateES(plannerSummary.firstDate)}
+                    </p>
+                    <p className="text-[11px] text-slate-400 font-mono">
+                      {plannerSummary.firstDate}
+                    </p>
+                  </div>
+
+                  <div className="sm:border-l sm:border-slate-700 sm:pl-3">
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-emerald-400 flex items-center gap-1">
+                      <Flag className="w-3 h-3" />
+                      Terminarías de Pagar el
+                    </p>
+                    <p className="text-base font-bold text-amber-300 mt-0.5">
+                      {formatPrettyDateES(plannerSummary.estimatedEndDate)}
+                    </p>
+                    <p className="text-[11px] text-slate-300">
+                      {plannerSummary.estimatedEndDate}
+                      {plannerSummary.durationLabel ? ` · ${plannerSummary.durationLabel}` : ''}
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {/* Step 5: Payment Currency, Rate & Preferred Account */}
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 p-3.5 rounded-xl bg-slate-50 border border-slate-200">
                 <div className="space-y-2">
                   <label className="block text-xs font-semibold text-slate-700">
@@ -1961,11 +2800,11 @@ export const TreasuryDebtsSection: React.FC<TreasuryDebtsSectionProps> = ({ show
                 </div>
               </div>
 
-              {/* Step 4: Editable Installments Schedule */}
+              {/* Step 6: Editable Installments Schedule */}
               <div className="space-y-2.5">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <label className="text-xs font-bold text-slate-700 uppercase tracking-wider">
-                    2. Cronograma de Cuotas ({planInstallments.length})
+                    Cronograma Detallado de Cuotas ({planInstallments.length})
                   </label>
                   <button
                     type="button"
@@ -1984,12 +2823,16 @@ export const TreasuryDebtsSection: React.FC<TreasuryDebtsSectionProps> = ({ show
                     return (
                       <div
                         key={inst.id}
-                        className={`px-3 py-2 flex flex-wrap sm:flex-nowrap items-center gap-2.5 text-xs ${
+                        className={`px-3 py-2 flex flex-wrap sm:flex-nowrap items-center gap-2 text-xs ${
                           isPaidInst ? 'bg-emerald-50/40' : 'bg-white'
                         }`}
                       >
                         <span className="font-mono font-bold text-slate-500 w-7 shrink-0">
                           #{inst.number}
+                        </span>
+
+                        <span className="text-[11px] font-semibold text-slate-500 w-8 shrink-0">
+                          {getWeekdayShortES(inst.dueDate)}
                         </span>
 
                         <input
@@ -2002,7 +2845,7 @@ export const TreasuryDebtsSection: React.FC<TreasuryDebtsSectionProps> = ({ show
                           className="px-2 py-1 rounded-lg border border-slate-200 font-mono text-xs disabled:bg-slate-100 disabled:text-slate-400"
                         />
 
-                        <div className="flex items-center gap-1 flex-1 min-w-[110px]">
+                        <div className="flex items-center gap-1 flex-1 min-w-[100px]">
                           <span className="text-slate-400 font-mono">$</span>
                           <input
                             type="number"

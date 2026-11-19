@@ -622,7 +622,14 @@ export interface DebtPaymentPlan {
   strategy: DebtPaymentStrategy;
   frequency: DebtPaymentFrequency;
   installmentsCount: number;
+  installmentAmountUSD?: number; // Monto deseado por cuota en USD
+  calculationMode?: 'BY_AMOUNT' | 'BY_COUNT'; // Si el usuario definió el monto por cuota o el número de cuotas
   startDate: string; // YYYY-MM-DD
+  estimatedEndDate?: string; // YYYY-MM-DD fecha calculada de finalización
+  paymentWeekdays?: number[]; // Días de la semana (0=Dom..6=Sáb) cuando es SEMANAL
+  biweeklyMode?: 'FIXED_DAYS' | 'EVERY_15_DAYS'; // Modalidad cuando es QUINCENAL
+  biweeklyDays?: [number, number]; // Ej: [15, 30] o [1, 15]
+  monthlyDay?: number; // Día del mes (1..31) cuando es MENSUAL
   preferredAccountId?: string;
   preferredAccountName?: string;
   paymentCurrency: TreasuryCommitmentPaymentCurrency; // 'EFECTIVO_USD' | 'BS'

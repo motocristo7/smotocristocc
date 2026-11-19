@@ -6,10 +6,13 @@ import {
   TreasuryCommitment,
   TreasuryCommitmentCategory,
   TreasuryCommitmentDisplayStatus,
+  TreasuryCommitmentPaymentCurrency,
+  TreasuryCommitmentRateType,
   TreasuryMovement,
   TreasuryMovementType,
 } from '../../types';
 import { formatUSD, formatBs } from '../../utils/whatsapp';
+import { fetchOfficialEuroBcvRate } from '../../services/bcvService';
 import {
   Landmark,
   Wallet,
@@ -34,6 +37,7 @@ import {
   Truck,
   Sparkles,
   PiggyBank,
+  RefreshCw,
 } from 'lucide-react';
 
 const ACCOUNT_GROUP_META: Record<
@@ -97,6 +101,71 @@ const COMMITMENT_CATEGORY_META: Record<
     chipClass: 'bg-amber-50 text-amber-800 border-amber-200',
   },
 };
+
+const COMMITMENT_RATE_META: Record<
+  TreasuryCommitmentRateType,
+  { label: string; shortLabel: string; badgeClass: string }
+> = {
+  BCV: {
+    label: 'Tasa BCV',
+    shortLabel: 'BCV',
+    badgeClass: 'bg-blue-50 text-blue-700 border-blue-200',
+  },
+  EURO: {
+    label: 'Tasa Euro',
+    shortLabel: 'Euro',
+    badgeClass: 'bg-violet-50 text-violet-700 border-violet-200',
+  },
+  USDT: {
+    label: 'Tasa USDT',
+    shortLabel: 'USDT',
+    badgeClass: 'bg-amber-50 text-amber-800 border-amber-200',
+  },
+};
+
+const LAST_EURO_RATE_KEY = 'servimotos_last_euro_rate';
+const LAST_USDT_RATE_KEY = 'servimotos_last_usdt_rate';
+
+function getSavedCommitmentRate(
+  rateType: TreasuryCommitmentRateType,
+  fallbackBcvRate: number
+): number | null {
+  if (rateType === 'BCV') return fallbackBcvRate;
+  try {
+    const key = rateType === 'EURO' ? LAST_EURO_RATE_KEY : LAST_USDT_RATE_KEY;
+    const raw = localStorage.getItem(key);
+    const parsed = raw ? parseFloat(raw) : NaN;
+    if (!isNaN(parsed) && parsed > 0) return parsed;
+  } catch {
+    // ignore storage errors
+  }
+  return null;
+}
+
+function saveCommitmentRatePreference(rateType: TreasuryCommitmentRateType, rate: number): void {
+  if (rateType === 'BCV' || !rate || rate <= 0) return;
+  try {
+    const key = rateType === 'EURO' ? LAST_EURO_RATE_KEY : LAST_USDT_RATE_KEY;
+    localStorage.setItem(key, String(rate));
+  } catch {
+    // ignore storage errors
+  }
+}
+
+function getEffectiveCommitmentBsRate(cm: TreasuryCommitment, currentBcvRate: number): number {
+  const rateType: TreasuryCommitmentRateType = cm.exchangeRateType || 'BCV';
+  if (cm.isPaid) {
+    return cm.appliedExchangeRate && cm.appliedExchangeRate > 0
+      ? cm.appliedExchangeRate
+      : cm.bcvRate || currentBcvRate;
+  }
+  if (rateType === 'BCV') {
+    return currentBcvRate;
+  }
+  return cm.appliedExchangeRate && cm.appliedExchangeRate > 0
+    ? cm.appliedExchangeRate
+    : cm.bcvRate || currentBcvRate;
+}
 
 function formatNativeBalance(currency: 'USD' | 'BS' | 'USDT', amount: number): string {
   const num = Number(amount) || 0;
@@ -238,6 +307,12 @@ export const TreasuryFinanceView: React.FC = () => {
   const [cmtDueDate, setCmtDueDate] = useState(todayStr);
   const [cmtAmountUSD, setCmtAmountUSD] = useState('');
   const [cmtReservedUSD, setCmtReservedUSD] = useState('');
+  const [cmtPaymentCurrency, setCmtPaymentCurrency] =
+    useState<TreasuryCommitmentPaymentCurrency>('EFECTIVO_USD');
+  const [cmtRateType, setCmtRateType] = useState<TreasuryCommitmentRateType>('BCV');
+  const [cmtAppliedRate, setCmtAppliedRate] = useState('');
+  const [isFetchingEuroRate, setIsFetchingEuroRate] = useState(false);
+  const [euroFetchHint, setEuroFetchHint] = useState('');
   const [cmtNotes, setCmtNotes] = useState('');
   const [cmtError, setCmtError] = useState('');
 
@@ -247,6 +322,9 @@ export const TreasuryFinanceView: React.FC = () => {
   const [payDate, setPayDate] = useState(todayStr);
   const [payReference, setPayReference] = useState('');
   const [paySyncExpense, setPaySyncExpense] = useState(true);
+  const [payRateType, setPayRateType] = useState<TreasuryCommitmentRateType>('BCV');
+  const [payAppliedRate, setPayAppliedRate] = useState('');
+  const [isFetchingPayEuroRate, setIsFetchingPayEuroRate] = useState(false);
   const [payError, setPayError] = useState('');
 
   // Reserve allocation Modal (Apartar monto para cobertura)
@@ -549,6 +627,71 @@ export const TreasuryFinanceView: React.FC = () => {
     setIsAccountModalOpen(false);
   };
 
+  const fetchEuroRateInto = async (target: 'form' | 'pay') => {
+    if (target === 'form') {
+      setIsFetchingEuroRate(true);
+      setEuroFetchHint('');
+    } else {
+      setIsFetchingPayEuroRate(true);
+    }
+    try {
+      const result = await fetchOfficialEuroBcvRate();
+      if (result.success && result.rate) {
+        const formatted = result.rate.toFixed(2);
+        saveCommitmentRatePreference('EURO', result.rate);
+        if (target === 'form') {
+          setCmtAppliedRate(formatted);
+          setEuroFetchHint(`Euro BCV actualizado: Bs. ${formatted}`);
+        } else {
+          setPayAppliedRate(formatted);
+        }
+      } else if (target === 'form') {
+        setEuroFetchHint('No se pudo consultar automáticamente; ingresa la tasa Euro manualmente.');
+      }
+    } finally {
+      if (target === 'form') {
+        setIsFetchingEuroRate(false);
+      } else {
+        setIsFetchingPayEuroRate(false);
+      }
+    }
+  };
+
+  const handleSelectCmtRateType = (nextRateType: TreasuryCommitmentRateType) => {
+    setCmtRateType(nextRateType);
+    setEuroFetchHint('');
+    if (nextRateType === 'BCV') {
+      setCmtAppliedRate(bcvRate.toFixed(2));
+      return;
+    }
+    const saved = getSavedCommitmentRate(nextRateType, bcvRate);
+    if (saved) {
+      setCmtAppliedRate(saved.toFixed(2));
+    } else if (nextRateType === 'EURO') {
+      setCmtAppliedRate('');
+      void fetchEuroRateInto('form');
+    } else {
+      setCmtAppliedRate('');
+    }
+  };
+
+  const handleSelectPayRateType = (nextRateType: TreasuryCommitmentRateType) => {
+    setPayRateType(nextRateType);
+    if (nextRateType === 'BCV') {
+      setPayAppliedRate(bcvRate.toFixed(2));
+      return;
+    }
+    const saved = getSavedCommitmentRate(nextRateType, bcvRate);
+    if (saved) {
+      setPayAppliedRate(saved.toFixed(2));
+    } else if (nextRateType === 'EURO') {
+      setPayAppliedRate('');
+      void fetchEuroRateInto('pay');
+    } else {
+      setPayAppliedRate('');
+    }
+  };
+
   const openNewCommitmentModal = () => {
     setEditingCommitment(null);
     setCmtTitle('');
@@ -556,18 +699,33 @@ export const TreasuryFinanceView: React.FC = () => {
     setCmtDueDate(todayStr);
     setCmtAmountUSD('');
     setCmtReservedUSD('');
+    setCmtPaymentCurrency('EFECTIVO_USD');
+    setCmtRateType('BCV');
+    setCmtAppliedRate(bcvRate.toFixed(2));
+    setEuroFetchHint('');
     setCmtNotes('');
     setCmtError('');
     setIsCommitmentModalOpen(true);
   };
 
   const openEditCommitmentModal = (cm: TreasuryCommitment) => {
+    const currency: TreasuryCommitmentPaymentCurrency = cm.paymentCurrency || 'EFECTIVO_USD';
+    const rateType: TreasuryCommitmentRateType = cm.exchangeRateType || 'BCV';
+    const initialRate =
+      currency === 'BS'
+        ? getEffectiveCommitmentBsRate(cm, bcvRate)
+        : bcvRate;
+
     setEditingCommitment(cm);
     setCmtTitle(cm.title);
     setCmtCategory(cm.category);
     setCmtDueDate(cm.dueDate);
     setCmtAmountUSD(String(cm.amountUSD));
     setCmtReservedUSD(String(cm.reservedUSD || 0));
+    setCmtPaymentCurrency(currency);
+    setCmtRateType(rateType);
+    setCmtAppliedRate(initialRate ? initialRate.toFixed(2) : '');
+    setEuroFetchHint('');
     setCmtNotes(cm.notes || '');
     setCmtError('');
     setIsCommitmentModalOpen(true);
@@ -584,6 +742,21 @@ export const TreasuryFinanceView: React.FC = () => {
       setCmtError('Ingresa un monto válido en USD mayor a 0');
       return;
     }
+
+    let finalRateType: TreasuryCommitmentRateType | undefined;
+    let finalAppliedRate: number | undefined;
+
+    if (cmtPaymentCurrency === 'BS') {
+      const parsedRate = parseFloat(cmtAppliedRate);
+      if (!parsedRate || isNaN(parsedRate) || parsedRate <= 0) {
+        setCmtError(`Ingresa una tasa válida para ${COMMITMENT_RATE_META[cmtRateType].label}`);
+        return;
+      }
+      finalRateType = cmtRateType;
+      finalAppliedRate = Math.round(parsedRate * 100) / 100;
+      saveCommitmentRatePreference(cmtRateType, finalAppliedRate);
+    }
+
     const reserved = parseFloat(cmtReservedUSD || '0');
     const cleanReserved = isNaN(reserved) ? 0 : Math.min(amount, Math.max(0, reserved));
 
@@ -594,6 +767,9 @@ export const TreasuryFinanceView: React.FC = () => {
         dueDate: cmtDueDate,
         amountUSD: amount,
         reservedUSD: cleanReserved,
+        paymentCurrency: cmtPaymentCurrency,
+        exchangeRateType: finalRateType,
+        appliedExchangeRate: finalAppliedRate,
         notes: cmtNotes.trim() || undefined,
       });
       showBanner('success', `Compromiso "${cmtTitle.trim()}" actualizado.`);
@@ -604,6 +780,9 @@ export const TreasuryFinanceView: React.FC = () => {
         dueDate: cmtDueDate,
         amountUSD: amount,
         reservedUSD: cleanReserved,
+        paymentCurrency: cmtPaymentCurrency,
+        exchangeRateType: finalRateType,
+        appliedExchangeRate: finalAppliedRate,
         notes: cmtNotes.trim() || undefined,
       });
       showBanner('success', `Compromiso "${cmtTitle.trim()}" programado.`);
@@ -612,16 +791,31 @@ export const TreasuryFinanceView: React.FC = () => {
   };
 
   const openPayCommitmentModal = (cm: TreasuryCommitment) => {
-    if (treasuryAccounts.length === 0) {
-      const seeded = initializeDefaultTreasuryAccounts();
-      setPayAccountId(seeded[0]?.id || '');
+    const accounts =
+      treasuryAccounts.length === 0 ? initializeDefaultTreasuryAccounts() : treasuryAccounts;
+
+    let preferredAccount: TreasuryAccount | undefined;
+    if (cm.paymentCurrency === 'BS') {
+      preferredAccount =
+        accounts.find((a) => a.currency === 'BS' && a.group === 'BANCO_NACIONAL') ||
+        accounts.find((a) => a.currency === 'BS');
     } else {
-      setPayAccountId(treasuryAccounts[0]?.id || '');
+      preferredAccount =
+        accounts.find((a) => a.currency === 'USD' && a.group === 'EFECTIVO') ||
+        accounts.find((a) => a.currency === 'USD');
     }
+
+    const rateType: TreasuryCommitmentRateType = cm.exchangeRateType || 'BCV';
+    const effectiveRate =
+      cm.paymentCurrency === 'BS' ? getEffectiveCommitmentBsRate(cm, bcvRate) : bcvRate;
+
+    setPayAccountId(preferredAccount?.id || accounts[0]?.id || '');
     setPayingCommitment(cm);
     setPayDate(todayStr);
     setPayReference('');
     setPaySyncExpense(cm.category !== 'PROVEEDORES');
+    setPayRateType(rateType);
+    setPayAppliedRate(effectiveRate.toFixed(2));
     setPayError('');
   };
 
@@ -632,15 +826,37 @@ export const TreasuryFinanceView: React.FC = () => {
       setPayError('Selecciona la cuenta desde la cual se realizará el pago');
       return;
     }
+
+    const isBsCommitment = payingCommitment.paymentCurrency === 'BS';
+    let confirmedRate: number | undefined;
+    let confirmedRateType: TreasuryCommitmentRateType | undefined;
+
+    if (isBsCommitment) {
+      const parsedRate = parseFloat(payAppliedRate);
+      if (!parsedRate || isNaN(parsedRate) || parsedRate <= 0) {
+        setPayError(`Ingresa una tasa válida para ${COMMITMENT_RATE_META[payRateType].label}`);
+        return;
+      }
+      confirmedRate = Math.round(parsedRate * 100) / 100;
+      confirmedRateType = payRateType;
+      saveCommitmentRatePreference(payRateType, confirmedRate);
+    }
+
     const result = markCommitmentPaidFromAccount(payingCommitment.id, payAccountId, {
       paymentDate: payDate,
       reference: payReference.trim() || undefined,
       syncToExpense: paySyncExpense,
+      appliedExchangeRate: confirmedRate,
+      exchangeRateType: confirmedRateType,
     });
     if (result) {
+      const paidSummary =
+        isBsCommitment && confirmedRate && confirmedRateType
+          ? `${formatBs(payingCommitment.amountUSD * confirmedRate)} (${COMMITMENT_RATE_META[confirmedRateType].label}: ${confirmedRate.toFixed(2)})`
+          : formatUSD(payingCommitment.amountUSD);
       showBanner(
         'success',
-        `Pago de ${formatUSD(payingCommitment.amountUSD)} descontado de "${result.account.name}".`
+        `Pago de ${paidSummary} descontado de "${result.account.name}".`
       );
       setPayingCommitment(null);
     } else {
@@ -1295,6 +1511,12 @@ export const TreasuryFinanceView: React.FC = () => {
                   {filteredCommitments.map((cm) => {
                     const catMeta = COMMITMENT_CATEGORY_META[cm.category];
                     const statusInfo = getCommitmentDisplayStatus(cm);
+                    const isBsCommitment = cm.paymentCurrency === 'BS';
+                    const rateType: TreasuryCommitmentRateType = cm.exchangeRateType || 'BCV';
+                    const rateMeta = COMMITMENT_RATE_META[rateType];
+                    const effectiveBsRate = isBsCommitment
+                      ? getEffectiveCommitmentBsRate(cm, bcvRate)
+                      : null;
                     return (
                       <tr
                         key={cm.id}
@@ -1305,12 +1527,23 @@ export const TreasuryFinanceView: React.FC = () => {
                             <p className="font-semibold text-slate-900 leading-snug">
                               {cm.title}
                             </p>
-                            <div className="flex flex-wrap items-center gap-2">
+                            <div className="flex flex-wrap items-center gap-1.5">
                               <span
                                 className={`inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-semibold border ${catMeta.chipClass}`}
                               >
                                 {catMeta.label}
                               </span>
+                              {isBsCommitment ? (
+                                <span
+                                  className={`inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-semibold border ${rateMeta.badgeClass}`}
+                                >
+                                  Bs · {rateMeta.label}
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-semibold border bg-emerald-50 text-emerald-700 border-emerald-200">
+                                  Efectivo USD ($)
+                                </span>
+                              )}
                               {!cm.isPaid && (cm.reservedUSD || 0) > 0 && (
                                 <span className="text-[11px] text-emerald-700 font-mono tabular-nums">
                                   Apartado: {formatUSD(cm.reservedUSD || 0)}
@@ -1333,9 +1566,18 @@ export const TreasuryFinanceView: React.FC = () => {
                           <p className="font-bold text-slate-900 font-mono tabular-nums">
                             {formatUSD(cm.amountUSD)}
                           </p>
-                          <p className="text-[11px] text-slate-500 font-mono tabular-nums">
-                            {formatBs(cm.amountUSD * bcvRate)}
-                          </p>
+                          {isBsCommitment && effectiveBsRate ? (
+                            <p className="text-[11px] text-slate-600 font-mono tabular-nums">
+                              {formatBs(cm.amountUSD * effectiveBsRate)}{' '}
+                              <span className="text-[10px] text-slate-400">
+                                ({rateMeta.shortLabel} {effectiveBsRate.toFixed(2)})
+                              </span>
+                            </p>
+                          ) : (
+                            <p className="text-[11px] text-emerald-700 font-medium">
+                              Efectivo $
+                            </p>
+                          )}
                         </td>
 
                         <td className="py-3.5 px-3 whitespace-nowrap">
@@ -1876,8 +2118,8 @@ export const TreasuryFinanceView: React.FC = () => {
       {/* Modal: Create / Edit Commitment */}
       {isCommitmentModalOpen && (
         <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl border border-slate-200 w-full max-w-md shadow-2xl overflow-hidden">
-            <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between">
+          <div className="bg-white rounded-2xl border border-slate-200 w-full max-w-md shadow-2xl overflow-hidden flex flex-col max-h-[92vh]">
+            <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between shrink-0">
               <h3 className="text-base font-bold text-slate-900">
                 {editingCommitment ? 'Editar Compromiso de Pago' : 'Planificar Pago o Gasto Fijo'}
               </h3>
@@ -1890,7 +2132,10 @@ export const TreasuryFinanceView: React.FC = () => {
               </button>
             </div>
 
-            <form onSubmit={handleSaveCommitment} className="p-5 space-y-4 text-xs">
+            <form
+              onSubmit={handleSaveCommitment}
+              className="p-5 space-y-4 text-xs overflow-y-auto"
+            >
               {cmtError && (
                 <div className="p-2.5 rounded-lg bg-rose-50 border border-rose-200 text-rose-700 font-semibold">
                   {cmtError}
@@ -1941,6 +2186,127 @@ export const TreasuryFinanceView: React.FC = () => {
                 </div>
               </div>
 
+              {/* Moneda del Compromiso: Efectivo Dólares vs Bolívares */}
+              <div>
+                <label className="block font-semibold text-slate-700 mb-1.5">
+                  Moneda de Pago del Compromiso *
+                </label>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCmtPaymentCurrency('EFECTIVO_USD');
+                      setCmtError('');
+                    }}
+                    className={`flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl border font-bold transition-all cursor-pointer ${
+                      cmtPaymentCurrency === 'EFECTIVO_USD'
+                        ? 'bg-emerald-50 border-emerald-500 text-emerald-800 ring-1 ring-emerald-500/30'
+                        : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+                    }`}
+                  >
+                    <Banknote className="w-4 h-4 shrink-0" />
+                    Efectivo Dólares ($)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCmtPaymentCurrency('BS');
+                      setCmtError('');
+                      if (!cmtAppliedRate) {
+                        handleSelectCmtRateType(cmtRateType);
+                      }
+                    }}
+                    className={`flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl border font-bold transition-all cursor-pointer ${
+                      cmtPaymentCurrency === 'BS'
+                        ? 'bg-blue-50 border-blue-500 text-blue-800 ring-1 ring-blue-500/30'
+                        : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+                    }`}
+                  >
+                    <Building2 className="w-4 h-4 shrink-0" />
+                    En Bolívares (Bs)
+                  </button>
+                </div>
+              </div>
+
+              {/* Selector de Tasa cuando el compromiso es en Bolívares */}
+              {cmtPaymentCurrency === 'BS' && (
+                <div className="rounded-xl bg-slate-50 border border-slate-200 p-3.5 space-y-3">
+                  <div>
+                    <label className="block font-semibold text-slate-700 mb-1.5">
+                      ¿A qué tasa se calcula el pago en Bs? *
+                    </label>
+                    <div className="grid grid-cols-3 gap-2">
+                      {(['BCV', 'EURO', 'USDT'] as TreasuryCommitmentRateType[]).map((rt) => {
+                        const meta = COMMITMENT_RATE_META[rt];
+                        const isSelected = cmtRateType === rt;
+                        return (
+                          <button
+                            key={rt}
+                            type="button"
+                            onClick={() => handleSelectCmtRateType(rt)}
+                            className={`px-2.5 py-2 rounded-lg border text-[11px] font-bold transition-all cursor-pointer ${
+                              isSelected
+                                ? 'bg-slate-900 border-slate-900 text-white shadow-xs'
+                                : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-100'
+                            }`}
+                          >
+                            {meta.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="flex items-center justify-between gap-2 mb-1">
+                      <label className="font-semibold text-slate-700">
+                        Valor {COMMITMENT_RATE_META[cmtRateType].label} (Bs / $) *
+                      </label>
+                      {cmtRateType === 'EURO' && (
+                        <button
+                          type="button"
+                          onClick={() => void fetchEuroRateInto('form')}
+                          disabled={isFetchingEuroRate}
+                          className="inline-flex items-center gap-1 text-[11px] font-semibold text-violet-700 hover:text-violet-900 cursor-pointer disabled:opacity-50"
+                        >
+                          <RefreshCw
+                            className={`w-3 h-3 ${isFetchingEuroRate ? 'animate-spin' : ''}`}
+                          />
+                          {isFetchingEuroRate ? 'Consultando...' : 'Consultar Euro BCV'}
+                        </button>
+                      )}
+                      {cmtRateType === 'BCV' && (
+                        <button
+                          type="button"
+                          onClick={() => setCmtAppliedRate(bcvRate.toFixed(2))}
+                          className="text-[11px] font-semibold text-blue-700 hover:text-blue-900 cursor-pointer"
+                        >
+                          BCV actual: {bcvRate.toFixed(2)}
+                        </button>
+                      )}
+                    </div>
+                    <input
+                      type="number"
+                      step="0.01"
+                      min="0.01"
+                      value={cmtAppliedRate}
+                      onChange={(e) => setCmtAppliedRate(e.target.value)}
+                      placeholder={
+                        cmtRateType === 'USDT'
+                          ? 'Ej: 95.50'
+                          : cmtRateType === 'EURO'
+                            ? 'Ej: 88.20'
+                            : bcvRate.toFixed(2)
+                      }
+                      className="w-full px-3 py-2 rounded-xl border border-slate-200 bg-white font-mono text-sm font-bold focus:outline-none focus:ring-2 focus:ring-slate-900/15"
+                    />
+                    {euroFetchHint && cmtRateType === 'EURO' && (
+                      <p className="text-[10px] text-violet-700 mt-1">{euroFetchHint}</p>
+                    )}
+                  </div>
+                </div>
+              )}
+
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <label className="block font-semibold text-slate-700 mb-1">
@@ -1955,9 +2321,17 @@ export const TreasuryFinanceView: React.FC = () => {
                     placeholder="0.00"
                     className="w-full px-3 py-2 rounded-xl border border-slate-200 font-mono text-sm font-bold focus:outline-none focus:ring-2 focus:ring-slate-900/15"
                   />
-                  {Number(cmtAmountUSD) > 0 && (
-                    <p className="text-[10px] text-slate-500 mt-1 font-mono tabular-nums">
-                      {formatBs((Number(cmtAmountUSD) || 0) * bcvRate)}
+                  {cmtPaymentCurrency === 'EFECTIVO_USD' ? (
+                    <p className="text-[10px] text-emerald-700 mt-1 font-medium">
+                      Se paga en efectivo dólares ($)
+                    </p>
+                  ) : Number(cmtAmountUSD) > 0 && Number(cmtAppliedRate) > 0 ? (
+                    <p className="text-[11px] text-blue-700 mt-1 font-mono font-bold tabular-nums">
+                      {formatBs((Number(cmtAmountUSD) || 0) * (Number(cmtAppliedRate) || 0))}
+                    </p>
+                  ) : (
+                    <p className="text-[10px] text-slate-400 mt-1">
+                      Ingresa monto y tasa para calcular en Bs
                     </p>
                   )}
                 </div>
@@ -2012,120 +2386,206 @@ export const TreasuryFinanceView: React.FC = () => {
       )}
 
       {/* Modal: Mark Commitment as Paid (deducting from a specific account) */}
-      {payingCommitment && (
-        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl border border-slate-200 w-full max-w-md shadow-2xl overflow-hidden">
-            <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between">
-              <h3 className="text-base font-bold text-slate-900">
-                Confirmar Pago desde Cuenta
-              </h3>
-              <button
-                type="button"
-                onClick={() => setPayingCommitment(null)}
-                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-
-            <form onSubmit={handleConfirmPayCommitment} className="p-5 space-y-4 text-xs">
-              {payError && (
-                <div className="p-2.5 rounded-lg bg-rose-50 border border-rose-200 text-rose-700 font-semibold">
-                  {payError}
-                </div>
-              )}
-
-              <div className="rounded-xl bg-slate-50 border border-slate-200 p-3.5 space-y-1">
-                <p className="font-bold text-slate-900">{payingCommitment.title}</p>
-                <div className="flex items-center justify-between pt-1">
-                  <span className="text-slate-500">Monto a descontar:</span>
-                  <div className="text-right">
-                    <span className="text-sm font-bold text-slate-900 font-mono tabular-nums block">
-                      {formatUSD(payingCommitment.amountUSD)}
-                    </span>
-                    <span className="text-[11px] text-slate-500 font-mono tabular-nums">
-                      {formatBs(payingCommitment.amountUSD * bcvRate)}
-                    </span>
-                  </div>
-                </div>
-              </div>
-
-              <div>
-                <label className="block font-semibold text-slate-700 mb-1">
-                  Cuenta de origen del pago *
-                </label>
-                <select
-                  value={payAccountId}
-                  onChange={(e) => setPayAccountId(e.target.value)}
-                  className="w-full px-3 py-2.5 rounded-xl border border-slate-200 bg-white font-medium focus:outline-none focus:ring-2 focus:ring-slate-900/15"
-                >
-                  {treasuryAccounts.map((acc) => (
-                    <option key={acc.id} value={acc.id}>
-                      {acc.name} — Saldo: {formatNativeBalance(acc.currency, acc.nativeBalance)}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block font-semibold text-slate-700 mb-1">
-                    Fecha de pago
-                  </label>
-                  <input
-                    type="date"
-                    value={payDate}
-                    onChange={(e) => setPayDate(e.target.value)}
-                    className="w-full px-3 py-2 rounded-xl border border-slate-200 font-mono focus:outline-none focus:ring-2 focus:ring-slate-900/15"
-                  />
-                </div>
-                <div>
-                  <label className="block font-semibold text-slate-700 mb-1">
-                    Referencia / Recibo
-                  </label>
-                  <input
-                    type="text"
-                    value={payReference}
-                    onChange={(e) => setPayReference(e.target.value)}
-                    placeholder="Ej: 882190"
-                    className="w-full px-3 py-2 rounded-xl border border-slate-200 font-mono focus:outline-none focus:ring-2 focus:ring-slate-900/15"
-                  />
-                </div>
-              </div>
-
-              {payingCommitment.category !== 'PROVEEDORES' && (
-                <label className="flex items-center gap-2 cursor-pointer select-none pt-1">
-                  <input
-                    type="checkbox"
-                    checked={paySyncExpense}
-                    onChange={(e) => setPaySyncExpense(e.target.checked)}
-                    className="rounded border-slate-300 text-slate-900 focus:ring-slate-900"
-                  />
-                  <span className="text-slate-700 font-medium">
-                    Registrar también en Gastos del Negocio
-                  </span>
-                </label>
-              )}
-
-              <div className="flex justify-end gap-2 pt-2">
+      {payingCommitment && (() => {
+        const isBsPay = payingCommitment.paymentCurrency === 'BS';
+        const parsedPayRate = parseFloat(payAppliedRate) || 0;
+        const payRateMeta = COMMITMENT_RATE_META[payRateType];
+        return (
+          <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+            <div className="bg-white rounded-2xl border border-slate-200 w-full max-w-md shadow-2xl overflow-hidden flex flex-col max-h-[92vh]">
+              <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between shrink-0">
+                <h3 className="text-base font-bold text-slate-900">
+                  Confirmar Pago desde Cuenta
+                </h3>
                 <button
                   type="button"
                   onClick={() => setPayingCommitment(null)}
-                  className="px-4 py-2 rounded-xl border border-slate-200 text-slate-600 font-semibold hover:bg-slate-50 cursor-pointer"
+                  className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 cursor-pointer"
                 >
-                  Cancelar
-                </button>
-                <button
-                  type="submit"
-                  className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold cursor-pointer"
-                >
-                  Confirmar y Descontar
+                  <X className="w-4 h-4" />
                 </button>
               </div>
-            </form>
+
+              <form
+                onSubmit={handleConfirmPayCommitment}
+                className="p-5 space-y-4 text-xs overflow-y-auto"
+              >
+                {payError && (
+                  <div className="p-2.5 rounded-lg bg-rose-50 border border-rose-200 text-rose-700 font-semibold">
+                    {payError}
+                  </div>
+                )}
+
+                <div className="rounded-xl bg-slate-50 border border-slate-200 p-3.5 space-y-2">
+                  <div className="flex items-start justify-between gap-2">
+                    <p className="font-bold text-slate-900">{payingCommitment.title}</p>
+                    {isBsPay ? (
+                      <span
+                        className={`inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-semibold border shrink-0 ${payRateMeta.badgeClass}`}
+                      >
+                        Bs · {payRateMeta.label}
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-semibold border bg-emerald-50 text-emerald-700 border-emerald-200 shrink-0">
+                        Efectivo USD ($)
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex items-center justify-between pt-1 border-t border-slate-200/70">
+                    <span className="text-slate-500">Monto a descontar:</span>
+                    <div className="text-right">
+                      <span className="text-sm font-bold text-slate-900 font-mono tabular-nums block">
+                        {formatUSD(payingCommitment.amountUSD)}
+                      </span>
+                      {isBsPay ? (
+                        <span className="text-[11px] text-blue-700 font-mono font-bold tabular-nums">
+                          {parsedPayRate > 0
+                            ? `${formatBs(payingCommitment.amountUSD * parsedPayRate)} (${payRateMeta.shortLabel} ${parsedPayRate.toFixed(2)})`
+                            : 'Define la tasa para ver en Bs'}
+                        </span>
+                      ) : (
+                        <span className="text-[11px] text-emerald-700 font-medium">
+                          Pago en Efectivo Dólares ($)
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {isBsPay && (
+                  <div className="rounded-xl bg-slate-50 border border-slate-200 p-3 space-y-2.5">
+                    <label className="block font-semibold text-slate-700">
+                      Tasa aplicada al momento del pago
+                    </label>
+                    <div className="grid grid-cols-3 gap-1.5">
+                      {(['BCV', 'EURO', 'USDT'] as TreasuryCommitmentRateType[]).map((rt) => (
+                        <button
+                          key={rt}
+                          type="button"
+                          onClick={() => handleSelectPayRateType(rt)}
+                          className={`px-2 py-1.5 rounded-lg border text-[11px] font-bold transition-all cursor-pointer ${
+                            payRateType === rt
+                              ? 'bg-slate-900 border-slate-900 text-white'
+                              : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-100'
+                          }`}
+                        >
+                          {COMMITMENT_RATE_META[rt].label}
+                        </button>
+                      ))}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="number"
+                        step="0.01"
+                        min="0.01"
+                        value={payAppliedRate}
+                        onChange={(e) => setPayAppliedRate(e.target.value)}
+                        placeholder="Tasa Bs / $"
+                        className="flex-1 px-3 py-2 rounded-xl border border-slate-200 bg-white font-mono text-sm font-bold focus:outline-none focus:ring-2 focus:ring-slate-900/15"
+                      />
+                      {payRateType === 'EURO' && (
+                        <button
+                          type="button"
+                          onClick={() => void fetchEuroRateInto('pay')}
+                          disabled={isFetchingPayEuroRate}
+                          className="inline-flex items-center gap-1 px-2.5 py-2 rounded-xl border border-violet-200 bg-violet-50 text-violet-700 font-semibold hover:bg-violet-100 cursor-pointer disabled:opacity-50 whitespace-nowrap"
+                        >
+                          <RefreshCw
+                            className={`w-3.5 h-3.5 ${isFetchingPayEuroRate ? 'animate-spin' : ''}`}
+                          />
+                          Euro BCV
+                        </button>
+                      )}
+                      {payRateType === 'BCV' && (
+                        <button
+                          type="button"
+                          onClick={() => setPayAppliedRate(bcvRate.toFixed(2))}
+                          className="px-2.5 py-2 rounded-xl border border-blue-200 bg-blue-50 text-blue-700 font-semibold hover:bg-blue-100 cursor-pointer whitespace-nowrap"
+                        >
+                          BCV: {bcvRate.toFixed(2)}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                <div>
+                  <label className="block font-semibold text-slate-700 mb-1">
+                    Cuenta de origen del pago *
+                  </label>
+                  <select
+                    value={payAccountId}
+                    onChange={(e) => setPayAccountId(e.target.value)}
+                    className="w-full px-3 py-2.5 rounded-xl border border-slate-200 bg-white font-medium focus:outline-none focus:ring-2 focus:ring-slate-900/15"
+                  >
+                    {treasuryAccounts.map((acc) => (
+                      <option key={acc.id} value={acc.id}>
+                        {acc.name} — Saldo: {formatNativeBalance(acc.currency, acc.nativeBalance)}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block font-semibold text-slate-700 mb-1">
+                      Fecha de pago
+                    </label>
+                    <input
+                      type="date"
+                      value={payDate}
+                      onChange={(e) => setPayDate(e.target.value)}
+                      className="w-full px-3 py-2 rounded-xl border border-slate-200 font-mono focus:outline-none focus:ring-2 focus:ring-slate-900/15"
+                    />
+                  </div>
+                  <div>
+                    <label className="block font-semibold text-slate-700 mb-1">
+                      Referencia / Recibo
+                    </label>
+                    <input
+                      type="text"
+                      value={payReference}
+                      onChange={(e) => setPayReference(e.target.value)}
+                      placeholder="Ej: 882190"
+                      className="w-full px-3 py-2 rounded-xl border border-slate-200 font-mono focus:outline-none focus:ring-2 focus:ring-slate-900/15"
+                    />
+                  </div>
+                </div>
+
+                {payingCommitment.category !== 'PROVEEDORES' && (
+                  <label className="flex items-center gap-2 cursor-pointer select-none pt-1">
+                    <input
+                      type="checkbox"
+                      checked={paySyncExpense}
+                      onChange={(e) => setPaySyncExpense(e.target.checked)}
+                      className="rounded border-slate-300 text-slate-900 focus:ring-slate-900"
+                    />
+                    <span className="text-slate-700 font-medium">
+                      Registrar también en Gastos del Negocio
+                    </span>
+                  </label>
+                )}
+
+                <div className="flex justify-end gap-2 pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setPayingCommitment(null)}
+                    className="px-4 py-2 rounded-xl border border-slate-200 text-slate-600 font-semibold hover:bg-slate-50 cursor-pointer"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    type="submit"
+                    className="px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-bold cursor-pointer"
+                  >
+                    Confirmar y Descontar
+                  </button>
+                </div>
+              </form>
+            </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* Modal: Allocate Reserve Amount for Monthly Coverage */}
       {reservingCommitment && (

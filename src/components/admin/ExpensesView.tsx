@@ -25,6 +25,8 @@ import {
   DollarSign,
   FolderPlus,
   AlertCircle,
+  Landmark,
+  ArrowUpRight,
 } from 'lucide-react';
 
 interface PaymentOptionConfig {
@@ -86,7 +88,11 @@ export const ExpensesView: React.FC = () => {
     currentMonthExpensesUSD,
     currentMonthExpensesBs,
     totalExpensesUSD,
-    totalExpensesBs,
+    treasuryAccounts,
+    initializeDefaultTreasuryAccounts,
+    totalLiquidityUSD,
+    totalLiquidityBs,
+    setCurrentView,
   } = useApp();
 
   const bcvRate = settings.bcvRate || 1;
@@ -112,6 +118,8 @@ export const ExpensesView: React.FC = () => {
   const [formAmountBs, setFormAmountBs] = useState<string>('');
   const [formReference, setFormReference] = useState('');
   const [formNotes, setFormNotes] = useState('');
+  const [formDeductTreasury, setFormDeductTreasury] = useState(true);
+  const [formTreasuryAccountId, setFormTreasuryAccountId] = useState('');
   const [formError, setFormError] = useState('');
 
   // Inline new category inside Expense Form
@@ -222,18 +230,52 @@ export const ExpensesView: React.FC = () => {
 
   const topCategory = categoryBreakdown[0] || null;
 
+  const findSuggestedAccountId = (paymentType: ExpensePaymentCurrency): string => {
+    if (treasuryAccounts.length === 0) return '';
+    if (paymentType === 'EFECTIVO_USD') {
+      return (
+        treasuryAccounts.find((a) => a.currency === 'USD' && a.group === 'EFECTIVO')?.id ||
+        treasuryAccounts.find((a) => a.currency === 'USD')?.id ||
+        treasuryAccounts[0].id
+      );
+    }
+    if (paymentType === 'EFECTIVO_BS') {
+      return (
+        treasuryAccounts.find((a) => a.currency === 'BS' && a.group === 'EFECTIVO')?.id ||
+        treasuryAccounts.find((a) => a.currency === 'BS')?.id ||
+        treasuryAccounts[0].id
+      );
+    }
+    if (paymentType === 'BS') {
+      return (
+        treasuryAccounts.find((a) => a.currency === 'BS' && a.group === 'BANCO_NACIONAL')?.id ||
+        treasuryAccounts.find((a) => a.currency === 'BS')?.id ||
+        treasuryAccounts[0].id
+      );
+    }
+    return (
+      treasuryAccounts.find((a) => a.currency === 'USDT')?.id ||
+      treasuryAccounts.find((a) => a.group === 'BILLETERA_DIVISAS')?.id ||
+      treasuryAccounts.find((a) => a.currency === 'USD')?.id ||
+      treasuryAccounts[0].id
+    );
+  };
+
   const openNewExpenseModal = () => {
     setEditingExpense(null);
     setFormDate(todayStr);
     setFormCategory(expenseCategories[0] || DEFAULT_EXPENSE_CATEGORIES[0]);
     setFormDescription('');
     setFormBeneficiary('');
-    setFormPaymentType('EFECTIVO_USD');
+    const initialPaymentType: ExpensePaymentCurrency = 'EFECTIVO_USD';
+    setFormPaymentType(initialPaymentType);
     setFormRate(bcvRate.toFixed(2));
     setFormAmountUSD('');
     setFormAmountBs('');
     setFormReference('');
     setFormNotes('');
+    setFormDeductTreasury(true);
+    setFormTreasuryAccountId(findSuggestedAccountId(initialPaymentType));
     setFormError('');
     setShowInlineNewCat(false);
     setInlineNewCatName('');
@@ -246,13 +288,17 @@ export const ExpensesView: React.FC = () => {
     setFormCategory(expense.category);
     setFormDescription(expense.description);
     setFormBeneficiary(expense.beneficiary || '');
-    setFormPaymentType(expense.paymentCurrencyType || 'EFECTIVO_USD');
+    const payType = expense.paymentCurrencyType || 'EFECTIVO_USD';
+    setFormPaymentType(payType);
     const r = expense.bcvRate || bcvRate;
     setFormRate(r.toFixed(2));
     setFormAmountUSD((Number(expense.amountUSD) || 0).toFixed(2));
     setFormAmountBs((Number(expense.amountBs) || 0).toFixed(2));
     setFormReference(expense.reference || '');
     setFormNotes(expense.notes || '');
+    const isLinked = Boolean(expense.deductedFromTreasury || expense.treasuryMovementId);
+    setFormDeductTreasury(isLinked);
+    setFormTreasuryAccountId(expense.treasuryAccountId || findSuggestedAccountId(payType));
     setFormError('');
     setShowInlineNewCat(false);
     setInlineNewCatName('');
@@ -351,6 +397,8 @@ export const ExpensesView: React.FC = () => {
         paymentMethod: opt.method,
         reference: formReference.trim() || undefined,
         notes: formNotes.trim() || undefined,
+        deductedFromTreasury: formDeductTreasury,
+        treasuryAccountId: formDeductTreasury ? formTreasuryAccountId || undefined : undefined,
       });
     } else {
       addExpense({
@@ -365,6 +413,8 @@ export const ExpensesView: React.FC = () => {
         paymentMethod: opt.method,
         reference: formReference.trim() || undefined,
         notes: formNotes.trim() || undefined,
+        deductFromTreasury: formDeductTreasury,
+        treasuryAccountId: formDeductTreasury ? formTreasuryAccountId || undefined : undefined,
       });
     }
 
@@ -448,6 +498,40 @@ export const ExpensesView: React.FC = () => {
             <span>Registrar Gasto</span>
           </button>
         </div>
+      </div>
+
+      {/* Connected Treasury Liquidity Bar */}
+      <div className="bg-slate-900 text-white rounded-2xl border border-slate-800 px-5 py-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <div className="w-9 h-9 rounded-xl bg-emerald-500/15 border border-emerald-400/30 text-emerald-400 flex items-center justify-center shrink-0">
+            <Landmark className="w-4 h-4" />
+          </div>
+          <div>
+            <span className="text-[11px] font-semibold text-slate-400 block">
+              Conectado con Tesorería y Finanzas · Liquidez Disponible
+            </span>
+            <div className="flex flex-wrap items-baseline gap-2.5 mt-0.5">
+              <span
+                className={`text-lg font-extrabold font-mono tabular-nums ${
+                  totalLiquidityUSD < 0 ? 'text-rose-400' : 'text-emerald-400'
+                }`}
+              >
+                {formatUSD(totalLiquidityUSD)}
+              </span>
+              <span className="text-xs font-mono tabular-nums text-slate-300">
+                {formatBs(totalLiquidityBs)} BCV
+              </span>
+            </div>
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={() => setCurrentView('admin_tesoreria')}
+          className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-white/10 hover:bg-white/15 text-white text-xs font-semibold rounded-xl transition-colors cursor-pointer whitespace-nowrap shrink-0 self-start sm:self-auto"
+        >
+          <span>Ver Tesorería y Finanzas</span>
+          <ArrowUpRight className="w-3.5 h-3.5 text-amber-400" />
+        </button>
       </div>
 
       {/* KPI Strip (Single elevation, tabular-nums) */}
@@ -746,6 +830,12 @@ export const ExpensesView: React.FC = () => {
                       >
                         {getPaymentShortLabel(expense.paymentCurrencyType)}
                       </span>
+                      {expense.deductedFromTreasury && expense.treasuryAccountName && (
+                        <span className="flex items-center gap-1 text-[10px] text-emerald-700 font-medium mt-1">
+                          <Landmark className="w-3 h-3 shrink-0" />
+                          <span>{expense.treasuryAccountName}</span>
+                        </span>
+                      )}
                     </td>
                     <td className="py-3 px-4 text-right font-mono tabular-nums font-bold text-slate-950 whitespace-nowrap">
                       {formatUSD(expense.amountUSD)}
@@ -931,7 +1021,11 @@ export const ExpensesView: React.FC = () => {
                       <button
                         key={opt.type}
                         type="button"
-                        onClick={() => setFormPaymentType(opt.type)}
+                        onClick={() => {
+                          setFormPaymentType(opt.type);
+                          const suggested = findSuggestedAccountId(opt.type);
+                          if (suggested) setFormTreasuryAccountId(suggested);
+                        }}
                         className={`p-3 rounded-xl border text-left transition-all flex items-start gap-3 cursor-pointer ${
                           active
                             ? 'bg-slate-900 text-white border-slate-900'
@@ -960,6 +1054,129 @@ export const ExpensesView: React.FC = () => {
                   })}
                 </div>
               </div>
+
+              {/* Row 3.5: Conexión directa con Tesorería y Finanzas (Descuento de Liquidez) */}
+              {(() => {
+                const selectedAcc = treasuryAccounts.find((a) => a.id === formTreasuryAccountId);
+                const parsedUSDVal = parseFloat(formAmountUSD) || 0;
+                const parsedBsVal = parseFloat(formAmountBs) || 0;
+                const prevDeductionOnSameAccount =
+                  editingExpense &&
+                  (editingExpense.deductedFromTreasury || editingExpense.treasuryMovementId) &&
+                  editingExpense.treasuryAccountId === selectedAcc?.id
+                    ? selectedAcc?.currency === 'BS'
+                      ? Number(editingExpense.amountBs) || 0
+                      : Number(editingExpense.amountUSD) || 0
+                    : 0;
+                const currentNative = selectedAcc ? Number(selectedAcc.nativeBalance) || 0 : 0;
+                const deductionNative =
+                  selectedAcc?.currency === 'BS' ? parsedBsVal : parsedUSDVal;
+                const projectedNative =
+                  currentNative + prevDeductionOnSameAccount - deductionNative;
+                const formatAccNative = (acc: typeof selectedAcc, val: number) => {
+                  if (!acc) return formatUSD(val);
+                  if (acc.currency === 'BS') return formatBs(val);
+                  if (acc.currency === 'USDT') return `${val.toFixed(2)} USDT`;
+                  return formatUSD(val);
+                };
+
+                return (
+                  <div className="p-4 bg-emerald-50/60 rounded-xl border border-emerald-200 space-y-3">
+                    <label className="flex items-start gap-2.5 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={formDeductTreasury}
+                        onChange={(e) => {
+                          setFormDeductTreasury(e.target.checked);
+                          if (e.target.checked && !formTreasuryAccountId) {
+                            const suggested = findSuggestedAccountId(formPaymentType);
+                            if (suggested) setFormTreasuryAccountId(suggested);
+                          }
+                        }}
+                        className="mt-0.5 rounded text-emerald-600 focus:ring-emerald-500"
+                      />
+                      <div className="min-w-0">
+                        <span className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
+                          <Landmark className="w-3.5 h-3.5 text-emerald-700 shrink-0" />
+                          <span>Descontar automáticamente de la Liquidez Disponible (Tesorería)</span>
+                        </span>
+                        <span className="text-[11px] text-slate-600 block mt-0.5">
+                          Registra el egreso en Tesorería y Finanzas y actualiza el saldo de la cuenta seleccionada.
+                        </span>
+                      </div>
+                    </label>
+
+                    {formDeductTreasury && (
+                      <div className="pl-6 space-y-2">
+                        {treasuryAccounts.length === 0 ? (
+                          <div className="flex flex-wrap items-center justify-between gap-2 bg-white border border-emerald-200 rounded-lg p-2.5 text-[11px] text-slate-700">
+                            <span>
+                              Al guardar se crearán automáticamente tus cuentas base de Tesorería y se descontará este gasto.
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const created = initializeDefaultTreasuryAccounts();
+                                if (created.length > 0) {
+                                  const match =
+                                    formPaymentType === 'BS'
+                                      ? created.find((a) => a.currency === 'BS' && a.group === 'BANCO_NACIONAL')
+                                      : formPaymentType === 'EFECTIVO_BS'
+                                        ? created.find((a) => a.currency === 'BS' && a.group === 'EFECTIVO')
+                                        : formPaymentType === 'USDT'
+                                          ? created.find((a) => a.currency === 'USDT')
+                                          : created.find((a) => a.currency === 'USD' && a.group === 'EFECTIVO');
+                                  setFormTreasuryAccountId((match || created[0]).id);
+                                }
+                              }}
+                              className="px-2.5 py-1 bg-slate-900 text-white font-semibold rounded-lg cursor-pointer shrink-0"
+                            >
+                              Inicializar Cuentas Ahora
+                            </button>
+                          </div>
+                        ) : (
+                          <>
+                            <div>
+                              <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                                Cuenta de Tesorería a descontar
+                              </label>
+                              <select
+                                value={formTreasuryAccountId}
+                                onChange={(e) => setFormTreasuryAccountId(e.target.value)}
+                                className="w-full px-3 py-2 bg-white border border-emerald-300 rounded-xl text-xs font-medium text-slate-900 focus:outline-hidden focus:ring-2 focus:ring-emerald-500"
+                              >
+                                {treasuryAccounts.map((acc) => (
+                                  <option key={acc.id} value={acc.id}>
+                                    {acc.name} — Disponible: {formatAccNative(acc, Number(acc.nativeBalance) || 0)}
+                                    {acc.currency === 'BS'
+                                      ? ` (${formatUSD((Number(acc.nativeBalance) || 0) / bcvRate)})`
+                                      : ''}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+
+                            {selectedAcc && (parsedUSDVal > 0 || parsedBsVal > 0) && (
+                              <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] bg-white border border-slate-200 rounded-lg px-3 py-2">
+                                <span className="text-slate-600">
+                                  Saldo estimado en <strong>{selectedAcc.name}</strong> tras el gasto:
+                                </span>
+                                <span
+                                  className={`font-mono font-bold tabular-nums ${
+                                    projectedNative < 0 ? 'text-rose-600' : 'text-emerald-700'
+                                  }`}
+                                >
+                                  {formatAccNative(selectedAcc, projectedNative)}
+                                </span>
+                              </div>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
 
               {/* Row 4: Montos (USD <-> Bs) + Tasa BCV */}
               <div className="p-4 bg-slate-50 rounded-xl border border-slate-200 space-y-3">
@@ -1194,6 +1411,12 @@ export const ExpensesView: React.FC = () => {
                   <strong className="font-mono">{expenseToDelete.expenseNumber}</strong> ({expenseToDelete.description}) por{' '}
                   <strong className="font-mono">{formatUSD(expenseToDelete.amountUSD)}</strong>.
                 </p>
+                {(expenseToDelete.deductedFromTreasury || expenseToDelete.treasuryMovementId) && (
+                  <p className="text-[11px] text-emerald-800 bg-emerald-50 border border-emerald-200 rounded-lg px-2.5 py-2 mt-2">
+                    También se revertirá el descuento en Tesorería (
+                    <strong>{expenseToDelete.treasuryAccountName || 'cuenta vinculada'}</strong>) y el monto volverá a la Liquidez Disponible.
+                  </p>
+                )}
               </div>
             </div>
             <div className="flex items-center justify-end gap-2 pt-2">

@@ -291,6 +291,10 @@
         "paymentCurrencyType": { "type": "string", "description": "BS, USDT, EFECTIVO_BS o EFECTIVO_USD" },
         "paymentMethod": { "type": "string", "description": "Descripción del método de pago" },
         "reference": { "type": "string", "description": "Referencia de pago" },
+        "treasuryAccountId": { "type": "string", "description": "ID de la cuenta de tesorería de donde se descontó el gasto" },
+        "treasuryAccountName": { "type": "string", "description": "Nombre de la cuenta de tesorería afectada" },
+        "treasuryMovementId": { "type": "string", "description": "ID del movimiento vinculado en Tesorería" },
+        "deductedFromTreasury": { "type": "boolean", "description": "Indica si el gasto descontó liquidez en Tesorería y Finanzas" },
         "createdAt": { "type": "string", "description": "Fecha de registro ISO" }
       },
       "required": ["id", "expenseNumber", "date", "category", "description", "amountUSD", "bcvRate", "amountBs", "paymentCurrencyType", "paymentMethod", "createdAt"]
@@ -320,8 +324,11 @@
         "category": { "type": "string", "description": "GASTOS_FIJOS, NOMINA_SUELDOS o PROVEEDORES" },
         "dueDate": { "type": "string", "description": "Fecha límite YYYY-MM-DD" },
         "amountUSD": { "type": "number", "description": "Monto en USD" },
-        "bcvRate": { "type": "number", "description": "Tasa BCV" },
+        "bcvRate": { "type": "number", "description": "Tasa aplicada en Bs" },
         "amountBs": { "type": "number", "description": "Monto en Bolívares" },
+        "paymentCurrency": { "type": "string", "description": "Moneda del compromiso: EFECTIVO_USD o BS" },
+        "exchangeRateType": { "type": "string", "description": "Tasa seleccionada cuando el compromiso es en Bs: BCV, EURO o USDT" },
+        "appliedExchangeRate": { "type": "number", "description": "Valor numérico de la tasa (BCV, Euro o USDT) en Bs" },
         "reservedUSD": { "type": "number", "description": "Monto apartado en USD" },
         "isPaid": { "type": "boolean", "description": "Estado pagado" },
         "createdAt": { "type": "string", "description": "Fecha de creación ISO" }
@@ -345,6 +352,7 @@
         "amountUSD": { "type": "number", "description": "Monto en USD" },
         "bcvRate": { "type": "number", "description": "Tasa BCV" },
         "amountBs": { "type": "number", "description": "Monto en Bolívares" },
+        "expenseId": { "type": "string", "description": "ID del gasto del negocio vinculado" },
         "createdAt": { "type": "string", "description": "Fecha de creación ISO" }
       },
       "required": ["id", "movementNumber", "date", "type", "accountId", "description", "amountUSD", "createdAt"]

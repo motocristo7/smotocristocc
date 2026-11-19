@@ -34,6 +34,8 @@ import {
   TreasuryAccountGroup,
   TreasuryAccount,
   TreasuryCommitmentCategory,
+  TreasuryCommitmentPaymentCurrency,
+  TreasuryCommitmentRateType,
   TreasuryCommitment,
   TreasuryMovementType,
   TreasuryMovement,
@@ -445,6 +447,11 @@ interface AppContextType {
     paymentMethod: ExpensePaymentMethod;
     reference?: string;
     notes?: string;
+    treasuryAccountId?: string;
+    treasuryAccountName?: string;
+    treasuryMovementId?: string;
+    deductFromTreasury?: boolean;
+    skipTreasuryDeduction?: boolean;
   }) => BusinessExpense;
   updateExpense: (id: string, updates: Partial<BusinessExpense>) => BusinessExpense | null;
   deleteExpense: (id: string) => void;
@@ -475,6 +482,9 @@ interface AppContextType {
     dueDate: string;
     amountUSD: number;
     bcvRate?: number;
+    paymentCurrency?: TreasuryCommitmentPaymentCurrency;
+    exchangeRateType?: TreasuryCommitmentRateType;
+    appliedExchangeRate?: number;
     reservedUSD?: number;
     linkedPurchaseOrderId?: string;
     isRecurringMonthly?: boolean;
@@ -490,6 +500,8 @@ interface AppContextType {
       reference?: string;
       notes?: string;
       syncToExpense?: boolean;
+      appliedExchangeRate?: number;
+      exchangeRateType?: TreasuryCommitmentRateType;
     }
   ) => {
     commitment: TreasuryCommitment;
@@ -6025,6 +6037,51 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     });
   };
 
+  const resolveTreasuryAccountForExpense = (
+    paymentCurrencyType: ExpensePaymentCurrency,
+    preferredAccountId?: string
+  ): TreasuryAccount | undefined => {
+    if (treasuryAccountsRef.current.length === 0) {
+      initializeDefaultTreasuryAccounts();
+    }
+    const accounts = treasuryAccountsRef.current;
+    if (accounts.length === 0) return undefined;
+
+    if (preferredAccountId) {
+      const explicit = accounts.find((a) => a.id === preferredAccountId);
+      if (explicit) return explicit;
+    }
+
+    if (paymentCurrencyType === 'EFECTIVO_USD') {
+      return (
+        accounts.find((a) => a.currency === 'USD' && a.group === 'EFECTIVO') ||
+        accounts.find((a) => a.currency === 'USD') ||
+        accounts[0]
+      );
+    }
+    if (paymentCurrencyType === 'EFECTIVO_BS') {
+      return (
+        accounts.find((a) => a.currency === 'BS' && a.group === 'EFECTIVO') ||
+        accounts.find((a) => a.currency === 'BS') ||
+        accounts[0]
+      );
+    }
+    if (paymentCurrencyType === 'BS') {
+      return (
+        accounts.find((a) => a.currency === 'BS' && a.group === 'BANCO_NACIONAL') ||
+        accounts.find((a) => a.currency === 'BS') ||
+        accounts[0]
+      );
+    }
+    // USDT
+    return (
+      accounts.find((a) => a.currency === 'USDT') ||
+      accounts.find((a) => a.group === 'BILLETERA_DIVISAS') ||
+      accounts.find((a) => a.currency === 'USD') ||
+      accounts[0]
+    );
+  };
+
   const addExpense: AppContextType['addExpense'] = (expenseData) => {
     const activeRate = Number(expenseData.bcvRate) > 0 ? Number(expenseData.bcvRate) : settingsRef.current.bcvRate || 1;
     const rawAmountUSD = Math.max(0, Number(expenseData.amountUSD) || 0);
@@ -6045,11 +6102,76 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     const year = new Date().getFullYear();
     const expenseNumber = `GAS-${year}-${String(nextIndex).padStart(4, '0')}`;
     const now = new Date().toISOString();
+    const expenseId = `exp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+    const expenseDate = expenseData.date || now.split('T')[0];
+
+    let linkedAccountId = expenseData.treasuryAccountId;
+    let linkedAccountName = expenseData.treasuryAccountName;
+    let linkedMovementId = expenseData.treasuryMovementId;
+    let deductedFromTreasury = Boolean(
+      expenseData.skipTreasuryDeduction && (expenseData.treasuryAccountId || expenseData.treasuryMovementId)
+    );
+
+    const shouldDeduct = !expenseData.skipTreasuryDeduction && expenseData.deductFromTreasury !== false;
+    if (shouldDeduct && amountUSD > 0) {
+      const targetAccount = resolveTreasuryAccountForExpense(
+        expenseData.paymentCurrencyType,
+        expenseData.treasuryAccountId
+      );
+      if (targetAccount) {
+        const nativeDelta = targetAccount.currency === 'BS' ? -amountBs : -amountUSD;
+        applyAccountDelta(targetAccount, -amountUSD, activeRate, nativeDelta);
+
+        const newMovement: TreasuryMovement = {
+          id: `mov-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          movementNumber: nextMovementNumber(),
+          date: expenseDate,
+          type: 'GASTO',
+          accountId: targetAccount.id,
+          accountName: targetAccount.name,
+          accountGroup: targetAccount.group,
+          category: expenseData.category.trim() || 'Otros Gastos',
+          description: expenseData.description.trim(),
+          amountUSD,
+          bcvRate: activeRate,
+          amountBs,
+          reference: expenseData.reference?.trim() || undefined,
+          expenseId,
+          notes:
+            expenseData.notes?.trim() ||
+            (expenseData.beneficiary?.trim()
+              ? `Gasto ${expenseNumber} · Pagado a: ${expenseData.beneficiary.trim()}`
+              : `Gasto del negocio ${expenseNumber}`),
+          createdAt: now,
+          updatedAt: now,
+        };
+
+        pendingSyncTreasuryMovementIdsRef.current.add(newMovement.id);
+        const nextMovements = [newMovement, ...treasuryMovementsRef.current].sort(
+          (a, b) =>
+            (b.date || b.createdAt || '').localeCompare(a.date || a.createdAt || '') ||
+            (b.createdAt || '').localeCompare(a.createdAt || '')
+        );
+        treasuryMovementsRef.current = nextMovements;
+        setTreasuryMovements(nextMovements);
+        try {
+          localStorage.setItem(STORAGE_KEYS.TREASURY_MOVEMENTS, JSON.stringify(nextMovements));
+        } catch {}
+        syncTreasuryMovementToFirestore(newMovement)
+          .then(() => pendingSyncTreasuryMovementIdsRef.current.delete(newMovement.id))
+          .catch(() => {});
+
+        linkedAccountId = targetAccount.id;
+        linkedAccountName = targetAccount.name;
+        linkedMovementId = newMovement.id;
+        deductedFromTreasury = true;
+      }
+    }
 
     const newExpense: BusinessExpense = {
-      id: `exp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      id: expenseId,
       expenseNumber,
-      date: expenseData.date || now.split('T')[0],
+      date: expenseDate,
       category: expenseData.category.trim() || 'Otros Gastos',
       description: expenseData.description.trim(),
       beneficiary: expenseData.beneficiary?.trim() || undefined,
@@ -6060,6 +6182,10 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       paymentMethod: expenseData.paymentMethod,
       reference: expenseData.reference?.trim() || undefined,
       notes: expenseData.notes?.trim() || undefined,
+      treasuryAccountId: linkedAccountId,
+      treasuryAccountName: linkedAccountName,
+      treasuryMovementId: linkedMovementId,
+      deductedFromTreasury,
       createdAt: now,
       updatedAt: now,
     };
@@ -6086,6 +6212,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     const existing = expensesRef.current.find((ex) => ex.id === id);
     if (!existing) return null;
 
+    const now = new Date().toISOString();
     const rate =
       updates.bcvRate !== undefined && Number(updates.bcvRate) > 0
         ? Number(updates.bcvRate)
@@ -6098,14 +6225,183 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       updates.amountBs !== undefined
         ? Math.round(Math.max(0, Number(updates.amountBs) || 0) * 100) / 100
         : Math.round(nextUSD * rate * 100) / 100;
+    const nextPaymentCurrencyType = updates.paymentCurrencyType || existing.paymentCurrencyType;
+    const nextDate = updates.date || existing.date;
+    const nextCategory = (updates.category !== undefined ? updates.category : existing.category).trim() || 'Otros Gastos';
+    const nextDescription = (updates.description !== undefined ? updates.description : existing.description).trim();
+    const nextReference = updates.reference !== undefined ? updates.reference?.trim() || undefined : existing.reference;
+    const nextNotes = updates.notes !== undefined ? updates.notes?.trim() || undefined : existing.notes;
+    const nextBeneficiary = updates.beneficiary !== undefined ? updates.beneficiary?.trim() || undefined : existing.beneficiary;
+
+    const linkedMovement =
+      (existing.treasuryMovementId
+        ? treasuryMovementsRef.current.find((m) => m.id === existing.treasuryMovementId)
+        : undefined) || treasuryMovementsRef.current.find((m) => m.expenseId === id);
+
+    const wantsTreasuryLink =
+      updates.deductedFromTreasury !== undefined
+        ? updates.deductedFromTreasury
+        : Boolean(existing.deductedFromTreasury || linkedMovement || updates.treasuryAccountId);
+
+    let nextTreasuryAccountId = existing.treasuryAccountId;
+    let nextTreasuryAccountName = existing.treasuryAccountName;
+    let nextTreasuryMovementId = linkedMovement?.id || existing.treasuryMovementId;
+    let nextDeductedFromTreasury = Boolean(linkedMovement);
+
+    if (linkedMovement && !wantsTreasuryLink) {
+      // Unlink and revert balance in Treasury
+      deleteTreasuryMovement(linkedMovement.id, true);
+      nextTreasuryAccountId = undefined;
+      nextTreasuryAccountName = undefined;
+      nextTreasuryMovementId = undefined;
+      nextDeductedFromTreasury = false;
+    } else if (linkedMovement && wantsTreasuryLink) {
+      // Revert previous movement deduction from previous account
+      const oldAccount = treasuryAccountsRef.current.find((a) => a.id === linkedMovement.accountId);
+      if (oldAccount) {
+        const oldRevertSign = linkedMovement.type === 'INGRESO' ? -1 : 1;
+        const oldNativeRevert =
+          oldAccount.currency === 'BS' && Number(linkedMovement.amountBs) > 0
+            ? oldRevertSign * Number(linkedMovement.amountBs)
+            : oldRevertSign * (Number(linkedMovement.amountUSD) || 0);
+        applyAccountDelta(
+          oldAccount,
+          oldRevertSign * (Number(linkedMovement.amountUSD) || 0),
+          linkedMovement.bcvRate || rate,
+          oldNativeRevert
+        );
+      }
+
+      const preferredAccountId =
+        updates.treasuryAccountId !== undefined
+          ? updates.treasuryAccountId
+          : updates.paymentCurrencyType && updates.paymentCurrencyType !== existing.paymentCurrencyType
+            ? undefined
+            : linkedMovement.accountId;
+      const targetAccount = resolveTreasuryAccountForExpense(
+        nextPaymentCurrencyType,
+        preferredAccountId
+      );
+      if (targetAccount) {
+        const freshTarget =
+          treasuryAccountsRef.current.find((a) => a.id === targetAccount.id) || targetAccount;
+        const newNativeDelta = freshTarget.currency === 'BS' ? -nextBs : -nextUSD;
+        applyAccountDelta(freshTarget, -nextUSD, rate, newNativeDelta);
+
+        const updatedMovement: TreasuryMovement = {
+          ...linkedMovement,
+          date: nextDate,
+          accountId: freshTarget.id,
+          accountName: freshTarget.name,
+          accountGroup: freshTarget.group,
+          category: nextCategory,
+          description: nextDescription,
+          amountUSD: nextUSD,
+          bcvRate: rate,
+          amountBs: nextBs,
+          reference: nextReference,
+          notes:
+            nextNotes ||
+            (nextBeneficiary
+              ? `Gasto ${existing.expenseNumber} · Pagado a: ${nextBeneficiary}`
+              : linkedMovement.notes),
+          updatedAt: now,
+        };
+
+        pendingSyncTreasuryMovementIdsRef.current.add(updatedMovement.id);
+        const nextMovements = treasuryMovementsRef.current
+          .map((m) => (m.id === updatedMovement.id ? updatedMovement : m))
+          .sort(
+            (a, b) =>
+              (b.date || b.createdAt || '').localeCompare(a.date || a.createdAt || '') ||
+              (b.createdAt || '').localeCompare(a.createdAt || '')
+          );
+        treasuryMovementsRef.current = nextMovements;
+        setTreasuryMovements(nextMovements);
+        try {
+          localStorage.setItem(STORAGE_KEYS.TREASURY_MOVEMENTS, JSON.stringify(nextMovements));
+        } catch {}
+        syncTreasuryMovementToFirestore(updatedMovement)
+          .then(() => pendingSyncTreasuryMovementIdsRef.current.delete(updatedMovement.id))
+          .catch(() => {});
+
+        nextTreasuryAccountId = freshTarget.id;
+        nextTreasuryAccountName = freshTarget.name;
+        nextTreasuryMovementId = updatedMovement.id;
+        nextDeductedFromTreasury = true;
+      }
+    } else if (!linkedMovement && wantsTreasuryLink && nextUSD > 0) {
+      const targetAccount = resolveTreasuryAccountForExpense(
+        nextPaymentCurrencyType,
+        updates.treasuryAccountId || existing.treasuryAccountId
+      );
+      if (targetAccount) {
+        const nativeDelta = targetAccount.currency === 'BS' ? -nextBs : -nextUSD;
+        applyAccountDelta(targetAccount, -nextUSD, rate, nativeDelta);
+
+        const newMovement: TreasuryMovement = {
+          id: `mov-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          movementNumber: nextMovementNumber(),
+          date: nextDate,
+          type: 'GASTO',
+          accountId: targetAccount.id,
+          accountName: targetAccount.name,
+          accountGroup: targetAccount.group,
+          category: nextCategory,
+          description: nextDescription,
+          amountUSD: nextUSD,
+          bcvRate: rate,
+          amountBs: nextBs,
+          reference: nextReference,
+          expenseId: id,
+          notes:
+            nextNotes ||
+            (nextBeneficiary
+              ? `Gasto ${existing.expenseNumber} · Pagado a: ${nextBeneficiary}`
+              : `Gasto del negocio ${existing.expenseNumber}`),
+          createdAt: now,
+          updatedAt: now,
+        };
+
+        pendingSyncTreasuryMovementIdsRef.current.add(newMovement.id);
+        const nextMovements = [newMovement, ...treasuryMovementsRef.current].sort(
+          (a, b) =>
+            (b.date || b.createdAt || '').localeCompare(a.date || a.createdAt || '') ||
+            (b.createdAt || '').localeCompare(a.createdAt || '')
+        );
+        treasuryMovementsRef.current = nextMovements;
+        setTreasuryMovements(nextMovements);
+        try {
+          localStorage.setItem(STORAGE_KEYS.TREASURY_MOVEMENTS, JSON.stringify(nextMovements));
+        } catch {}
+        syncTreasuryMovementToFirestore(newMovement)
+          .then(() => pendingSyncTreasuryMovementIdsRef.current.delete(newMovement.id))
+          .catch(() => {});
+
+        nextTreasuryAccountId = targetAccount.id;
+        nextTreasuryAccountName = targetAccount.name;
+        nextTreasuryMovementId = newMovement.id;
+        nextDeductedFromTreasury = true;
+      }
+    }
 
     const updatedExpense: BusinessExpense = {
       ...existing,
       ...updates,
+      date: nextDate,
+      category: nextCategory,
+      description: nextDescription,
+      beneficiary: nextBeneficiary,
+      reference: nextReference,
+      notes: nextNotes,
       amountUSD: nextUSD,
       bcvRate: rate,
       amountBs: nextBs,
-      updatedAt: new Date().toISOString(),
+      treasuryAccountId: nextTreasuryAccountId,
+      treasuryAccountName: nextTreasuryAccountName,
+      treasuryMovementId: nextTreasuryMovementId,
+      deductedFromTreasury: nextDeductedFromTreasury,
+      updatedAt: now,
     };
 
     pendingSyncExpenseIdsRef.current.add(id);
@@ -6129,6 +6425,17 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
   };
 
   const deleteExpense = (id: string) => {
+    const existing = expensesRef.current.find((ex) => ex.id === id);
+    const linkedMovement =
+      (existing?.treasuryMovementId
+        ? treasuryMovementsRef.current.find((m) => m.id === existing.treasuryMovementId)
+        : undefined) || treasuryMovementsRef.current.find((m) => m.expenseId === id);
+
+    // Revert deducted liquidity in Treasury & remove linked movement
+    if (linkedMovement) {
+      deleteTreasuryMovement(linkedMovement.id, true);
+    }
+
     recordDeleted('expenses', [id]);
     removeExpenseFromFirestore(id).catch(() => {});
     const nextList = expensesRef.current.filter((ex) => ex.id !== id);
@@ -6341,9 +6648,19 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
 
   const addTreasuryCommitment: AppContextType['addTreasuryCommitment'] = (data) => {
     const now = new Date().toISOString();
-    const rate = Number(data.bcvRate) > 0 ? Number(data.bcvRate) : settingsRef.current.bcvRate || 1;
+    const paymentCurrency: TreasuryCommitmentPaymentCurrency =
+      data.paymentCurrency === 'BS' ? 'BS' : 'EFECTIVO_USD';
+    const exchangeRateType: TreasuryCommitmentRateType | undefined =
+      paymentCurrency === 'BS' ? data.exchangeRateType || 'BCV' : undefined;
+    const baseBcv = Number(data.bcvRate) > 0 ? Number(data.bcvRate) : settingsRef.current.bcvRate || 1;
+    const appliedRate =
+      paymentCurrency === 'BS'
+        ? Number(data.appliedExchangeRate) > 0
+          ? Number(data.appliedExchangeRate)
+          : baseBcv
+        : baseBcv;
     const amountUSD = Math.round(Math.max(0, Number(data.amountUSD) || 0) * 100) / 100;
-    const amountBs = Math.round(amountUSD * rate * 100) / 100;
+    const amountBs = Math.round(amountUSD * appliedRate * 100) / 100;
     const reservedUSD =
       data.reservedUSD !== undefined
         ? Math.min(amountUSD, Math.max(0, Math.round(Number(data.reservedUSD) * 100) / 100))
@@ -6355,8 +6672,11 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       category: data.category,
       dueDate: data.dueDate || now.split('T')[0],
       amountUSD,
-      bcvRate: rate,
+      bcvRate: appliedRate,
       amountBs,
+      paymentCurrency,
+      exchangeRateType,
+      appliedExchangeRate: paymentCurrency === 'BS' ? appliedRate : undefined,
       reservedUSD,
       isPaid: false,
       linkedPurchaseOrderId: data.linkedPurchaseOrderId || undefined,
@@ -6386,10 +6706,24 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     const existing = treasuryCommitmentsRef.current.find((c) => c.id === id);
     if (!existing) return null;
 
-    const rate =
-      updates.bcvRate !== undefined && Number(updates.bcvRate) > 0
-        ? Number(updates.bcvRate)
-        : existing.bcvRate || settingsRef.current.bcvRate || 1;
+    const nextPaymentCurrency: TreasuryCommitmentPaymentCurrency =
+      updates.paymentCurrency !== undefined
+        ? updates.paymentCurrency
+        : existing.paymentCurrency || 'EFECTIVO_USD';
+    const nextRateType: TreasuryCommitmentRateType | undefined =
+      nextPaymentCurrency === 'BS'
+        ? updates.exchangeRateType || existing.exchangeRateType || 'BCV'
+        : undefined;
+    const nextAppliedRate =
+      nextPaymentCurrency === 'BS'
+        ? updates.appliedExchangeRate !== undefined && Number(updates.appliedExchangeRate) > 0
+          ? Number(updates.appliedExchangeRate)
+          : updates.bcvRate !== undefined && Number(updates.bcvRate) > 0
+            ? Number(updates.bcvRate)
+            : existing.appliedExchangeRate || existing.bcvRate || settingsRef.current.bcvRate || 1
+        : updates.bcvRate !== undefined && Number(updates.bcvRate) > 0
+          ? Number(updates.bcvRate)
+          : existing.bcvRate || settingsRef.current.bcvRate || 1;
     const nextAmountUSD =
       updates.amountUSD !== undefined
         ? Math.round(Math.max(0, Number(updates.amountUSD) || 0) * 100) / 100
@@ -6397,13 +6731,16 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     const nextAmountBs =
       updates.amountBs !== undefined
         ? Math.round(Math.max(0, Number(updates.amountBs) || 0) * 100) / 100
-        : Math.round(nextAmountUSD * rate * 100) / 100;
+        : Math.round(nextAmountUSD * nextAppliedRate * 100) / 100;
 
     const updatedCommitment: TreasuryCommitment = {
       ...existing,
       ...updates,
+      paymentCurrency: nextPaymentCurrency,
+      exchangeRateType: nextRateType,
+      appliedExchangeRate: nextPaymentCurrency === 'BS' ? nextAppliedRate : undefined,
       amountUSD: nextAmountUSD,
-      bcvRate: rate,
+      bcvRate: nextAppliedRate,
       amountBs: nextAmountBs,
       updatedAt: new Date().toISOString(),
     };
@@ -6508,14 +6845,26 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     const account = treasuryAccountsRef.current.find((a) => a.id === accountId);
     if (!commitment || !account) return null;
 
-    const rate = settingsRef.current.bcvRate || commitment.bcvRate || 1;
+    const isBsCommitment = commitment.paymentCurrency === 'BS';
+    const rateType = options?.exchangeRateType || commitment.exchangeRateType || 'BCV';
+    const rate =
+      options?.appliedExchangeRate && Number(options.appliedExchangeRate) > 0
+        ? Number(options.appliedExchangeRate)
+        : isBsCommitment && rateType !== 'BCV' && commitment.appliedExchangeRate && commitment.appliedExchangeRate > 0
+          ? Number(commitment.appliedExchangeRate)
+          : settingsRef.current.bcvRate || commitment.bcvRate || 1;
     const now = new Date().toISOString();
     const payDate = options?.paymentDate || now.split('T')[0];
     const amountUSD = Math.round((Number(commitment.amountUSD) || 0) * 100) / 100;
     const amountBs = Math.round(amountUSD * rate * 100) / 100;
 
-    // 1. Deduct from selected account
-    const updatedAccount = applyAccountDelta(account, -amountUSD, rate);
+    const rateLabelNote = isBsCommitment
+      ? `Pago en Bs (${rateType === 'EURO' ? 'Tasa Euro' : rateType === 'USDT' ? 'Tasa USDT' : 'Tasa BCV'}: Bs. ${rate.toFixed(2)})`
+      : 'Pago en Efectivo Dólares ($)';
+
+    // 1. Deduct from selected account using exact native amount (respects Euro/USDT/BCV rate when paying from Bs account)
+    const explicitNativeDelta = account.currency === 'BS' ? -amountBs : -amountUSD;
+    const updatedAccount = applyAccountDelta(account, -amountUSD, rate, explicitNativeDelta);
 
     // 2. Sync linked Purchase Order if applicable
     if (commitment.linkedPurchaseOrderId) {
@@ -6536,13 +6885,14 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
             currencyCategory: poCurrency,
             paymentMethod: account.name,
             reference: options?.reference,
-            notes: `Pagado desde Tesorería (${account.name})`,
+            notes: `Pagado desde Tesorería (${account.name}) · ${rateLabelNote}`,
           });
         }
       }
     }
 
     // 3. Optionally mirror into Gastos del Negocio (except Proveedores already tracked in purchaseOrders)
+    const movementId = `mov-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
     let createdExpense: BusinessExpense | undefined;
     if (options?.syncToExpense !== false && commitment.category !== 'PROVEEDORES') {
       const mapped = mapAccountToExpensePayment(account);
@@ -6558,7 +6908,11 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
         paymentCurrencyType: mapped.currencyType,
         paymentMethod: mapped.method,
         reference: options?.reference,
-        notes: options?.notes || `Pago planificado desde ${account.name}`,
+        notes: options?.notes || `${rateLabelNote} desde ${account.name}`,
+        treasuryAccountId: account.id,
+        treasuryAccountName: account.name,
+        treasuryMovementId: movementId,
+        skipTreasuryDeduction: true,
       });
     }
 
@@ -6571,7 +6925,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
           : 'Gastos Fijos';
 
     const newMovement: TreasuryMovement = {
-      id: `mov-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      id: movementId,
       movementNumber: nextMovementNumber(),
       date: payDate,
       type: 'PAGO_PLANIFICADO',
@@ -6586,7 +6940,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       reference: options?.reference?.trim() || undefined,
       commitmentId: commitment.id,
       expenseId: createdExpense?.id,
-      notes: options?.notes?.trim() || undefined,
+      notes: options?.notes?.trim() || rateLabelNote,
       createdAt: now,
       updatedAt: now,
     };
@@ -6613,6 +6967,9 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       paidAccountId: account.id,
       paidAccountName: account.name,
       reservedUSD: amountUSD,
+      bcvRate: rate,
+      amountBs,
+      ...(isBsCommitment ? { exchangeRateType: rateType, appliedExchangeRate: rate } : {}),
     });
 
     return {
@@ -6654,6 +7011,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     const now = new Date().toISOString();
     const movDate = data.date || now.split('T')[0];
 
+    const movementId = `mov-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
     let createdExpense: BusinessExpense | undefined;
     if (data.type !== 'INGRESO' && data.syncToExpense) {
       const mapped = mapAccountToExpensePayment(account);
@@ -6669,11 +7027,15 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
         paymentMethod: mapped.method,
         reference: data.reference,
         notes: data.notes,
+        treasuryAccountId: account.id,
+        treasuryAccountName: account.name,
+        treasuryMovementId: movementId,
+        skipTreasuryDeduction: true,
       });
     }
 
     const newMovement: TreasuryMovement = {
-      id: `mov-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      id: movementId,
       movementNumber: nextMovementNumber(),
       date: movDate,
       type: data.type,
@@ -6720,10 +7082,16 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       const account = treasuryAccountsRef.current.find((a) => a.id === existing.accountId);
       if (account) {
         const revertSign = existing.type === 'INGRESO' ? -1 : 1;
+        const rate = existing.bcvRate || settingsRef.current.bcvRate || 1;
+        const explicitNativeRevert =
+          account.currency === 'BS' && Number(existing.amountBs) > 0
+            ? revertSign * Number(existing.amountBs)
+            : revertSign * (Number(existing.amountUSD) || 0);
         applyAccountDelta(
           account,
           revertSign * (Number(existing.amountUSD) || 0),
-          existing.bcvRate || settingsRef.current.bcvRate || 1
+          rate,
+          explicitNativeRevert
         );
       }
     }
@@ -6732,6 +7100,33 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     const nextList = treasuryMovementsRef.current.filter((m) => m.id !== id);
     treasuryMovementsRef.current = nextList;
     setTreasuryMovements(nextList);
+
+    // If a BusinessExpense pointed to this movement, clear the link so deleting the expense later won't double-revert
+    if (existing?.expenseId) {
+      const linkedExp = expensesRef.current.find(
+        (ex) => ex.id === existing.expenseId && ex.treasuryMovementId === id
+      );
+      if (linkedExp) {
+        const unlinkedExp: BusinessExpense = {
+          ...linkedExp,
+          treasuryMovementId: undefined,
+          deductedFromTreasury: false,
+          updatedAt: new Date().toISOString(),
+        };
+        pendingSyncExpenseIdsRef.current.add(unlinkedExp.id);
+        const nextExpenses = expensesRef.current.map((ex) =>
+          ex.id === unlinkedExp.id ? unlinkedExp : ex
+        );
+        expensesRef.current = nextExpenses;
+        setExpenses(nextExpenses);
+        try {
+          localStorage.setItem(STORAGE_KEYS.EXPENSES, JSON.stringify(nextExpenses));
+        } catch {}
+        syncExpenseToFirestore(unlinkedExp)
+          .then(() => pendingSyncExpenseIdsRef.current.delete(unlinkedExp.id))
+          .catch(() => {});
+      }
+    }
   };
 
   const importUnpaidPurchaseOrdersToCommitments = (): number => {
@@ -6744,12 +7139,16 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     purchaseOrdersRef.current.forEach((po) => {
       const pendingUSD = Math.round(Math.max(0, po.totalUSD - (po.paidAmountUSD || 0)) * 100) / 100;
       if (pendingUSD <= 0.01 || existingLinkedIds.has(po.id)) return;
+      const isBsBcv = po.paymentCurrencyCondition === 'BS_BCV';
       addTreasuryCommitment({
         title: `${po.supplierName} (${po.orderNumber})`,
         category: 'PROVEEDORES',
         dueDate: po.creditDueDate || po.createdAt.split('T')[0],
         amountUSD: pendingUSD,
         bcvRate: rate,
+        paymentCurrency: isBsBcv ? 'BS' : 'EFECTIVO_USD',
+        exchangeRateType: isBsBcv ? 'BCV' : undefined,
+        appliedExchangeRate: isBsBcv ? rate : undefined,
         linkedPurchaseOrderId: po.id,
         notes: po.supplierInvoiceNumber ? `Factura proveedor: ${po.supplierInvoiceNumber}` : undefined,
       });

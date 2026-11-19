@@ -76,3 +76,43 @@ export async function fetchOfficialBcvRate(): Promise<BcvSyncResult> {
     error: 'No se pudo contactar los servidores del BCV en este momento.',
   };
 }
+
+export async function fetchOfficialEuroBcvRate(): Promise<BcvSyncResult> {
+  try {
+    const mirrorRes = await fetch('https://ve.dolarapi.com/v1/euros/oficial', {
+      headers: { Accept: 'application/json' },
+    });
+    if (mirrorRes.ok) {
+      const mirrorJson = await mirrorRes.json();
+      const rateVal = mirrorJson.promedio || mirrorJson.venta || mirrorJson.compra;
+      if (rateVal && !isNaN(rateVal)) {
+        const roundedRate = Math.round(Number(rateVal) * 100) / 100;
+        return {
+          success: true,
+          rate: roundedRate,
+          rawRate: Number(rateVal),
+          date: mirrorJson.fechaActualizacion
+            ? new Date(mirrorJson.fechaActualizacion).toLocaleDateString('es-VE', {
+                day: 'numeric',
+                month: 'short',
+                year: 'numeric',
+              })
+            : 'Euro Oficial BCV',
+          source: 'Euro Oficial BCV',
+          timestamp: new Date().toISOString(),
+        };
+      }
+    }
+  } catch (err) {
+    console.warn('No se pudo consultar tasa Euro BCV:', err);
+  }
+
+  return {
+    success: false,
+    rate: 0,
+    source: 'Euro Oficial BCV',
+    timestamp: new Date().toISOString(),
+    error: 'No se pudo consultar la tasa Euro BCV automáticamente. Puedes ingresarla manualmente.',
+  };
+}
+

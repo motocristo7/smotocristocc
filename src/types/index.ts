@@ -474,6 +474,10 @@ export interface BusinessExpense {
   paymentMethod: ExpensePaymentMethod;
   reference?: string; // Número de referencia o comprobante
   notes?: string;
+  treasuryAccountId?: string; // Cuenta de Tesorería de la cual se descontó el gasto
+  treasuryAccountName?: string; // Nombre de la cuenta descontada
+  treasuryMovementId?: string; // ID del movimiento espejo creado en Tesorería
+  deductedFromTreasury?: boolean; // Indica si el gasto descontó liquidez en Tesorería
   createdAt: string;
   updatedAt?: string;
 }
@@ -496,6 +500,10 @@ export interface TreasuryAccount {
 
 export type TreasuryCommitmentCategory = 'GASTOS_FIJOS' | 'NOMINA_SUELDOS' | 'PROVEEDORES';
 
+export type TreasuryCommitmentPaymentCurrency = 'EFECTIVO_USD' | 'BS';
+
+export type TreasuryCommitmentRateType = 'BCV' | 'EURO' | 'USDT';
+
 export type TreasuryCommitmentDisplayStatus = 'PAGADO' | 'PENDIENTE' | 'PROXIMO_VENCER';
 
 export interface TreasuryCommitment {
@@ -506,6 +514,9 @@ export interface TreasuryCommitment {
   amountUSD: number;
   bcvRate: number;
   amountBs: number;
+  paymentCurrency?: TreasuryCommitmentPaymentCurrency; // 'EFECTIVO_USD' | 'BS'
+  exchangeRateType?: TreasuryCommitmentRateType; // 'BCV' | 'EURO' | 'USDT' (cuando es en Bs)
+  appliedExchangeRate?: number; // Tasa en Bs usada (BCV, Euro o USDT)
   reservedUSD?: number; // Monto apartado para cobertura
   isPaid: boolean;
   paidAt?: string;

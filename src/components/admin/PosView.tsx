@@ -1,6 +1,13 @@
 import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { useApp } from '../../context/AppContext';
-import { Product, PaymentMethod, SaleItem, SalePaymentType, ProductCategory } from '../../types';
+import {
+  Product,
+  PaymentMethod,
+  PagoMovilAccountOption,
+  SaleItem,
+  SalePaymentType,
+  ProductCategory,
+} from '../../types';
 import { formatUSD, formatBs, buildInvoiceWhatsAppMessage, buildMercadoLibreDebtWhatsAppMessage } from '../../utils/whatsapp';
 import {
   Search,
@@ -20,6 +27,7 @@ import {
   TrendingUp,
   Barcode,
   Banknote,
+  Building2,
   Calendar,
   Clock,
   Package,
@@ -126,6 +134,8 @@ export const PosView: React.FC = () => {
 
   // Sale metadata
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('Pago Móvil');
+  const [pagoMovilAccount, setPagoMovilAccount] =
+    useState<PagoMovilAccountOption>('BANESCO_PERSONAL');
   const [discountUSD, setDiscountUSD] = useState<number>(0);
   const [saleNotes, setSaleNotes] = useState('');
 
@@ -750,6 +760,7 @@ export const PosView: React.FC = () => {
         tax: 0,
         total: totalUSD,
         paymentMethod,
+        pagoMovilAccount: paymentMethod === 'Pago Móvil' ? pagoMovilAccount : undefined,
         notes: saleNotes.trim() || undefined,
         source: 'POS',
         paymentType,
@@ -2078,6 +2089,75 @@ export const PosView: React.FC = () => {
                   />
                 </div>
               </div>
+
+              {/* Cuenta destino del cobro + registro automático en Tesorería */}
+              {paymentMethod === 'Pago Móvil' ? (
+                <div className="p-2.5 rounded-xl bg-blue-50/80 border border-blue-200 space-y-2">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-[11px] font-bold text-blue-950 flex items-center gap-1.5">
+                      <Building2 className="w-3.5 h-3.5 text-blue-600 shrink-0" />
+                      ¿A qué cuenta cae el Pago Móvil?
+                    </span>
+                    <span className="text-[10px] font-semibold text-blue-700">
+                      Ingreso a Tesorería
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setPagoMovilAccount('BANESCO_PERSONAL')}
+                      className={`px-2.5 py-2 rounded-lg border text-xs font-bold transition-all cursor-pointer ${
+                        pagoMovilAccount === 'BANESCO_PERSONAL'
+                          ? 'bg-slate-900 border-slate-900 text-white shadow-xs'
+                          : 'bg-white border-blue-200 text-slate-700 hover:bg-blue-100/60'
+                      }`}
+                    >
+                      Banesco Personal
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setPagoMovilAccount('PROVINCIAL')}
+                      className={`px-2.5 py-2 rounded-lg border text-xs font-bold transition-all cursor-pointer ${
+                        pagoMovilAccount === 'PROVINCIAL'
+                          ? 'bg-slate-900 border-slate-900 text-white shadow-xs'
+                          : 'bg-white border-blue-200 text-slate-700 hover:bg-blue-100/60'
+                      }`}
+                    >
+                      Provincial
+                    </button>
+                  </div>
+                  <p className="text-[10px] text-blue-800 leading-snug">
+                    Se registrará automáticamente como ingreso en{' '}
+                    <strong>
+                      {pagoMovilAccount === 'PROVINCIAL'
+                        ? 'Provincial (Bs)'
+                        : 'Banesco Personal (Bs)'}
+                    </strong>{' '}
+                    y se sumará a la Liquidez Disponible.
+                  </p>
+                </div>
+              ) : paymentMethod === 'Punto de Venta (Bs)' ? (
+                <div className="px-3 py-2 rounded-xl bg-emerald-50 border border-emerald-200 flex items-center gap-2 text-[11px] text-emerald-900">
+                  <Building2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                  <span>
+                    Ingreso automático en <strong>Banesco SMCC (Bs)</strong> · Se sumará a Tesorería y Liquidez Disponible.
+                  </span>
+                </div>
+              ) : (
+                <div className="px-3 py-1.5 rounded-lg bg-slate-50 border border-slate-200 flex items-center gap-2 text-[10px] text-slate-600">
+                  <Building2 className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                  <span>
+                    Ingreso automático en Tesorería:{' '}
+                    <strong className="text-slate-800">
+                      {paymentMethod === 'Dólares Efectivo (USD)'
+                        ? 'Caja Efectivo USD ($)'
+                        : paymentMethod === 'Binance Pay (USDT)'
+                          ? 'Billetera USDT (Binance)'
+                          : 'Banesco SMCC (Bs)'}
+                    </strong>
+                  </span>
+                </div>
+              )}
 
               <div>
                 <input

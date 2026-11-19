@@ -100,12 +100,18 @@ export type PaymentMethod =
 export type SalePaymentType = 'CONTADO' | 'CREDITO' | 'APARTADO' | 'MERCADOLIBRE';
 export type SaleCreditStatus = 'PENDIENTE' | 'PAGADO' | 'ANULADO';
 
+export type PagoMovilAccountOption = 'BANESCO_PERSONAL' | 'PROVINCIAL';
+
 export interface CreditPaymentRecord {
   id: string;
   date: string; // ISO string
   amountUSD: number;
   amountBs: number;
   paymentMethod: PaymentMethod;
+  pagoMovilAccount?: PagoMovilAccountOption;
+  treasuryAccountId?: string;
+  treasuryAccountName?: string;
+  treasuryMovementId?: string;
   reference?: string;
   notes?: string;
 }
@@ -126,6 +132,10 @@ export interface Sale {
   subtotalBs: number; // in Bs.
   totalBs: number; // in Bs.
   paymentMethod: PaymentMethod;
+  pagoMovilAccount?: PagoMovilAccountOption; // Cuenta destino cuando paymentMethod === 'Pago Móvil'
+  treasuryAccountId?: string; // Cuenta de Tesorería donde ingresó el pago
+  treasuryAccountName?: string; // Nombre de la cuenta de Tesorería (ej. Banesco Personal, Provincial, Banesco SMCC)
+  treasuryMovementId?: string; // ID del movimiento de ingreso registrado en Tesorería
   notes?: string;
   createdAt: string; // ISO date
   source: 'POS' | 'TIENDA_ONLINE';
@@ -547,6 +557,8 @@ export interface TreasuryMovement {
   reference?: string;
   commitmentId?: string;
   expenseId?: string;
+  saleId?: string;
+  saleInvoiceNumber?: string;
   notes?: string;
   createdAt: string;
   updatedAt?: string;

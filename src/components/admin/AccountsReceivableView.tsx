@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { useApp } from '../../context/AppContext';
-import { Sale, PaymentMethod, Customer, CreditPaymentRecord } from '../../types';
+import { Sale, PaymentMethod, PagoMovilAccountOption, Customer, CreditPaymentRecord } from '../../types';
 import {
   formatUSD,
   formatBs,
@@ -67,6 +67,8 @@ export const AccountsReceivableView: React.FC = () => {
   const [paymentModalSale, setPaymentModalSale] = useState<Sale | null>(null);
   const [paymentAmountUSD, setPaymentAmountUSD] = useState<number | ''>('');
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('Pago Móvil');
+  const [pagoMovilAccount, setPagoMovilAccount] =
+    useState<PagoMovilAccountOption>('BANESCO_PERSONAL');
   const [paymentRef, setPaymentRef] = useState('');
   const [paymentNotes, setPaymentNotes] = useState('');
   const [sendWhatsAppOnPayment, setSendWhatsAppOnPayment] = useState(true);
@@ -401,6 +403,7 @@ export const AccountsReceivableView: React.FC = () => {
     const result = recordCreditPayment(paymentModalSale.id, {
       amountUSD: amount,
       paymentMethod,
+      pagoMovilAccount: paymentMethod === 'Pago Móvil' ? pagoMovilAccount : undefined,
       reference: paymentRef.trim() || undefined,
       notes: paymentNotes.trim() || undefined,
     });
@@ -1573,6 +1576,51 @@ export const AccountsReceivableView: React.FC = () => {
                   <option value="Binance Pay (USDT)">Binance Pay (USDT)</option>
                 </select>
               </div>
+
+              {paymentMethod === 'Pago Móvil' && (
+                <div className="p-2.5 rounded-xl bg-blue-50/80 border border-blue-200 space-y-2">
+                  <label className="block text-[11px] font-bold text-blue-950">
+                    ¿A qué cuenta cae el Pago Móvil? *
+                  </label>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setPagoMovilAccount('BANESCO_PERSONAL')}
+                      className={`px-2.5 py-2 rounded-lg border text-xs font-bold transition-all cursor-pointer ${
+                        pagoMovilAccount === 'BANESCO_PERSONAL'
+                          ? 'bg-slate-900 border-slate-900 text-white'
+                          : 'bg-white border-blue-200 text-slate-700 hover:bg-blue-100/60'
+                      }`}
+                    >
+                      Banesco Personal
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setPagoMovilAccount('PROVINCIAL')}
+                      className={`px-2.5 py-2 rounded-lg border text-xs font-bold transition-all cursor-pointer ${
+                        pagoMovilAccount === 'PROVINCIAL'
+                          ? 'bg-slate-900 border-slate-900 text-white'
+                          : 'bg-white border-blue-200 text-slate-700 hover:bg-blue-100/60'
+                      }`}
+                    >
+                      Provincial
+                    </button>
+                  </div>
+                  <p className="text-[10px] text-blue-800">
+                    Se registrará automáticamente como ingreso en{' '}
+                    <strong>
+                      {pagoMovilAccount === 'PROVINCIAL' ? 'Provincial (Bs)' : 'Banesco Personal (Bs)'}
+                    </strong>{' '}
+                    en Tesorería.
+                  </p>
+                </div>
+              )}
+
+              {paymentMethod === 'Punto de Venta (Bs)' && (
+                <div className="px-3 py-2 rounded-xl bg-emerald-50 border border-emerald-200 text-[11px] text-emerald-900">
+                  Ingreso automático a <strong>Banesco SMCC (Bs)</strong> en Tesorería y Liquidez Disponible.
+                </div>
+              )}
 
               <div>
                 <label className="block text-xs font-semibold text-slate-700 mb-1">

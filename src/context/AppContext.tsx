@@ -21,6 +21,7 @@ import {
   TechnicianPayout,
   TechnicianPayoutItem,
   PaymentMethod,
+  PagoMovilAccountOption,
   CreditPaymentRecord,
   Supplier,
   PurchaseOrder,
@@ -253,6 +254,7 @@ interface AppContextType {
     tax: number;
     total: number;
     paymentMethod: any;
+    pagoMovilAccount?: PagoMovilAccountOption;
     notes?: string;
     source?: 'POS' | 'TIENDA_ONLINE';
     paymentType?: 'CONTADO' | 'CREDITO' | 'APARTADO' | 'MERCADOLIBRE';
@@ -274,6 +276,7 @@ interface AppContextType {
     payment: {
       amountUSD: number;
       paymentMethod: any;
+      pagoMovilAccount?: PagoMovilAccountOption;
       reference?: string;
       notes?: string;
     }
@@ -3776,6 +3779,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     tax: number;
     total: number;
     paymentMethod: any;
+    pagoMovilAccount?: PagoMovilAccountOption;
     notes?: string;
     source?: 'POS' | 'TIENDA_ONLINE';
     paymentType?: 'CONTADO' | 'CREDITO' | 'APARTADO' | 'MERCADOLIBRE';
@@ -3837,9 +3841,50 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     const invoiceNum = `FACT-${year}-${String(maxExistingSeq + 1).padStart(4, '0')}`;
     const rate = settingsRef.current.bcvRate;
 
+    const saleId = `sale-${Date.now()}-${Math.floor(Math.random() * 1000).toString().padStart(3, '0')}`;
+    const resolvedPaymentType = saleData.paymentType || 'CONTADO';
+    const resolvedPagoMovilAccount: PagoMovilAccountOption | undefined =
+      saleData.paymentMethod === 'Pago Móvil'
+        ? saleData.pagoMovilAccount || 'BANESCO_PERSONAL'
+        : undefined;
+
+    // Monto efectivamente recibido en el momento de la venta
+    const collectedUSD =
+      resolvedPaymentType === 'CREDITO' || resolvedPaymentType === 'APARTADO'
+        ? Math.max(0, Number(saleData.creditPaidAmount || 0))
+        : Math.max(0, Number(saleData.total || 0));
+
+    let linkedTreasuryAccountId: string | undefined;
+    let linkedTreasuryAccountName: string | undefined;
+    let linkedTreasuryMovementId: string | undefined;
+
+    if (collectedUSD > 0) {
+      const treasuryIncome = recordAutomaticSaleIncomeInTreasury({
+        saleId,
+        invoiceNumber: invoiceNum,
+        customerName: customer.name || saleData.customerName,
+        amountUSD: collectedUSD,
+        bcvRate: rate,
+        paymentMethod: saleData.paymentMethod,
+        pagoMovilAccount: resolvedPagoMovilAccount,
+        category:
+          resolvedPaymentType === 'CREDITO' || resolvedPaymentType === 'APARTADO'
+            ? 'Abono Inicial Venta'
+            : resolvedPaymentType === 'MERCADOLIBRE'
+              ? 'Venta MercadoLibre'
+              : 'Ventas POS',
+        notes: saleData.notes,
+      });
+      if (treasuryIncome) {
+        linkedTreasuryAccountId = treasuryIncome.account.id;
+        linkedTreasuryAccountName = treasuryIncome.account.name;
+        linkedTreasuryMovementId = treasuryIncome.movement.id;
+      }
+    }
+
     const newSale: Sale = {
       ...saleData,
-      id: `sale-${Date.now()}-${Math.floor(Math.random() * 1000).toString().padStart(3, '0')}`,
+      id: saleId,
       invoiceNumber: invoiceNum,
       customerId: customer.id,
       customerName: customer.name || saleData.customerName,
@@ -3854,23 +3899,27 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       bcvRate: rate,
       subtotalBs: saleData.subtotal * rate,
       totalBs: saleData.total * rate,
+      pagoMovilAccount: resolvedPagoMovilAccount,
+      treasuryAccountId: linkedTreasuryAccountId,
+      treasuryAccountName: linkedTreasuryAccountName,
+      treasuryMovementId: linkedTreasuryMovementId,
       createdAt: new Date().toISOString(),
       source: saleData.source || 'POS',
-      paymentType: saleData.paymentType || 'CONTADO',
+      paymentType: resolvedPaymentType,
       creditDays: saleData.creditDays,
       creditDueDate: saleData.creditDueDate,
       creditPaidAmount:
-        saleData.paymentType === 'CREDITO' || saleData.paymentType === 'APARTADO'
+        resolvedPaymentType === 'CREDITO' || resolvedPaymentType === 'APARTADO'
           ? (saleData.creditPaidAmount ?? 0)
           : saleData.creditPaidAmount,
       creditStatus:
-        saleData.paymentType === 'CREDITO' || saleData.paymentType === 'APARTADO'
+        resolvedPaymentType === 'CREDITO' || resolvedPaymentType === 'APARTADO'
           ? (saleData.creditStatus || 'PENDIENTE')
           : undefined,
       creditPayments: [],
-      mercadolibreCommissionUSD: saleData.paymentType === 'MERCADOLIBRE' ? (saleData.mercadolibreCommissionUSD || 0) : undefined,
-      mercadolibreCommissionRate: saleData.paymentType === 'MERCADOLIBRE' ? saleData.mercadolibreCommissionRate : undefined,
-      mercadolibreFeeStatus: saleData.paymentType === 'MERCADOLIBRE' ? (saleData.mercadolibreFeeStatus || 'PENDIENTE') : undefined,
+      mercadolibreCommissionUSD: resolvedPaymentType === 'MERCADOLIBRE' ? (saleData.mercadolibreCommissionUSD || 0) : undefined,
+      mercadolibreCommissionRate: resolvedPaymentType === 'MERCADOLIBRE' ? saleData.mercadolibreCommissionRate : undefined,
+      mercadolibreFeeStatus: resolvedPaymentType === 'MERCADOLIBRE' ? (saleData.mercadolibreFeeStatus || 'PENDIENTE') : undefined,
     };
 
     const optimisticList = [newSale, ...salesRef.current];
@@ -4039,6 +4088,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     payment: {
       amountUSD: number;
       paymentMethod: any;
+      pagoMovilAccount?: PagoMovilAccountOption;
       reference?: string;
       notes?: string;
     }
@@ -4051,12 +4101,37 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     const newPaid = Math.round((currentPaid + payment.amountUSD) * 100) / 100;
     const isPaidFull = newPaid >= existingSale.total - 0.01;
 
+    const resolvedPagoMovilAccount: PagoMovilAccountOption | undefined =
+      payment.paymentMethod === 'Pago Móvil'
+        ? payment.pagoMovilAccount || 'BANESCO_PERSONAL'
+        : undefined;
+
+    const treasuryIncome =
+      payment.amountUSD > 0
+        ? recordAutomaticSaleIncomeInTreasury({
+            saleId: existingSale.id,
+            invoiceNumber: existingSale.invoiceNumber,
+            customerName: existingSale.customerName,
+            amountUSD: payment.amountUSD,
+            bcvRate: rate,
+            paymentMethod: payment.paymentMethod,
+            pagoMovilAccount: resolvedPagoMovilAccount,
+            category: 'Cobro Cuentas por Cobrar',
+            reference: payment.reference || existingSale.invoiceNumber,
+            notes: payment.notes,
+          })
+        : null;
+
     const paymentRecord: CreditPaymentRecord = {
       id: `pay-${Date.now()}`,
       date: new Date().toISOString(),
       amountUSD: payment.amountUSD,
       amountBs: payment.amountUSD * rate,
       paymentMethod: payment.paymentMethod,
+      pagoMovilAccount: resolvedPagoMovilAccount,
+      treasuryAccountId: treasuryIncome?.account.id,
+      treasuryAccountName: treasuryIncome?.account.name,
+      treasuryMovementId: treasuryIncome?.movement.id,
       reference: payment.reference,
       notes: payment.notes,
     };
@@ -4123,6 +4198,14 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     const saleToDelete = salesRef.current.find((s) => s.id === saleId);
     clearSalePendingSync(saleId);
     recordDeleted('sales', [saleId]);
+
+    // Revertir ingresos automáticos vinculados en Tesorería para no inflar liquidez
+    const linkedMovements = treasuryMovementsRef.current.filter(
+      (m) =>
+        m.saleId === saleId ||
+        (saleToDelete?.treasuryMovementId && m.id === saleToDelete.treasuryMovementId)
+    );
+    linkedMovements.forEach((m) => deleteTreasuryMovement(m.id, true));
 
     if (restoreStock && saleToDelete && Array.isArray(saleToDelete.items)) {
       setProducts((prev) => {
@@ -4196,6 +4279,14 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       });
     }
 
+    // Revertir ingresos automáticos vinculados en Tesorería al anular la venta
+    const linkedMovements = treasuryMovementsRef.current.filter(
+      (m) =>
+        m.saleId === saleId ||
+        (saleToVoid.treasuryMovementId && m.id === saleToVoid.treasuryMovementId)
+    );
+    linkedMovements.forEach((m) => deleteTreasuryMovement(m.id, true));
+
     const now = new Date().toISOString();
     const updatedTargetSale: Sale = {
       ...saleToVoid,
@@ -4203,6 +4294,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       isVoided: true,
       voidedAt: now,
       voidReason: reason,
+      treasuryMovementId: undefined,
     };
 
     setSales((prev) => {
@@ -6507,14 +6599,38 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
         updatedAt: now,
       },
       {
-        id: 'acc-banco-nacional-bs',
-        name: 'Banco Nacional (Bs)',
+        id: 'acc-banesco-personal',
+        name: 'Banesco Personal (Bs)',
         group: 'BANCO_NACIONAL',
         currency: 'BS',
         nativeBalance: 0,
         balanceUSD: 0,
-        institution: 'Banco Mercantil / Banesco',
-        notes: 'Cuenta bancaria para transferencias y Pago Móvil',
+        institution: 'Banesco',
+        notes: 'Cuenta para ingresos por Pago Móvil (Banesco Personal)',
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        id: 'acc-provincial',
+        name: 'Provincial (Bs)',
+        group: 'BANCO_NACIONAL',
+        currency: 'BS',
+        nativeBalance: 0,
+        balanceUSD: 0,
+        institution: 'BBVA Provincial',
+        notes: 'Cuenta para ingresos por Pago Móvil (Provincial)',
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        id: 'acc-banesco-smcc',
+        name: 'Banesco SMCC (Bs)',
+        group: 'BANCO_NACIONAL',
+        currency: 'BS',
+        nativeBalance: 0,
+        balanceUSD: 0,
+        institution: 'Banesco',
+        notes: 'Cuenta para ingresos automáticos por Punto de Venta (Bs)',
         createdAt: now,
         updatedAt: now,
       },
@@ -6562,6 +6678,244 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
         .catch(() => {});
     });
     return nextAccounts;
+  };
+
+  const ensureSalesTreasuryAccount = (
+    preset:
+      | 'BANESCO_PERSONAL'
+      | 'PROVINCIAL'
+      | 'BANESCO_SMCC'
+      | 'EFECTIVO_USD'
+      | 'BILLETERA_USDT'
+  ): TreasuryAccount => {
+    const accounts = treasuryAccountsRef.current;
+
+    const findByPreset = (): TreasuryAccount | undefined => {
+      if (preset === 'BANESCO_PERSONAL') {
+        return (
+          accounts.find((a) => a.id === 'acc-banesco-personal') ||
+          accounts.find((a) => /banesco\s*personal/i.test(a.name))
+        );
+      }
+      if (preset === 'PROVINCIAL') {
+        return (
+          accounts.find((a) => a.id === 'acc-provincial') ||
+          accounts.find((a) => /provincial/i.test(a.name))
+        );
+      }
+      if (preset === 'BANESCO_SMCC') {
+        return (
+          accounts.find((a) => a.id === 'acc-banesco-smcc') ||
+          accounts.find((a) => /banesco\s*smcc|\bsmcc\b/i.test(a.name))
+        );
+      }
+      if (preset === 'EFECTIVO_USD') {
+        return (
+          accounts.find((a) => a.id === 'acc-efectivo-usd') ||
+          accounts.find((a) => a.currency === 'USD' && a.group === 'EFECTIVO') ||
+          accounts.find((a) => a.currency === 'USD')
+        );
+      }
+      return (
+        accounts.find((a) => a.id === 'acc-billetera-usdt') ||
+        accounts.find((a) => a.currency === 'USDT') ||
+        accounts.find((a) => a.group === 'BILLETERA_DIVISAS')
+      );
+    };
+
+    const existing = findByPreset();
+    if (existing) return existing;
+
+    const now = new Date().toISOString();
+    const presetDefinitions: Record<
+      typeof preset,
+      Omit<TreasuryAccount, 'createdAt' | 'updatedAt' | 'nativeBalance' | 'balanceUSD'>
+    > = {
+      BANESCO_PERSONAL: {
+        id: 'acc-banesco-personal',
+        name: 'Banesco Personal (Bs)',
+        group: 'BANCO_NACIONAL',
+        currency: 'BS',
+        institution: 'Banesco',
+        notes: 'Cuenta para ingresos por Pago Móvil (Banesco Personal)',
+      },
+      PROVINCIAL: {
+        id: 'acc-provincial',
+        name: 'Provincial (Bs)',
+        group: 'BANCO_NACIONAL',
+        currency: 'BS',
+        institution: 'BBVA Provincial',
+        notes: 'Cuenta para ingresos por Pago Móvil (Provincial)',
+      },
+      BANESCO_SMCC: {
+        id: 'acc-banesco-smcc',
+        name: 'Banesco SMCC (Bs)',
+        group: 'BANCO_NACIONAL',
+        currency: 'BS',
+        institution: 'Banesco',
+        notes: 'Cuenta para ingresos automáticos por Punto de Venta (Bs)',
+      },
+      EFECTIVO_USD: {
+        id: 'acc-efectivo-usd',
+        name: 'Caja Efectivo USD ($)',
+        group: 'EFECTIVO',
+        currency: 'USD',
+        institution: 'Caja Mostrador',
+        notes: 'Efectivo en divisas disponibles en caja',
+      },
+      BILLETERA_USDT: {
+        id: 'acc-billetera-usdt',
+        name: 'Billetera USDT (Binance)',
+        group: 'BILLETERA_DIVISAS',
+        currency: 'USDT',
+        institution: 'Binance Pay',
+        notes: 'Saldo digital en USDT / divisas electrónicas',
+      },
+    };
+
+    const def = presetDefinitions[preset];
+    const created: TreasuryAccount = {
+      ...def,
+      nativeBalance: 0,
+      balanceUSD: 0,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    if (deletedIdsRef.current.treasuryAccounts.includes(created.id)) {
+      const nextDeleted = {
+        ...deletedIdsRef.current,
+        treasuryAccounts: deletedIdsRef.current.treasuryAccounts.filter(
+          (id) => id !== created.id
+        ),
+      };
+      deletedIdsRef.current = nextDeleted;
+      setDeletedIds(nextDeleted);
+    }
+
+    pendingSyncTreasuryAccountIdsRef.current.add(created.id);
+    const nextAccounts = [...treasuryAccountsRef.current, created];
+    treasuryAccountsRef.current = nextAccounts;
+    setTreasuryAccounts(nextAccounts);
+    try {
+      localStorage.setItem(STORAGE_KEYS.TREASURY_ACCOUNTS, JSON.stringify(nextAccounts));
+    } catch {}
+    syncTreasuryAccountToFirestore(created)
+      .then(() => pendingSyncTreasuryAccountIdsRef.current.delete(created.id))
+      .catch(() => {});
+
+    return created;
+  };
+
+  const resolveOrCreateTreasuryAccountForSale = (
+    paymentMethod: PaymentMethod | string,
+    pagoMovilAccount?: PagoMovilAccountOption
+  ): TreasuryAccount => {
+    if (paymentMethod === 'Pago Móvil') {
+      return ensureSalesTreasuryAccount(
+        pagoMovilAccount === 'PROVINCIAL' ? 'PROVINCIAL' : 'BANESCO_PERSONAL'
+      );
+    }
+    if (paymentMethod === 'Punto de Venta (Bs)') {
+      return ensureSalesTreasuryAccount('BANESCO_SMCC');
+    }
+    if (paymentMethod === 'Dólares Efectivo (USD)') {
+      return ensureSalesTreasuryAccount('EFECTIVO_USD');
+    }
+    if (paymentMethod === 'Binance Pay (USDT)') {
+      return ensureSalesTreasuryAccount('BILLETERA_USDT');
+    }
+    // Transferencia Bancaria Bs u otro método en Bolívares
+    const existingBank =
+      treasuryAccountsRef.current.find(
+        (a) => a.id === 'acc-banesco-smcc' || /banesco\s*smcc|\bsmcc\b/i.test(a.name)
+      ) ||
+      treasuryAccountsRef.current.find(
+        (a) => a.group === 'BANCO_NACIONAL' && a.currency === 'BS'
+      );
+    return existingBank || ensureSalesTreasuryAccount('BANESCO_SMCC');
+  };
+
+  const recordAutomaticSaleIncomeInTreasury = (params: {
+    saleId: string;
+    invoiceNumber: string;
+    customerName: string;
+    amountUSD: number;
+    bcvRate: number;
+    paymentMethod: PaymentMethod | string;
+    pagoMovilAccount?: PagoMovilAccountOption;
+    category: string;
+    reference?: string;
+    notes?: string;
+  }): { account: TreasuryAccount; movement: TreasuryMovement } | null => {
+    const cleanUSD = Math.round((Number(params.amountUSD) || 0) * 100) / 100;
+    if (cleanUSD <= 0) return null;
+
+    const safeRate = params.bcvRate > 0 ? params.bcvRate : settingsRef.current.bcvRate || 1;
+    const cleanBs = Math.round(cleanUSD * safeRate * 100) / 100;
+
+    const targetAccount = resolveOrCreateTreasuryAccountForSale(
+      params.paymentMethod,
+      params.pagoMovilAccount
+    );
+
+    const explicitNativeDelta =
+      targetAccount.currency === 'BS' ? cleanBs : cleanUSD;
+    const updatedAccount = applyAccountDelta(
+      targetAccount,
+      cleanUSD,
+      safeRate,
+      explicitNativeDelta
+    );
+
+    const now = new Date().toISOString();
+    const movDate = now.split('T')[0];
+    const movementId = `mov-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+
+    const methodDetail =
+      params.paymentMethod === 'Pago Móvil'
+        ? `Pago Móvil (${params.pagoMovilAccount === 'PROVINCIAL' ? 'Provincial' : 'Banesco Personal'})`
+        : params.paymentMethod === 'Punto de Venta (Bs)'
+          ? 'Punto de Venta · Banesco SMCC'
+          : String(params.paymentMethod);
+
+    const newMovement: TreasuryMovement = {
+      id: movementId,
+      movementNumber: nextMovementNumber(),
+      date: movDate,
+      type: 'INGRESO',
+      accountId: updatedAccount.id,
+      accountName: updatedAccount.name,
+      accountGroup: updatedAccount.group,
+      category: params.category,
+      description: `${params.invoiceNumber} · ${params.customerName} (${methodDetail})`,
+      amountUSD: cleanUSD,
+      bcvRate: safeRate,
+      amountBs: cleanBs,
+      reference: params.reference || params.invoiceNumber,
+      saleId: params.saleId,
+      saleInvoiceNumber: params.invoiceNumber,
+      notes: params.notes?.trim() || undefined,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    pendingSyncTreasuryMovementIdsRef.current.add(newMovement.id);
+    const nextMovements = [newMovement, ...treasuryMovementsRef.current].sort(
+      (a, b) =>
+        (b.date || b.createdAt || '').localeCompare(a.date || a.createdAt || '') ||
+        (b.createdAt || '').localeCompare(a.createdAt || '')
+    );
+    treasuryMovementsRef.current = nextMovements;
+    setTreasuryMovements(nextMovements);
+    try {
+      localStorage.setItem(STORAGE_KEYS.TREASURY_MOVEMENTS, JSON.stringify(nextMovements));
+    } catch {}
+    syncTreasuryMovementToFirestore(newMovement)
+      .then(() => pendingSyncTreasuryMovementIdsRef.current.delete(newMovement.id))
+      .catch(() => {});
+
+    return { account: updatedAccount, movement: newMovement };
   };
 
   const addTreasuryAccount: AppContextType['addTreasuryAccount'] = (data) => {
@@ -7100,6 +7454,9 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     const nextList = treasuryMovementsRef.current.filter((m) => m.id !== id);
     treasuryMovementsRef.current = nextList;
     setTreasuryMovements(nextList);
+    try {
+      localStorage.setItem(STORAGE_KEYS.TREASURY_MOVEMENTS, JSON.stringify(nextList));
+    } catch {}
 
     // If a BusinessExpense pointed to this movement, clear the link so deleting the expense later won't double-revert
     if (existing?.expenseId) {
@@ -7125,6 +7482,28 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
         syncExpenseToFirestore(unlinkedExp)
           .then(() => pendingSyncExpenseIdsRef.current.delete(unlinkedExp.id))
           .catch(() => {});
+      }
+    }
+
+    // If a Sale pointed to this movement, unlink it so deleting/voiding the sale later won't double-revert
+    if (existing?.saleId) {
+      const linkedSale = salesRef.current.find(
+        (s) => s.id === existing.saleId && s.treasuryMovementId === id
+      );
+      if (linkedSale) {
+        const unlinkedSale: Sale = {
+          ...linkedSale,
+          treasuryMovementId: undefined,
+        };
+        const nextSales = salesRef.current.map((s) =>
+          s.id === unlinkedSale.id ? unlinkedSale : s
+        );
+        salesRef.current = nextSales;
+        setSales(nextSales);
+        try {
+          localStorage.setItem(STORAGE_KEYS.SALES, JSON.stringify(nextSales));
+        } catch {}
+        syncSaleWithRetry(unlinkedSale);
       }
     }
   };

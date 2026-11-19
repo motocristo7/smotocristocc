@@ -223,7 +223,13 @@ export const InvoiceModal: React.FC = () => {
               </span>
               <div className="mt-1 flex items-center gap-1.5 flex-wrap">
                 <span className="font-semibold text-slate-900 text-xs">
-                  Método: <span className="text-emerald-700">{selectedInvoice.paymentMethod}</span>
+                  Método:{' '}
+                  <span className="text-emerald-700">
+                    {selectedInvoice.paymentMethod}
+                    {selectedInvoice.treasuryAccountName
+                      ? ` (${selectedInvoice.treasuryAccountName})`
+                      : ''}
+                  </span>
                 </span>
                 <span
                   className={`px-2 py-0.5 rounded text-[10px] font-bold ${
@@ -512,7 +518,14 @@ export const InvoiceModal: React.FC = () => {
                 ✓ Comprobante de Compra de Contado - Cancelado en su totalidad
               </span>
               <p className="text-slate-600 text-[11px]">
-                Método: <strong className="text-slate-800">{selectedInvoice.paymentMethod || 'Pago Móvil / Divisas'}</strong> · ¡Muchas gracias por su compra y preferencia!
+                Método:{' '}
+                <strong className="text-slate-800">
+                  {selectedInvoice.paymentMethod || 'Pago Móvil / Divisas'}
+                  {selectedInvoice.treasuryAccountName
+                    ? ` · ${selectedInvoice.treasuryAccountName}`
+                    : ''}
+                </strong>{' '}
+                · ¡Muchas gracias por su compra y preferencia!
               </p>
             </div>
           )}

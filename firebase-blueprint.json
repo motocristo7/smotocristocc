@@ -83,6 +83,10 @@
         "bcvRate": { "type": "number", "description": "Tasa BCV aplicada" },
         "totalBs": { "type": "number", "description": "Total equivalente en Bs." },
         "paymentMethod": { "type": "string", "description": "Forma de pago utilizada" },
+        "pagoMovilAccount": { "type": "string", "description": "Cuenta destino para Pago Móvil: BANESCO_PERSONAL o PROVINCIAL" },
+        "treasuryAccountId": { "type": "string", "description": "ID de la cuenta de Tesorería donde ingresó el cobro" },
+        "treasuryAccountName": { "type": "string", "description": "Nombre de la cuenta bancaria o caja destino" },
+        "treasuryMovementId": { "type": "string", "description": "ID del movimiento de ingreso generado en Tesorería" },
         "paymentType": { "type": "string", "description": "CONTADO, CREDITO, APARTADO o MERCADOLIBRE" },
         "creditStatus": { "type": "string", "description": "PENDIENTE, PAGADO o ANULADO" },
         "createdAt": { "type": "string", "description": "Fecha de creación ISO" },
@@ -353,6 +357,8 @@
         "bcvRate": { "type": "number", "description": "Tasa BCV" },
         "amountBs": { "type": "number", "description": "Monto en Bolívares" },
         "expenseId": { "type": "string", "description": "ID del gasto del negocio vinculado" },
+        "saleId": { "type": "string", "description": "ID de la venta vinculada al ingreso automático" },
+        "saleInvoiceNumber": { "type": "string", "description": "Número de factura de la venta vinculada" },
         "createdAt": { "type": "string", "description": "Fecha de creación ISO" }
       },
       "required": ["id", "movementNumber", "date", "type", "accountId", "description", "amountUSD", "createdAt"]

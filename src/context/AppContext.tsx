@@ -455,6 +455,11 @@ interface AppContextType {
     treasuryMovementId?: string;
     deductFromTreasury?: boolean;
     skipTreasuryDeduction?: boolean;
+    isSalaryAdvance?: boolean;
+    linkedCommitmentId?: string;
+    linkedCommitmentTitle?: string;
+    salaryAdvanceAppliedUSD?: number;
+    skipCommitmentDeduction?: boolean;
   }) => BusinessExpense;
   updateExpense: (id: string, updates: Partial<BusinessExpense>) => BusinessExpense | null;
   deleteExpense: (id: string) => void;
@@ -481,6 +486,7 @@ interface AppContextType {
   deleteTreasuryAccount: (id: string) => void;
   addTreasuryCommitment: (data: {
     title: string;
+    workerName?: string;
     category: TreasuryCommitmentCategory;
     dueDate: string;
     amountUSD: number;
@@ -524,10 +530,13 @@ interface AppContextType {
     notes?: string;
     syncToExpense?: boolean;
     beneficiary?: string;
+    isSalaryAdvance?: boolean;
+    linkedCommitmentId?: string;
   }) => {
     movement: TreasuryMovement;
     account: TreasuryAccount;
     expense?: BusinessExpense;
+    updatedCommitment?: TreasuryCommitment;
   } | null;
   deleteTreasuryMovement: (id: string, revertAccountBalance?: boolean) => void;
   importUnpaidPurchaseOrdersToCommitments: () => number;
@@ -6174,6 +6183,119 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     );
   };
 
+  const formatCommitmentDisplayLabel = (cm: TreasuryCommitment): string => {
+    const worker = cm.workerName?.trim();
+    if (worker && !cm.title.toLowerCase().includes(worker.toLowerCase())) {
+      return `${cm.title} (${worker})`;
+    }
+    return cm.title;
+  };
+
+  const adjustCommitmentForSalaryAdvance = (
+    commitmentId: string,
+    deltaAdvanceUSD: number
+  ): { commitment: TreasuryCommitment; appliedUSD: number } | null => {
+    const existing = treasuryCommitmentsRef.current.find((c) => c.id === commitmentId);
+    if (!existing) return null;
+
+    const cleanDelta = Math.round((Number(deltaAdvanceUSD) || 0) * 100) / 100;
+    if (Math.abs(cleanDelta) < 0.005) {
+      return { commitment: existing, appliedUSD: 0 };
+    }
+
+    const prevAdvances = Math.max(
+      0,
+      Math.round((Number(existing.advancesTotalUSD) || 0) * 100) / 100
+    );
+    const currentAmountUSD = Math.max(
+      0,
+      Math.round((Number(existing.amountUSD) || 0) * 100) / 100
+    );
+    const baseOriginalUSD =
+      existing.originalAmountUSD !== undefined && Number(existing.originalAmountUSD) > 0
+        ? Math.round(Number(existing.originalAmountUSD) * 100) / 100
+        : Math.round((currentAmountUSD + prevAdvances) * 100) / 100;
+
+    let appliedUSD = 0;
+    let nextAdvances = prevAdvances;
+    let nextAmountUSD = currentAmountUSD;
+
+    if (cleanDelta > 0) {
+      appliedUSD = Math.round(Math.min(currentAmountUSD, cleanDelta) * 100) / 100;
+      nextAmountUSD = Math.max(0, Math.round((currentAmountUSD - appliedUSD) * 100) / 100);
+      nextAdvances = Math.round((prevAdvances + appliedUSD) * 100) / 100;
+    } else {
+      const revertAmt = Math.abs(cleanDelta);
+      const actualRevert = Math.round(Math.min(prevAdvances, revertAmt) * 100) / 100;
+      appliedUSD = -actualRevert;
+      nextAdvances = Math.max(0, Math.round((prevAdvances - actualRevert) * 100) / 100);
+      nextAmountUSD = Math.min(
+        baseOriginalUSD,
+        Math.round((currentAmountUSD + actualRevert) * 100) / 100
+      );
+    }
+
+    const rate =
+      existing.paymentCurrency === 'BS' &&
+      existing.appliedExchangeRate &&
+      existing.appliedExchangeRate > 0
+        ? existing.appliedExchangeRate
+        : existing.bcvRate || settingsRef.current.bcvRate || 1;
+    const nextAmountBs = Math.round(nextAmountUSD * rate * 100) / 100;
+    const nextReservedUSD = Math.min(nextAmountUSD, Math.max(0, Number(existing.reservedUSD) || 0));
+
+    const now = new Date().toISOString();
+    let nextIsPaid = existing.isPaid;
+    let nextPaidByAdvances = Boolean(existing.paidByAdvances);
+    let nextPaidAt = existing.paidAt;
+    let nextPaidAccountId = existing.paidAccountId;
+    let nextPaidAccountName = existing.paidAccountName;
+
+    if (cleanDelta > 0 && nextAmountUSD <= 0.009) {
+      nextIsPaid = true;
+      nextPaidByAdvances = true;
+      nextPaidAt = now;
+      nextPaidAccountId = undefined;
+      nextPaidAccountName = 'Liquidado con Vales / Adelantos';
+    } else if (cleanDelta < 0 && nextAmountUSD > 0.009 && existing.paidByAdvances) {
+      nextIsPaid = false;
+      nextPaidByAdvances = false;
+      nextPaidAt = undefined;
+      nextPaidAccountId = undefined;
+      nextPaidAccountName = undefined;
+    }
+
+    const updatedCommitment: TreasuryCommitment = {
+      ...existing,
+      originalAmountUSD: baseOriginalUSD,
+      advancesTotalUSD: nextAdvances,
+      amountUSD: nextAmountUSD,
+      amountBs: nextAmountBs,
+      reservedUSD: nextReservedUSD,
+      isPaid: nextIsPaid,
+      paidByAdvances: nextPaidByAdvances || undefined,
+      paidAt: nextPaidAt,
+      paidAccountId: nextPaidAccountId,
+      paidAccountName: nextPaidAccountName,
+      updatedAt: now,
+    };
+
+    pendingSyncTreasuryCommitmentIdsRef.current.add(updatedCommitment.id);
+    const nextList = treasuryCommitmentsRef.current
+      .map((c) => (c.id === updatedCommitment.id ? updatedCommitment : c))
+      .sort((a, b) => (a.dueDate || '').localeCompare(b.dueDate || ''));
+    treasuryCommitmentsRef.current = nextList;
+    setTreasuryCommitments(nextList);
+    try {
+      localStorage.setItem(STORAGE_KEYS.TREASURY_COMMITMENTS, JSON.stringify(nextList));
+    } catch {}
+    syncTreasuryCommitmentToFirestore(updatedCommitment)
+      .then(() => pendingSyncTreasuryCommitmentIdsRef.current.delete(updatedCommitment.id))
+      .catch(() => {});
+
+    return { commitment: updatedCommitment, appliedUSD };
+  };
+
   const addExpense: AppContextType['addExpense'] = (expenseData) => {
     const activeRate = Number(expenseData.bcvRate) > 0 ? Number(expenseData.bcvRate) : settingsRef.current.bcvRate || 1;
     const rawAmountUSD = Math.max(0, Number(expenseData.amountUSD) || 0);
@@ -6197,6 +6319,32 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     const expenseId = `exp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
     const expenseDate = expenseData.date || now.split('T')[0];
 
+    let isSalaryAdvance = Boolean(expenseData.isSalaryAdvance && expenseData.linkedCommitmentId);
+    let linkedCommitmentId = isSalaryAdvance ? expenseData.linkedCommitmentId : undefined;
+    let linkedCommitmentTitle = isSalaryAdvance ? expenseData.linkedCommitmentTitle : undefined;
+    let salaryAdvanceAppliedUSD =
+      isSalaryAdvance && expenseData.salaryAdvanceAppliedUSD !== undefined
+        ? Math.round(Math.max(0, Number(expenseData.salaryAdvanceAppliedUSD) || 0) * 100) / 100
+        : undefined;
+
+    if (
+      !expenseData.skipCommitmentDeduction &&
+      isSalaryAdvance &&
+      linkedCommitmentId &&
+      amountUSD > 0
+    ) {
+      const advResult = adjustCommitmentForSalaryAdvance(linkedCommitmentId, amountUSD);
+      if (advResult) {
+        linkedCommitmentTitle = formatCommitmentDisplayLabel(advResult.commitment);
+        salaryAdvanceAppliedUSD = advResult.appliedUSD;
+      } else {
+        isSalaryAdvance = false;
+        linkedCommitmentId = undefined;
+        linkedCommitmentTitle = undefined;
+        salaryAdvanceAppliedUSD = undefined;
+      }
+    }
+
     let linkedAccountId = expenseData.treasuryAccountId;
     let linkedAccountName = expenseData.treasuryAccountName;
     let linkedMovementId = expenseData.treasuryMovementId;
@@ -6214,6 +6362,11 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
         const nativeDelta = targetAccount.currency === 'BS' ? -amountBs : -amountUSD;
         applyAccountDelta(targetAccount, -amountUSD, activeRate, nativeDelta);
 
+        const advanceNoteSuffix =
+          isSalaryAdvance && linkedCommitmentTitle
+            ? ` · Vale descontado de: ${linkedCommitmentTitle}`
+            : '';
+
         const newMovement: TreasuryMovement = {
           id: `mov-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
           movementNumber: nextMovementNumber(),
@@ -6229,11 +6382,13 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
           amountBs,
           reference: expenseData.reference?.trim() || undefined,
           expenseId,
+          salaryAdvanceCommitmentId: linkedCommitmentId,
+          salaryAdvanceAppliedUSD,
           notes:
-            expenseData.notes?.trim() ||
-            (expenseData.beneficiary?.trim()
-              ? `Gasto ${expenseNumber} · Pagado a: ${expenseData.beneficiary.trim()}`
-              : `Gasto del negocio ${expenseNumber}`),
+            (expenseData.notes?.trim() ||
+              (expenseData.beneficiary?.trim()
+                ? `Gasto ${expenseNumber} · Pagado a: ${expenseData.beneficiary.trim()}`
+                : `Gasto del negocio ${expenseNumber}`)) + advanceNoteSuffix,
           createdAt: now,
           updatedAt: now,
         };
@@ -6278,6 +6433,10 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       treasuryAccountName: linkedAccountName,
       treasuryMovementId: linkedMovementId,
       deductedFromTreasury,
+      isSalaryAdvance: isSalaryAdvance || undefined,
+      linkedCommitmentId,
+      linkedCommitmentTitle,
+      salaryAdvanceAppliedUSD,
       createdAt: now,
       updatedAt: now,
     };
@@ -6324,6 +6483,58 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     const nextReference = updates.reference !== undefined ? updates.reference?.trim() || undefined : existing.reference;
     const nextNotes = updates.notes !== undefined ? updates.notes?.trim() || undefined : existing.notes;
     const nextBeneficiary = updates.beneficiary !== undefined ? updates.beneficiary?.trim() || undefined : existing.beneficiary;
+
+    // Handle salary advance (vale al sueldo) commitment deduction updates cleanly
+    const prevLinkedCommitmentId = existing.linkedCommitmentId;
+    const prevAppliedAdvanceUSD = Math.max(
+      0,
+      Math.round((Number(existing.salaryAdvanceAppliedUSD) || 0) * 100) / 100
+    );
+
+    const nextIsSalaryAdvanceFlag =
+      updates.isSalaryAdvance !== undefined
+        ? Boolean(updates.isSalaryAdvance)
+        : Boolean(existing.isSalaryAdvance);
+    const nextTargetCommitmentId = nextIsSalaryAdvanceFlag
+      ? updates.linkedCommitmentId !== undefined
+        ? updates.linkedCommitmentId
+        : existing.linkedCommitmentId
+      : undefined;
+
+    let nextIsSalaryAdvance: boolean | undefined = existing.isSalaryAdvance;
+    let nextLinkedCommitmentId: string | undefined = existing.linkedCommitmentId;
+    let nextLinkedCommitmentTitle: string | undefined = existing.linkedCommitmentTitle;
+    let nextSalaryAdvanceAppliedUSD: number | undefined = existing.salaryAdvanceAppliedUSD;
+
+    const advanceChanged =
+      updates.isSalaryAdvance !== undefined ||
+      updates.linkedCommitmentId !== undefined ||
+      (prevLinkedCommitmentId && Math.abs(nextUSD - existing.amountUSD) >= 0.005);
+
+    if (advanceChanged) {
+      if (prevLinkedCommitmentId && prevAppliedAdvanceUSD > 0) {
+        adjustCommitmentForSalaryAdvance(prevLinkedCommitmentId, -prevAppliedAdvanceUSD);
+      }
+      if (nextIsSalaryAdvanceFlag && nextTargetCommitmentId && nextUSD > 0) {
+        const advResult = adjustCommitmentForSalaryAdvance(nextTargetCommitmentId, nextUSD);
+        if (advResult) {
+          nextIsSalaryAdvance = true;
+          nextLinkedCommitmentId = advResult.commitment.id;
+          nextLinkedCommitmentTitle = formatCommitmentDisplayLabel(advResult.commitment);
+          nextSalaryAdvanceAppliedUSD = advResult.appliedUSD;
+        } else {
+          nextIsSalaryAdvance = undefined;
+          nextLinkedCommitmentId = undefined;
+          nextLinkedCommitmentTitle = undefined;
+          nextSalaryAdvanceAppliedUSD = undefined;
+        }
+      } else {
+        nextIsSalaryAdvance = undefined;
+        nextLinkedCommitmentId = undefined;
+        nextLinkedCommitmentTitle = undefined;
+        nextSalaryAdvanceAppliedUSD = undefined;
+      }
+    }
 
     const linkedMovement =
       (existing.treasuryMovementId
@@ -6392,6 +6603,8 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
           bcvRate: rate,
           amountBs: nextBs,
           reference: nextReference,
+          salaryAdvanceCommitmentId: nextLinkedCommitmentId,
+          salaryAdvanceAppliedUSD: nextSalaryAdvanceAppliedUSD,
           notes:
             nextNotes ||
             (nextBeneficiary
@@ -6446,6 +6659,8 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
           amountBs: nextBs,
           reference: nextReference,
           expenseId: id,
+          salaryAdvanceCommitmentId: nextLinkedCommitmentId,
+          salaryAdvanceAppliedUSD: nextSalaryAdvanceAppliedUSD,
           notes:
             nextNotes ||
             (nextBeneficiary
@@ -6493,6 +6708,10 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       treasuryAccountName: nextTreasuryAccountName,
       treasuryMovementId: nextTreasuryMovementId,
       deductedFromTreasury: nextDeductedFromTreasury,
+      isSalaryAdvance: nextIsSalaryAdvance,
+      linkedCommitmentId: nextLinkedCommitmentId,
+      linkedCommitmentTitle: nextLinkedCommitmentTitle,
+      salaryAdvanceAppliedUSD: nextSalaryAdvanceAppliedUSD,
       updatedAt: now,
     };
 
@@ -6518,6 +6737,15 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
 
   const deleteExpense = (id: string) => {
     const existing = expensesRef.current.find((ex) => ex.id === id);
+
+    // If this expense was a salary advance (vale al sueldo), restore the deducted balance to the worker's commitment
+    if (existing?.linkedCommitmentId && (Number(existing.salaryAdvanceAppliedUSD) || 0) > 0) {
+      adjustCommitmentForSalaryAdvance(
+        existing.linkedCommitmentId,
+        -Number(existing.salaryAdvanceAppliedUSD)
+      );
+    }
+
     const linkedMovement =
       (existing?.treasuryMovementId
         ? treasuryMovementsRef.current.find((m) => m.id === existing.treasuryMovementId)
@@ -7023,9 +7251,12 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     const newCommitment: TreasuryCommitment = {
       id: `cmt-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
       title: data.title.trim(),
+      workerName: data.workerName?.trim() || undefined,
       category: data.category,
       dueDate: data.dueDate || now.split('T')[0],
       amountUSD,
+      originalAmountUSD: amountUSD,
+      advancesTotalUSD: 0,
       bcvRate: appliedRate,
       amountBs,
       paymentCurrency,
@@ -7086,14 +7317,27 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       updates.amountBs !== undefined
         ? Math.round(Math.max(0, Number(updates.amountBs) || 0) * 100) / 100
         : Math.round(nextAmountUSD * nextAppliedRate * 100) / 100;
+    const currentAdvances = Math.max(0, Number(updates.advancesTotalUSD ?? existing.advancesTotalUSD) || 0);
+    const nextOriginalAmountUSD =
+      updates.originalAmountUSD !== undefined
+        ? Math.round(Math.max(0, Number(updates.originalAmountUSD) || 0) * 100) / 100
+        : updates.amountUSD !== undefined
+          ? Math.round((nextAmountUSD + currentAdvances) * 100) / 100
+          : existing.originalAmountUSD;
+    const nextWorkerName =
+      updates.workerName !== undefined
+        ? updates.workerName?.trim() || undefined
+        : existing.workerName;
 
     const updatedCommitment: TreasuryCommitment = {
       ...existing,
       ...updates,
+      workerName: nextWorkerName,
       paymentCurrency: nextPaymentCurrency,
       exchangeRateType: nextRateType,
       appliedExchangeRate: nextPaymentCurrency === 'BS' ? nextAppliedRate : undefined,
       amountUSD: nextAmountUSD,
+      originalAmountUSD: nextOriginalAmountUSD,
       bcvRate: nextAppliedRate,
       amountBs: nextAmountBs,
       updatedAt: new Date().toISOString(),
@@ -7366,6 +7610,27 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     const movDate = data.date || now.split('T')[0];
 
     const movementId = `mov-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+
+    let updatedCommitment: TreasuryCommitment | undefined;
+    let salaryAdvanceCommitmentId: string | undefined;
+    let salaryAdvanceCommitmentTitle: string | undefined;
+    let salaryAdvanceAppliedUSD: number | undefined;
+
+    if (
+      data.type === 'GASTO' &&
+      data.isSalaryAdvance &&
+      data.linkedCommitmentId &&
+      amountUSD > 0
+    ) {
+      const advResult = adjustCommitmentForSalaryAdvance(data.linkedCommitmentId, amountUSD);
+      if (advResult) {
+        updatedCommitment = advResult.commitment;
+        salaryAdvanceCommitmentId = advResult.commitment.id;
+        salaryAdvanceCommitmentTitle = formatCommitmentDisplayLabel(advResult.commitment);
+        salaryAdvanceAppliedUSD = advResult.appliedUSD;
+      }
+    }
+
     let createdExpense: BusinessExpense | undefined;
     if (data.type !== 'INGRESO' && data.syncToExpense) {
       const mapped = mapAccountToExpensePayment(account);
@@ -7385,8 +7650,18 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
         treasuryAccountName: account.name,
         treasuryMovementId: movementId,
         skipTreasuryDeduction: true,
+        isSalaryAdvance: Boolean(salaryAdvanceCommitmentId),
+        linkedCommitmentId: salaryAdvanceCommitmentId,
+        linkedCommitmentTitle: salaryAdvanceCommitmentTitle,
+        salaryAdvanceAppliedUSD,
+        skipCommitmentDeduction: true,
       });
     }
+
+    const advanceNote = salaryAdvanceCommitmentTitle
+      ? `Vale descontado de: ${salaryAdvanceCommitmentTitle}`
+      : undefined;
+    const combinedNotes = [data.notes?.trim(), advanceNote].filter(Boolean).join(' · ') || undefined;
 
     const newMovement: TreasuryMovement = {
       id: movementId,
@@ -7403,7 +7678,9 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       amountBs,
       reference: data.reference?.trim() || undefined,
       expenseId: createdExpense?.id,
-      notes: data.notes?.trim() || undefined,
+      salaryAdvanceCommitmentId,
+      salaryAdvanceAppliedUSD,
+      notes: combinedNotes,
       createdAt: now,
       updatedAt: now,
     };
@@ -7427,6 +7704,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       movement: newMovement,
       account: updatedAccount,
       expense: createdExpense,
+      updatedCommitment,
     };
   };
 
@@ -7457,6 +7735,18 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     try {
       localStorage.setItem(STORAGE_KEYS.TREASURY_MOVEMENTS, JSON.stringify(nextList));
     } catch {}
+
+    // If this standalone movement (without a linked BusinessExpense) discounted a worker commitment as a vale, restore it
+    if (
+      existing?.salaryAdvanceCommitmentId &&
+      (Number(existing.salaryAdvanceAppliedUSD) || 0) > 0 &&
+      !existing.expenseId
+    ) {
+      adjustCommitmentForSalaryAdvance(
+        existing.salaryAdvanceCommitmentId,
+        -Number(existing.salaryAdvanceAppliedUSD)
+      );
+    }
 
     // If a BusinessExpense pointed to this movement, clear the link so deleting the expense later won't double-revert
     if (existing?.expenseId) {

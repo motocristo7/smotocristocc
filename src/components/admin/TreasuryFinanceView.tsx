@@ -38,6 +38,7 @@ import {
   Sparkles,
   PiggyBank,
   RefreshCw,
+  UserCheck,
 } from 'lucide-react';
 
 const ACCOUNT_GROUP_META: Record<
@@ -234,6 +235,7 @@ export const TreasuryFinanceView: React.FC = () => {
     totalAccountsReceivableUSD,
     totalAccountsReceivableBs,
     purchaseOrders,
+    technicians,
     expenseCategories,
     treasuryAccounts,
     treasuryCommitments,
@@ -303,6 +305,7 @@ export const TreasuryFinanceView: React.FC = () => {
   const [isCommitmentModalOpen, setIsCommitmentModalOpen] = useState(false);
   const [editingCommitment, setEditingCommitment] = useState<TreasuryCommitment | null>(null);
   const [cmtTitle, setCmtTitle] = useState('');
+  const [cmtWorkerName, setCmtWorkerName] = useState('');
   const [cmtCategory, setCmtCategory] = useState<TreasuryCommitmentCategory>('GASTOS_FIJOS');
   const [cmtDueDate, setCmtDueDate] = useState(todayStr);
   const [cmtAmountUSD, setCmtAmountUSD] = useState('');
@@ -343,6 +346,8 @@ export const TreasuryFinanceView: React.FC = () => {
   const [movAmountInput, setMovAmountInput] = useState('');
   const [movReference, setMovReference] = useState('');
   const [movSyncExpense, setMovSyncExpense] = useState(true);
+  const [movIsSalaryAdvance, setMovIsSalaryAdvance] = useState(false);
+  const [movLinkedCommitmentId, setMovLinkedCommitmentId] = useState('');
   const [movError, setMovError] = useState('');
 
   // Live Account Breakdown (grouped into Efectivo, Bancos Nacionales, Billeteras Digitales/Divisas)
@@ -692,9 +697,22 @@ export const TreasuryFinanceView: React.FC = () => {
     }
   };
 
+  const pendingWorkerCommitments = useMemo(() => {
+    return treasuryCommitments
+      .filter(
+        (cm) => !cm.isPaid && (cm.category === 'NOMINA_SUELDOS' || cm.category === 'GASTOS_FIJOS')
+      )
+      .sort((a, b) => {
+        if (a.category === 'NOMINA_SUELDOS' && b.category !== 'NOMINA_SUELDOS') return -1;
+        if (b.category === 'NOMINA_SUELDOS' && a.category !== 'NOMINA_SUELDOS') return 1;
+        return (a.dueDate || '').localeCompare(b.dueDate || '');
+      });
+  }, [treasuryCommitments]);
+
   const openNewCommitmentModal = () => {
     setEditingCommitment(null);
     setCmtTitle('');
+    setCmtWorkerName('');
     setCmtCategory('GASTOS_FIJOS');
     setCmtDueDate(todayStr);
     setCmtAmountUSD('');
@@ -718,6 +736,7 @@ export const TreasuryFinanceView: React.FC = () => {
 
     setEditingCommitment(cm);
     setCmtTitle(cm.title);
+    setCmtWorkerName(cm.workerName || '');
     setCmtCategory(cm.category);
     setCmtDueDate(cm.dueDate);
     setCmtAmountUSD(String(cm.amountUSD));
@@ -759,10 +778,13 @@ export const TreasuryFinanceView: React.FC = () => {
 
     const reserved = parseFloat(cmtReservedUSD || '0');
     const cleanReserved = isNaN(reserved) ? 0 : Math.min(amount, Math.max(0, reserved));
+    const cleanWorkerName =
+      cmtCategory === 'PROVEEDORES' ? undefined : cmtWorkerName.trim() || undefined;
 
     if (editingCommitment) {
       updateTreasuryCommitment(editingCommitment.id, {
         title: cmtTitle.trim(),
+        workerName: cleanWorkerName,
         category: cmtCategory,
         dueDate: cmtDueDate,
         amountUSD: amount,
@@ -776,6 +798,7 @@ export const TreasuryFinanceView: React.FC = () => {
     } else {
       addTreasuryCommitment({
         title: cmtTitle.trim(),
+        workerName: cleanWorkerName,
         category: cmtCategory,
         dueDate: cmtDueDate,
         amountUSD: amount,
@@ -884,8 +907,24 @@ export const TreasuryFinanceView: React.FC = () => {
     setMovAmountInput('');
     setMovReference('');
     setMovSyncExpense(defaultType === 'GASTO');
+    setMovIsSalaryAdvance(false);
+    setMovLinkedCommitmentId('');
     setMovError('');
     setIsMovementModalOpen(true);
+  };
+
+  const handleSelectMovSalaryCommitment = (commitmentId: string) => {
+    setMovLinkedCommitmentId(commitmentId);
+    if (movError) setMovError('');
+    const cm = treasuryCommitments.find((c) => c.id === commitmentId);
+    if (!cm) return;
+    const workerLabel = cm.workerName?.trim() || cm.title;
+    if (!movBeneficiary.trim()) {
+      setMovBeneficiary(workerLabel);
+    }
+    if (!movDescription.trim()) {
+      setMovDescription(`Vale / adelanto de sueldo - ${workerLabel}`);
+    }
   };
 
   const handleMovementAccountChange = (newAccId: string) => {
@@ -911,6 +950,10 @@ export const TreasuryFinanceView: React.FC = () => {
       setMovError('Ingresa un monto válido mayor a 0');
       return;
     }
+    if (movType === 'GASTO' && movIsSalaryAdvance && !movLinkedCommitmentId) {
+      setMovError('Selecciona el sueldo o gasto fijo del trabajador para descontar este vale');
+      return;
+    }
 
     const res = recordTreasuryMovement({
       date: movDate,
@@ -924,12 +967,18 @@ export const TreasuryFinanceView: React.FC = () => {
       bcvRate,
       reference: movReference.trim() || undefined,
       syncToExpense: movType === 'GASTO' && movSyncExpense,
+      isSalaryAdvance: movType === 'GASTO' && movIsSalaryAdvance,
+      linkedCommitmentId:
+        movType === 'GASTO' && movIsSalaryAdvance ? movLinkedCommitmentId : undefined,
     });
 
     if (res) {
+      const advanceFeedback = res.updatedCommitment
+        ? ` · Vale descontado de "${res.updatedCommitment.title}" (Restante: ${formatUSD(res.updatedCommitment.amountUSD)}).`
+        : '';
       showBanner(
         'success',
-        `${movType === 'INGRESO' ? 'Ingreso' : 'Gasto'} registrado (${res.movement.movementNumber}). Saldo actualizado en ${res.account.name}.`
+        `${movType === 'INGRESO' ? 'Ingreso' : 'Gasto'} registrado (${res.movement.movementNumber}). Saldo actualizado en ${res.account.name}.${advanceFeedback}`
       );
       setIsMovementModalOpen(false);
     } else {
@@ -1533,6 +1582,12 @@ export const TreasuryFinanceView: React.FC = () => {
                               >
                                 {catMeta.label}
                               </span>
+                              {cm.workerName && (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-semibold border bg-slate-50 text-slate-700 border-slate-200">
+                                  <UserCheck className="w-3 h-3 text-indigo-600 shrink-0" />
+                                  {cm.workerName}
+                                </span>
+                              )}
                               {isBsCommitment ? (
                                 <span
                                   className={`inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-semibold border ${rateMeta.badgeClass}`}
@@ -1542,6 +1597,11 @@ export const TreasuryFinanceView: React.FC = () => {
                               ) : (
                                 <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-semibold border bg-emerald-50 text-emerald-700 border-emerald-200">
                                   Efectivo USD ($)
+                                </span>
+                              )}
+                              {(cm.advancesTotalUSD || 0) > 0 && (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-semibold border bg-indigo-50 text-indigo-700 border-indigo-200 font-mono tabular-nums">
+                                  Vales: -{formatUSD(cm.advancesTotalUSD || 0)}
                                 </span>
                               )}
                               {!cm.isPaid && (cm.reservedUSD || 0) > 0 && (
@@ -1566,6 +1626,15 @@ export const TreasuryFinanceView: React.FC = () => {
                           <p className="font-bold text-slate-900 font-mono tabular-nums">
                             {formatUSD(cm.amountUSD)}
                           </p>
+                          {(cm.advancesTotalUSD || 0) > 0 && (
+                            <p className="text-[10px] text-indigo-700 font-mono tabular-nums">
+                              Base:{' '}
+                              {formatUSD(
+                                cm.originalAmountUSD ||
+                                  cm.amountUSD + (cm.advancesTotalUSD || 0)
+                              )}
+                            </p>
+                          )}
                           {isBsCommitment && effectiveBsRate ? (
                             <p className="text-[11px] text-slate-600 font-mono tabular-nums">
                               {formatBs(cm.amountUSD * effectiveBsRate)}{' '}
@@ -2186,6 +2255,32 @@ export const TreasuryFinanceView: React.FC = () => {
                 </div>
               </div>
 
+              {cmtCategory !== 'PROVEEDORES' && (
+                <div>
+                  <label className="block font-semibold text-slate-700 mb-1">
+                    Trabajador asignado{' '}
+                    <span className="text-slate-400 font-normal">
+                      (opcional — permite descontar vales a su sueldo)
+                    </span>
+                  </label>
+                  <input
+                    type="text"
+                    list="treasury-workers-list"
+                    value={cmtWorkerName}
+                    onChange={(e) => setCmtWorkerName(e.target.value)}
+                    placeholder="Ej: Carlos Pérez, Mecánico, Cajero..."
+                    className="w-full px-3 py-2 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-slate-900/15"
+                  />
+                  {technicians.length > 0 && (
+                    <datalist id="treasury-workers-list">
+                      {technicians.map((tech) => (
+                        <option key={tech.id} value={tech.name} />
+                      ))}
+                    </datalist>
+                  )}
+                </div>
+              )}
+
               {/* Moneda del Compromiso: Efectivo Dólares vs Bolívares */}
               <div>
                 <label className="block font-semibold text-slate-700 mb-1.5">
@@ -2287,7 +2382,7 @@ export const TreasuryFinanceView: React.FC = () => {
                     </div>
                     <input
                       type="number"
-                      step="0.01"
+                      step="any"
                       min="0.01"
                       value={cmtAppliedRate}
                       onChange={(e) => setCmtAppliedRate(e.target.value)}
@@ -2314,7 +2409,7 @@ export const TreasuryFinanceView: React.FC = () => {
                   </label>
                   <input
                     type="number"
-                    step="0.01"
+                    step="any"
                     min="0.01"
                     value={cmtAmountUSD}
                     onChange={(e) => setCmtAmountUSD(e.target.value)}
@@ -2342,7 +2437,7 @@ export const TreasuryFinanceView: React.FC = () => {
                   </label>
                   <input
                     type="number"
-                    step="0.01"
+                    step="any"
                     min="0"
                     value={cmtReservedUSD}
                     onChange={(e) => setCmtReservedUSD(e.target.value)}
@@ -2686,7 +2781,7 @@ export const TreasuryFinanceView: React.FC = () => {
               </button>
             </div>
 
-            <form onSubmit={handleSaveMovement} className="p-5 space-y-4 text-xs">
+            <form onSubmit={handleSaveMovement} className="p-5 space-y-4 text-xs max-h-[82vh] overflow-y-auto">
               {movError && (
                 <div className="p-2.5 rounded-lg bg-rose-50 border border-rose-200 text-rose-700 font-semibold">
                   {movError}
@@ -2715,6 +2810,8 @@ export const TreasuryFinanceView: React.FC = () => {
                   onClick={() => {
                     setMovType('INGRESO');
                     setMovCategory('Ingreso de Ventas / Caja');
+                    setMovIsSalaryAdvance(false);
+                    setMovLinkedCommitmentId('');
                   }}
                   className={`py-2 rounded-lg font-bold flex items-center justify-center gap-1.5 transition-colors cursor-pointer ${
                     movType === 'INGRESO'
@@ -2766,7 +2863,17 @@ export const TreasuryFinanceView: React.FC = () => {
                   {movType === 'GASTO' ? (
                     <select
                       value={movCategory}
-                      onChange={(e) => setMovCategory(e.target.value)}
+                      onChange={(e) => {
+                        const nextCat = e.target.value;
+                        setMovCategory(nextCat);
+                        const low = nextCat.toLowerCase();
+                        if ((low.includes('vale') || low.includes('adelanto')) && !movIsSalaryAdvance) {
+                          setMovIsSalaryAdvance(true);
+                          if (!movLinkedCommitmentId && pendingWorkerCommitments.length > 0) {
+                            handleSelectMovSalaryCommitment(pendingWorkerCommitments[0].id);
+                          }
+                        }
+                      }}
                       className="w-full px-3 py-2 rounded-xl border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-slate-900/15"
                     >
                       {expenseCategories.map((cat) => (
@@ -2793,7 +2900,7 @@ export const TreasuryFinanceView: React.FC = () => {
                   <div className="flex gap-1.5">
                     <input
                       type="number"
-                      step="0.01"
+                      step="any"
                       min="0.01"
                       value={movAmountInput}
                       onChange={(e) => setMovAmountInput(e.target.value)}
@@ -2821,6 +2928,98 @@ export const TreasuryFinanceView: React.FC = () => {
                 </div>
               </div>
 
+              {movType === 'GASTO' && (() => {
+                const selectedCmt = treasuryCommitments.find(
+                  (c) => c.id === movLinkedCommitmentId
+                );
+                const deductionUSD = selectedCmt
+                  ? Math.min(selectedCmt.amountUSD, selectedMovementPreviewUSD)
+                  : 0;
+                const remainingAfter = selectedCmt
+                  ? Math.max(0, Math.round((selectedCmt.amountUSD - deductionUSD) * 100) / 100)
+                  : 0;
+
+                return (
+                  <div className="p-3.5 rounded-xl bg-indigo-50/70 border border-indigo-200 space-y-2.5">
+                    <label className="flex items-start gap-2 cursor-pointer select-none">
+                      <input
+                        type="checkbox"
+                        checked={movIsSalaryAdvance}
+                        onChange={(e) => {
+                          const checked = e.target.checked;
+                          setMovIsSalaryAdvance(checked);
+                          if (movError) setMovError('');
+                          if (checked) {
+                            if (!movLinkedCommitmentId && pendingWorkerCommitments.length > 0) {
+                              handleSelectMovSalaryCommitment(pendingWorkerCommitments[0].id);
+                            }
+                          } else {
+                            setMovLinkedCommitmentId('');
+                          }
+                        }}
+                        className="mt-0.5 rounded border-indigo-300 text-indigo-600 focus:ring-indigo-500"
+                      />
+                      <div className="min-w-0">
+                        <span className="font-bold text-slate-900 flex items-center gap-1.5">
+                          <UserCheck className="w-3.5 h-3.5 text-indigo-700 shrink-0" />
+                          <span>Descontar como vale al sueldo de un trabajador</span>
+                        </span>
+                        <span className="text-[11px] text-slate-600 block">
+                          Resta este monto de los gastos fijos / nómina por pagar asignados al trabajador.
+                        </span>
+                      </div>
+                    </label>
+
+                    {movIsSalaryAdvance && (
+                      <div className="pl-5 space-y-2">
+                        {pendingWorkerCommitments.length === 0 ? (
+                          <p className="text-[11px] text-slate-600 bg-white border border-indigo-200 rounded-lg p-2.5">
+                            No hay sueldos ni gastos fijos pendientes en Planificación de Pagos. Agrega primero el sueldo del trabajador.
+                          </p>
+                        ) : (
+                          <>
+                            <select
+                              value={movLinkedCommitmentId}
+                              onChange={(e) => handleSelectMovSalaryCommitment(e.target.value)}
+                              className="w-full px-3 py-2 rounded-xl border border-indigo-300 bg-white font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                            >
+                              <option value="">-- Selecciona el sueldo / trabajador --</option>
+                              {pendingWorkerCommitments.map((cm) => (
+                                <option key={cm.id} value={cm.id}>
+                                  [{cm.category === 'NOMINA_SUELDOS' ? 'Nómina/Sueldo' : 'Gasto Fijo'}]{' '}
+                                  {cm.workerName ? `${cm.workerName} · ` : ''}
+                                  {cm.title} — Por pagar: {formatUSD(cm.amountUSD)}
+                                </option>
+                              ))}
+                            </select>
+
+                            {selectedCmt && (
+                              <div className="bg-white border border-indigo-200 rounded-lg px-3 py-2 flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                                <span className="text-slate-600">
+                                  Saldo restante del trabajador tras el vale:
+                                </span>
+                                <span
+                                  className={`font-mono font-bold tabular-nums ${
+                                    remainingAfter <= 0.009
+                                      ? 'text-emerald-700'
+                                      : 'text-indigo-800'
+                                  }`}
+                                >
+                                  {formatUSD(remainingAfter)}
+                                  {remainingAfter <= 0.009 && selectedMovementPreviewUSD > 0
+                                    ? ' (Liquidado)'
+                                    : ''}
+                                </span>
+                              </div>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+
               <div>
                 <label className="block font-semibold text-slate-700 mb-1">
                   Descripción / Concepto *
@@ -2832,7 +3031,7 @@ export const TreasuryFinanceView: React.FC = () => {
                   placeholder={
                     movType === 'INGRESO'
                       ? 'Ej: Depósito de ventas en efectivo del día'
-                      : 'Ej: Pago servicio eléctrico / Compra insumos'
+                      : 'Ej: Pago servicio eléctrico / Vale de sueldo'
                   }
                   className="w-full px-3 py-2 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-slate-900/15"
                 />

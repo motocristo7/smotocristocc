@@ -451,6 +451,7 @@ export interface PurchaseOrder {
 
 export const DEFAULT_EXPENSE_CATEGORIES: string[] = [
   'Sueldos y Nómina',
+  'Vales / Adelantos de Sueldo',
   'Papelería y Oficina',
   'Limpieza y Aseo',
   'Servicios Públicos (Luz, Agua, Internet)',
@@ -488,6 +489,10 @@ export interface BusinessExpense {
   treasuryAccountName?: string; // Nombre de la cuenta descontada
   treasuryMovementId?: string; // ID del movimiento espejo creado en Tesorería
   deductedFromTreasury?: boolean; // Indica si el gasto descontó liquidez en Tesorería
+  isSalaryAdvance?: boolean; // Indica si es un vale / adelanto al sueldo de un trabajador
+  linkedCommitmentId?: string; // ID del compromiso (sueldo/gasto fijo) del cual se descontó el vale
+  linkedCommitmentTitle?: string; // Nombre descriptivo del sueldo/compromiso descontado
+  salaryAdvanceAppliedUSD?: number; // Monto USD efectivamente descontado del compromiso
   createdAt: string;
   updatedAt?: string;
 }
@@ -519,9 +524,12 @@ export type TreasuryCommitmentDisplayStatus = 'PAGADO' | 'PENDIENTE' | 'PROXIMO_
 export interface TreasuryCommitment {
   id: string;
   title: string; // Ej: Alquiler local, Sueldo mecánico, Factura proveedor X
+  workerName?: string; // Nombre del trabajador asignado (para Nómina / Sueldos o Gastos Fijos)
   category: TreasuryCommitmentCategory;
   dueDate: string; // Fecha límite YYYY-MM-DD
-  amountUSD: number;
+  amountUSD: number; // Saldo pendiente por pagar en USD (se reduce con vales/adelantos)
+  originalAmountUSD?: number; // Monto base original antes de descontar vales/adelantos
+  advancesTotalUSD?: number; // Total acumulado descontado mediante vales/adelantos de sueldo
   bcvRate: number;
   amountBs: number;
   paymentCurrency?: TreasuryCommitmentPaymentCurrency; // 'EFECTIVO_USD' | 'BS'
@@ -529,6 +537,7 @@ export interface TreasuryCommitment {
   appliedExchangeRate?: number; // Tasa en Bs usada (BCV, Euro o USDT)
   reservedUSD?: number; // Monto apartado para cobertura
   isPaid: boolean;
+  paidByAdvances?: boolean; // True si quedó liquidado automáticamente en $0 por vales de sueldo
   paidAt?: string;
   paidAccountId?: string;
   paidAccountName?: string;
@@ -559,6 +568,8 @@ export interface TreasuryMovement {
   expenseId?: string;
   saleId?: string;
   saleInvoiceNumber?: string;
+  salaryAdvanceCommitmentId?: string; // Compromiso de sueldo/gasto fijo descontado por vale
+  salaryAdvanceAppliedUSD?: number; // Monto USD descontado al compromiso por este vale
   notes?: string;
   createdAt: string;
   updatedAt?: string;

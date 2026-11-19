@@ -299,6 +299,10 @@
         "treasuryAccountName": { "type": "string", "description": "Nombre de la cuenta de tesorería afectada" },
         "treasuryMovementId": { "type": "string", "description": "ID del movimiento vinculado en Tesorería" },
         "deductedFromTreasury": { "type": "boolean", "description": "Indica si el gasto descontó liquidez en Tesorería y Finanzas" },
+        "isSalaryAdvance": { "type": "boolean", "description": "Indica si el gasto es un vale o adelanto al sueldo de un trabajador" },
+        "linkedCommitmentId": { "type": "string", "description": "ID del compromiso de sueldo o gasto fijo descontado por el vale" },
+        "linkedCommitmentTitle": { "type": "string", "description": "Título del compromiso de sueldo descontado" },
+        "salaryAdvanceAppliedUSD": { "type": "number", "description": "Monto USD descontado del compromiso por pagar del trabajador" },
         "createdAt": { "type": "string", "description": "Fecha de registro ISO" }
       },
       "required": ["id", "expenseNumber", "date", "category", "description", "amountUSD", "bcvRate", "amountBs", "paymentCurrencyType", "paymentMethod", "createdAt"]
@@ -325,9 +329,12 @@
       "properties": {
         "id": { "type": "string", "description": "ID único del compromiso" },
         "title": { "type": "string", "description": "Concepto del pago programado" },
+        "workerName": { "type": "string", "description": "Trabajador asignado al sueldo o gasto fijo" },
         "category": { "type": "string", "description": "GASTOS_FIJOS, NOMINA_SUELDOS o PROVEEDORES" },
         "dueDate": { "type": "string", "description": "Fecha límite YYYY-MM-DD" },
-        "amountUSD": { "type": "number", "description": "Monto en USD" },
+        "amountUSD": { "type": "number", "description": "Monto pendiente por pagar en USD" },
+        "originalAmountUSD": { "type": "number", "description": "Monto base original antes de vales o adelantos" },
+        "advancesTotalUSD": { "type": "number", "description": "Total acumulado de vales/adelantos descontados" },
         "bcvRate": { "type": "number", "description": "Tasa aplicada en Bs" },
         "amountBs": { "type": "number", "description": "Monto en Bolívares" },
         "paymentCurrency": { "type": "string", "description": "Moneda del compromiso: EFECTIVO_USD o BS" },
@@ -335,6 +342,7 @@
         "appliedExchangeRate": { "type": "number", "description": "Valor numérico de la tasa (BCV, Euro o USDT) en Bs" },
         "reservedUSD": { "type": "number", "description": "Monto apartado en USD" },
         "isPaid": { "type": "boolean", "description": "Estado pagado" },
+        "paidByAdvances": { "type": "boolean", "description": "Indica si fue liquidado automáticamente mediante vales de sueldo" },
         "createdAt": { "type": "string", "description": "Fecha de creación ISO" }
       },
       "required": ["id", "title", "category", "dueDate", "amountUSD", "isPaid", "createdAt"]
@@ -359,6 +367,8 @@
         "expenseId": { "type": "string", "description": "ID del gasto del negocio vinculado" },
         "saleId": { "type": "string", "description": "ID de la venta vinculada al ingreso automático" },
         "saleInvoiceNumber": { "type": "string", "description": "Número de factura de la venta vinculada" },
+        "salaryAdvanceCommitmentId": { "type": "string", "description": "ID del compromiso de sueldo descontado por vale" },
+        "salaryAdvanceAppliedUSD": { "type": "number", "description": "Monto USD descontado del compromiso de sueldo" },
         "createdAt": { "type": "string", "description": "Fecha de creación ISO" }
       },
       "required": ["id", "movementNumber", "date", "type", "accountId", "description", "amountUSD", "createdAt"]

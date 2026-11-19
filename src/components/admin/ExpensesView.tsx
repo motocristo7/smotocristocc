@@ -27,6 +27,7 @@ import {
   AlertCircle,
   Landmark,
   ArrowUpRight,
+  UserCheck,
 } from 'lucide-react';
 
 interface PaymentOptionConfig {
@@ -89,6 +90,7 @@ export const ExpensesView: React.FC = () => {
     currentMonthExpensesBs,
     totalExpensesUSD,
     treasuryAccounts,
+    treasuryCommitments,
     initializeDefaultTreasuryAccounts,
     totalLiquidityUSD,
     totalLiquidityBs,
@@ -120,6 +122,8 @@ export const ExpensesView: React.FC = () => {
   const [formNotes, setFormNotes] = useState('');
   const [formDeductTreasury, setFormDeductTreasury] = useState(true);
   const [formTreasuryAccountId, setFormTreasuryAccountId] = useState('');
+  const [formIsSalaryAdvance, setFormIsSalaryAdvance] = useState(false);
+  const [formLinkedCommitmentId, setFormLinkedCommitmentId] = useState('');
   const [formError, setFormError] = useState('');
 
   // Inline new category inside Expense Form
@@ -261,10 +265,44 @@ export const ExpensesView: React.FC = () => {
     );
   };
 
+  const eligibleSalaryCommitments = useMemo(() => {
+    return treasuryCommitments
+      .filter(
+        (cm) =>
+          (!cm.isPaid && (cm.category === 'NOMINA_SUELDOS' || cm.category === 'GASTOS_FIJOS')) ||
+          (editingExpense && cm.id === editingExpense.linkedCommitmentId)
+      )
+      .sort((a, b) => {
+        if (a.category === 'NOMINA_SUELDOS' && b.category !== 'NOMINA_SUELDOS') return -1;
+        if (b.category === 'NOMINA_SUELDOS' && a.category !== 'NOMINA_SUELDOS') return 1;
+        return (a.dueDate || '').localeCompare(b.dueDate || '');
+      });
+  }, [treasuryCommitments, editingExpense]);
+
+  const isValeCategoryName = (cat: string) => {
+    const low = (cat || '').toLowerCase();
+    return low.includes('vale') || low.includes('adelanto');
+  };
+
+  const handleSelectSalaryCommitment = (commitmentId: string) => {
+    setFormLinkedCommitmentId(commitmentId);
+    if (formError) setFormError('');
+    const cm = treasuryCommitments.find((c) => c.id === commitmentId);
+    if (!cm) return;
+    const workerLabel = cm.workerName?.trim() || cm.title;
+    if (!formBeneficiary.trim()) {
+      setFormBeneficiary(workerLabel);
+    }
+    if (!formDescription.trim()) {
+      setFormDescription(`Vale / adelanto de sueldo - ${workerLabel}`);
+    }
+  };
+
   const openNewExpenseModal = () => {
     setEditingExpense(null);
     setFormDate(todayStr);
-    setFormCategory(expenseCategories[0] || DEFAULT_EXPENSE_CATEGORIES[0]);
+    const defaultCat = expenseCategories[0] || DEFAULT_EXPENSE_CATEGORIES[0];
+    setFormCategory(defaultCat);
     setFormDescription('');
     setFormBeneficiary('');
     const initialPaymentType: ExpensePaymentCurrency = 'EFECTIVO_USD';
@@ -276,6 +314,8 @@ export const ExpensesView: React.FC = () => {
     setFormNotes('');
     setFormDeductTreasury(true);
     setFormTreasuryAccountId(findSuggestedAccountId(initialPaymentType));
+    setFormIsSalaryAdvance(false);
+    setFormLinkedCommitmentId('');
     setFormError('');
     setShowInlineNewCat(false);
     setInlineNewCatName('');
@@ -299,6 +339,8 @@ export const ExpensesView: React.FC = () => {
     const isLinked = Boolean(expense.deductedFromTreasury || expense.treasuryMovementId);
     setFormDeductTreasury(isLinked);
     setFormTreasuryAccountId(expense.treasuryAccountId || findSuggestedAccountId(payType));
+    setFormIsSalaryAdvance(Boolean(expense.isSalaryAdvance && expense.linkedCommitmentId));
+    setFormLinkedCommitmentId(expense.linkedCommitmentId || '');
     setFormError('');
     setShowInlineNewCat(false);
     setInlineNewCatName('');
@@ -380,6 +422,13 @@ export const ExpensesView: React.FC = () => {
       return;
     }
 
+    if (formIsSalaryAdvance && !formLinkedCommitmentId) {
+      setFormError(
+        'Selecciona el sueldo o gasto fijo por pagar del trabajador al cual se descontará este vale.'
+      );
+      return;
+    }
+
     const opt =
       EXPENSE_PAYMENT_OPTIONS.find((o) => o.type === formPaymentType) ||
       EXPENSE_PAYMENT_OPTIONS[3];
@@ -399,6 +448,8 @@ export const ExpensesView: React.FC = () => {
         notes: formNotes.trim() || undefined,
         deductedFromTreasury: formDeductTreasury,
         treasuryAccountId: formDeductTreasury ? formTreasuryAccountId || undefined : undefined,
+        isSalaryAdvance: formIsSalaryAdvance,
+        linkedCommitmentId: formIsSalaryAdvance ? formLinkedCommitmentId : undefined,
       });
     } else {
       addExpense({
@@ -415,6 +466,8 @@ export const ExpensesView: React.FC = () => {
         notes: formNotes.trim() || undefined,
         deductFromTreasury: formDeductTreasury,
         treasuryAccountId: formDeductTreasury ? formTreasuryAccountId || undefined : undefined,
+        isSalaryAdvance: formIsSalaryAdvance,
+        linkedCommitmentId: formIsSalaryAdvance ? formLinkedCommitmentId : undefined,
       });
     }
 
@@ -810,6 +863,17 @@ export const ExpensesView: React.FC = () => {
                     </td>
                     <td className="py-3 px-4 min-w-[200px] max-w-md">
                       <p className="font-semibold text-slate-900">{expense.description}</p>
+                      {expense.isSalaryAdvance && expense.linkedCommitmentTitle && (
+                        <span className="inline-flex items-center gap-1 mt-1 px-2 py-0.5 rounded-md border border-indigo-200 bg-indigo-50 text-indigo-800 text-[10px] font-semibold">
+                          <UserCheck className="w-3 h-3 shrink-0" />
+                          <span>
+                            Vale descontado de: {expense.linkedCommitmentTitle}
+                            {expense.salaryAdvanceAppliedUSD
+                              ? ` (-${formatUSD(expense.salaryAdvanceAppliedUSD)})`
+                              : ''}
+                          </span>
+                        </span>
+                      )}
                       {(expense.beneficiary || expense.reference || expense.notes) && (
                         <p className="text-[11px] text-slate-500 mt-0.5">
                           {[
@@ -937,7 +1001,16 @@ export const ExpensesView: React.FC = () => {
                   {!showInlineNewCat ? (
                     <select
                       value={formCategory}
-                      onChange={(e) => setFormCategory(e.target.value)}
+                      onChange={(e) => {
+                        const nextCat = e.target.value;
+                        setFormCategory(nextCat);
+                        if (isValeCategoryName(nextCat) && !formIsSalaryAdvance) {
+                          setFormIsSalaryAdvance(true);
+                          if (!formLinkedCommitmentId && eligibleSalaryCommitments.length > 0) {
+                            handleSelectSalaryCommitment(eligibleSalaryCommitments[0].id);
+                          }
+                        }
+                      }}
                       className="w-full px-3 py-2 border border-slate-300 rounded-xl text-xs text-slate-900 bg-white focus:outline-hidden focus:ring-2 focus:ring-amber-500"
                     >
                       {expenseCategories.map((cat) => (
@@ -1007,6 +1080,152 @@ export const ExpensesView: React.FC = () => {
                   />
                 </div>
               </div>
+
+              {/* Row 2.5: Vale / Adelanto al Sueldo de un Trabajador (Descuenta de Gastos Fijos / Nómina por Pagar) */}
+              {(() => {
+                const selectedCmt = treasuryCommitments.find((c) => c.id === formLinkedCommitmentId);
+                const parsedUSDVal = Math.max(0, parseFloat(formAmountUSD) || 0);
+                const prevAppliedOnSameCmt =
+                  editingExpense && editingExpense.linkedCommitmentId === selectedCmt?.id
+                    ? Number(editingExpense.salaryAdvanceAppliedUSD) || 0
+                    : 0;
+                const availableBeforeThisVale = selectedCmt
+                  ? Math.round((Number(selectedCmt.amountUSD) + prevAppliedOnSameCmt) * 100) / 100
+                  : 0;
+                const effectiveDeduction = Math.min(availableBeforeThisVale, parsedUSDVal);
+                const projectedRemaining = Math.max(
+                  0,
+                  Math.round((availableBeforeThisVale - effectiveDeduction) * 100) / 100
+                );
+                const exceedsPending =
+                  selectedCmt && parsedUSDVal > availableBeforeThisVale + 0.009;
+
+                return (
+                  <div className="p-4 bg-indigo-50/70 rounded-xl border border-indigo-200 space-y-3">
+                    <label className="flex items-start gap-2.5 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={formIsSalaryAdvance}
+                        onChange={(e) => {
+                          const checked = e.target.checked;
+                          setFormIsSalaryAdvance(checked);
+                          if (formError) setFormError('');
+                          if (checked) {
+                            if (!formLinkedCommitmentId && eligibleSalaryCommitments.length > 0) {
+                              handleSelectSalaryCommitment(eligibleSalaryCommitments[0].id);
+                            }
+                          } else {
+                            setFormLinkedCommitmentId('');
+                          }
+                        }}
+                        className="mt-0.5 rounded text-indigo-600 focus:ring-indigo-500"
+                      />
+                      <div className="min-w-0">
+                        <span className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
+                          <UserCheck className="w-3.5 h-3.5 text-indigo-700 shrink-0" />
+                          <span>
+                            ¿Es un vale / adelanto al sueldo de un trabajador?
+                          </span>
+                        </span>
+                        <span className="text-[11px] text-slate-600 block mt-0.5">
+                          Descuenta este monto automáticamente del sueldo o gasto fijo por pagar asignado al trabajador en Tesorería.
+                        </span>
+                      </div>
+                    </label>
+
+                    {formIsSalaryAdvance && (
+                      <div className="pl-6 space-y-2.5">
+                        {eligibleSalaryCommitments.length === 0 ? (
+                          <div className="flex flex-wrap items-center justify-between gap-2 bg-white border border-indigo-200 rounded-lg p-3 text-[11px] text-slate-700">
+                            <span>
+                              No hay sueldos ni gastos fijos pendientes en Tesorería. Crea primero el sueldo del trabajador en Planificación de Pagos.
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setIsFormOpen(false);
+                                setCurrentView('admin_tesoreria');
+                              }}
+                              className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-lg cursor-pointer shrink-0"
+                            >
+                              Ir a Tesorería
+                            </button>
+                          </div>
+                        ) : (
+                          <>
+                            <div>
+                              <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                                Sueldo / Gasto Fijo del Trabajador a Descontar *
+                              </label>
+                              <select
+                                value={formLinkedCommitmentId}
+                                onChange={(e) => handleSelectSalaryCommitment(e.target.value)}
+                                className="w-full px-3 py-2 bg-white border border-indigo-300 rounded-xl text-xs font-medium text-slate-900 focus:outline-hidden focus:ring-2 focus:ring-indigo-500"
+                              >
+                                <option value="">-- Selecciona el trabajador / sueldo por pagar --</option>
+                                {eligibleSalaryCommitments.map((cm) => {
+                                  const categoryTag =
+                                    cm.category === 'NOMINA_SUELDOS'
+                                      ? 'Nómina/Sueldo'
+                                      : 'Gasto Fijo';
+                                  const workerTag = cm.workerName?.trim()
+                                    ? `${cm.workerName.trim()} · `
+                                    : '';
+                                  return (
+                                    <option key={cm.id} value={cm.id}>
+                                      [{categoryTag}] {workerTag}
+                                      {cm.title} — Por pagar: {formatUSD(cm.amountUSD)} (Vence: {cm.dueDate})
+                                    </option>
+                                  );
+                                })}
+                              </select>
+                            </div>
+
+                            {selectedCmt && (
+                              <div className="bg-white border border-indigo-200 rounded-lg p-3 space-y-1.5 text-[11px]">
+                                <div className="flex items-center justify-between text-slate-600">
+                                  <span>Saldo por pagar actual del trabajador:</span>
+                                  <span className="font-mono font-bold text-slate-900 tabular-nums">
+                                    {formatUSD(availableBeforeThisVale)}
+                                  </span>
+                                </div>
+                                <div className="flex items-center justify-between text-indigo-700">
+                                  <span>Descuento por este vale:</span>
+                                  <span className="font-mono font-bold tabular-nums">
+                                    -{formatUSD(effectiveDeduction)}
+                                  </span>
+                                </div>
+                                <div className="pt-1.5 border-t border-slate-100 flex items-center justify-between">
+                                  <span className="font-bold text-slate-800">
+                                    Nuevo saldo por pagar al trabajador:
+                                  </span>
+                                  <span
+                                    className={`font-mono font-bold tabular-nums ${
+                                      projectedRemaining <= 0.009
+                                        ? 'text-emerald-700'
+                                        : 'text-slate-950'
+                                    }`}
+                                  >
+                                    {formatUSD(projectedRemaining)}
+                                    {projectedRemaining <= 0.009 && parsedUSDVal > 0
+                                      ? ' (Quedará Liquidado)'
+                                      : ''}
+                                  </span>
+                                </div>
+                                {exceedsPending && (
+                                  <p className="text-[10px] text-amber-700 bg-amber-50 border border-amber-200 rounded-md px-2 py-1 mt-1">
+                                    El monto del vale supera el saldo pendiente ({formatUSD(availableBeforeThisVale)}). El compromiso quedará liquidado en $0.00 y el gasto completo ({formatUSD(parsedUSDVal)}) se descontará de tu liquidez.
+                                  </p>
+                                )}
+                              </div>
+                            )}
+                          </>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
 
               {/* Row 3: Cómo se pagó (4 botones claros) */}
               <div>
@@ -1188,7 +1407,7 @@ export const ExpensesView: React.FC = () => {
                     <label className="text-[11px] text-slate-600 font-medium">Tasa BCV:</label>
                     <input
                       type="number"
-                      step="0.01"
+                      step="any"
                       min="0.01"
                       value={formRate}
                       onChange={(e) => handleRateChange(e.target.value)}
@@ -1212,7 +1431,7 @@ export const ExpensesView: React.FC = () => {
                       </span>
                       <input
                         type="number"
-                        step="0.01"
+                        step="any"
                         min="0"
                         value={formAmountUSD}
                         onChange={(e) => handleAmountUSDChange(e.target.value)}
@@ -1243,7 +1462,7 @@ export const ExpensesView: React.FC = () => {
                       </span>
                       <input
                         type="number"
-                        step="0.01"
+                        step="any"
                         min="0"
                         value={formAmountBs}
                         onChange={(e) => handleAmountBsChange(e.target.value)}

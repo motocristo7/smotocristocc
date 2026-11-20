@@ -14,6 +14,9 @@ import {
   CheckCircle2,
   KeyRound,
   ArrowRight,
+  Eye,
+  EyeOff,
+  ArrowLeft,
 } from 'lucide-react';
 
 interface AuthModalProps {
@@ -29,12 +32,22 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   defaultTab = 'login',
   defaultRoleHint,
 }) => {
-  const { login, register, currentUser, isAdmin } = useApp();
+  const { login, register, resetAdminPassword } = useApp();
   const [activeTab, setActiveTab] = useState<'login' | 'register'>(defaultTab);
+  const [showAdminRecovery, setShowAdminRecovery] = useState(false);
 
   // Login form state
   const [loginIdentifier, setLoginIdentifier] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
+  const [showLoginPassword, setShowLoginPassword] = useState(false);
+
+  // Admin Recovery form state
+  const [recEmail, setRecEmail] = useState('SERVIMOTOSCRISTOCENTRO@gmail.com');
+  const [recDocumentId, setRecDocumentId] = useState('');
+  const [recPhone, setRecPhone] = useState('');
+  const [recNewPassword, setRecNewPassword] = useState('');
+  const [recConfirmPassword, setRecConfirmPassword] = useState('');
+  const [showRecPassword, setShowRecPassword] = useState(false);
 
   // Register form state
   const [regName, setRegName] = useState('');
@@ -131,9 +144,47 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
   const fillAdminCredentials = () => {
     setActiveTab('login');
+    setShowAdminRecovery(false);
     setLoginIdentifier('SERVIMOTOSCRISTOCENTRO@gmail.com');
-    setLoginPassword('admin');
+    if (!loginPassword) {
+      setLoginPassword('admin');
+    }
     setErrorMessage(null);
+  };
+
+  const handleAdminRecoverySubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErrorMessage(null);
+    setSuccessMessage(null);
+
+    setLoading(true);
+    try {
+      const res = await resetAdminPassword({
+        email: recEmail.trim(),
+        documentId: recDocumentId.trim(),
+        phone: recPhone.trim(),
+        newPassword: recNewPassword,
+        confirmPassword: recConfirmPassword,
+      });
+
+      if (res.success) {
+        setSuccessMessage(
+          '¡Clave administrativa restablecida y sincronizada en la nube! Entrando al panel...'
+        );
+        setTimeout(() => {
+          setShowAdminRecovery(false);
+          setRecNewPassword('');
+          setRecConfirmPassword('');
+          onClose();
+        }, 900);
+      } else {
+        setErrorMessage(res.error || 'No se pudo restablecer la clave administrativa.');
+      }
+    } catch (err: any) {
+      setErrorMessage(err?.message || 'Error al restablecer la clave.');
+    } finally {
+      setLoading(false);
+    }
   };
 
   return (
@@ -217,7 +268,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           )}
 
           {/* Form: LOGIN */}
-          {activeTab === 'login' && (
+          {activeTab === 'login' && !showAdminRecovery && (
             <form onSubmit={handleLoginSubmit} className="space-y-4">
               <div>
                 <label className="block text-xs font-bold text-slate-700 mb-1">
@@ -247,13 +298,21 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                     <Lock className="w-4 h-4" />
                   </div>
                   <input
-                    type="password"
+                    type={showLoginPassword ? 'text' : 'password'}
                     value={loginPassword}
                     onChange={(e) => setLoginPassword(e.target.value)}
                     placeholder="••••••••"
-                    className="w-full pl-9 pr-3 py-2 text-xs rounded-xl border border-slate-300 focus:outline-hidden focus:ring-2 focus:ring-amber-500 bg-white"
+                    className="w-full pl-9 pr-9 py-2 text-xs rounded-xl border border-slate-300 focus:outline-hidden focus:ring-2 focus:ring-amber-500 bg-white"
                     required
                   />
+                  <button
+                    type="button"
+                    onClick={() => setShowLoginPassword((prev) => !prev)}
+                    className="absolute inset-y-0 right-0 pr-3 flex items-center text-slate-400 hover:text-slate-700 cursor-pointer"
+                    title={showLoginPassword ? 'Ocultar contraseña' : 'Ver contraseña'}
+                  >
+                    {showLoginPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
                 </div>
               </div>
 
@@ -272,7 +331,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 )}
               </button>
 
-              {/* Quick Admin Auto-fill Helper */}
+              {/* Quick Admin Auto-fill & Recovery Helpers */}
               <div className="mt-4 pt-3 border-t border-slate-100 flex flex-col gap-2">
                 <button
                   type="button"
@@ -282,10 +341,141 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                   <ShieldCheck className="w-3.5 h-3.5 text-amber-600" />
                   <span>Acceso Rápido Administrador Taller</span>
                 </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowAdminRecovery(true);
+                    setErrorMessage(null);
+                    setSuccessMessage(null);
+                  }}
+                  className="w-full py-1.5 px-3 rounded-lg bg-slate-50 hover:bg-slate-100 border border-slate-200 text-slate-700 text-[11px] font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+                >
+                  <KeyRound className="w-3.5 h-3.5 text-slate-500" />
+                  <span>¿No te acepta la clave? Restablecer clave de Administrador</span>
+                </button>
                 <p className="text-[10px] text-center text-slate-400">
                   Los clientes pueden registrarse gratis para ver sus motos y pedidos.
                 </p>
               </div>
+            </form>
+          )}
+
+          {/* Form: ADMIN PASSWORD RECOVERY */}
+          {activeTab === 'login' && showAdminRecovery && (
+            <form onSubmit={handleAdminRecoverySubmit} className="space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
+                  <KeyRound className="w-4 h-4 text-amber-600" />
+                  <span>Restablecer Clave de Administrador</span>
+                </span>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowAdminRecovery(false);
+                    setErrorMessage(null);
+                  }}
+                  className="text-[11px] font-semibold text-slate-500 hover:text-slate-800 inline-flex items-center gap-1 cursor-pointer"
+                >
+                  <ArrowLeft className="w-3.5 h-3.5" />
+                  Volver
+                </button>
+              </div>
+
+              <p className="text-[11px] text-slate-600 bg-amber-50 border border-amber-200 rounded-xl p-2.5">
+                Confirma los 3 datos del propietario registrados en el sistema para asignar una nueva contraseña administrativa sincronizada en todos tus dominios.
+              </p>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 mb-1">
+                  Correo del Propietario *
+                </label>
+                <input
+                  type="email"
+                  required
+                  value={recEmail}
+                  onChange={(e) => setRecEmail(e.target.value)}
+                  placeholder="SERVIMOTOSCRISTOCENTRO@gmail.com"
+                  className="w-full px-3 py-2 text-xs rounded-xl border border-slate-300 focus:outline-hidden focus:ring-2 focus:ring-amber-500 bg-white"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">
+                    Cédula o RIF *
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    value={recDocumentId}
+                    onChange={(e) => setRecDocumentId(e.target.value)}
+                    placeholder="Ej. V-19996141"
+                    className="w-full px-3 py-2 text-xs rounded-xl border border-slate-300 focus:outline-hidden focus:ring-2 focus:ring-amber-500 bg-white font-mono"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">
+                    Teléfono Propietario *
+                  </label>
+                  <input
+                    type="tel"
+                    required
+                    value={recPhone}
+                    onChange={(e) => setRecPhone(e.target.value)}
+                    placeholder="Ej. 0412-7860509"
+                    className="w-full px-3 py-2 text-xs rounded-xl border border-slate-300 focus:outline-hidden focus:ring-2 focus:ring-amber-500 bg-white font-mono"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">
+                    Nueva Clave *
+                  </label>
+                  <div className="relative">
+                    <input
+                      type={showRecPassword ? 'text' : 'password'}
+                      required
+                      minLength={4}
+                      value={recNewPassword}
+                      onChange={(e) => setRecNewPassword(e.target.value)}
+                      placeholder="Mín. 4 caracteres"
+                      className="w-full pl-3 pr-8 py-2 text-xs rounded-xl border border-slate-300 focus:outline-hidden focus:ring-2 focus:ring-amber-500 bg-white"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowRecPassword((p) => !p)}
+                      className="absolute inset-y-0 right-0 pr-2.5 flex items-center text-slate-400 hover:text-slate-700 cursor-pointer"
+                    >
+                      {showRecPassword ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                    </button>
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 mb-1">
+                    Confirmar Clave *
+                  </label>
+                  <input
+                    type={showRecPassword ? 'text' : 'password'}
+                    required
+                    minLength={4}
+                    value={recConfirmPassword}
+                    onChange={(e) => setRecConfirmPassword(e.target.value)}
+                    placeholder="Repite la clave"
+                    className="w-full px-3 py-2 text-xs rounded-xl border border-slate-300 focus:outline-hidden focus:ring-2 focus:ring-amber-500 bg-white"
+                  />
+                </div>
+              </div>
+
+              <button
+                type="submit"
+                disabled={loading}
+                className="w-full py-2.5 px-4 bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs rounded-xl transition-all shadow-md flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+              >
+                <ShieldCheck className="w-4 h-4 text-amber-400" />
+                <span>{loading ? 'Guardando nueva clave...' : 'Guardar Nueva Clave y Entrar'}</span>
+              </button>
             </form>
           )}
 

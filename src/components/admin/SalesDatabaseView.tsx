@@ -50,6 +50,8 @@ export const SalesDatabaseView: React.FC = () => {
     sales,
     customers,
     settings,
+    treasuryAccounts,
+    treasuryMovements,
     setCurrentView,
     updateSale,
     updateSaleCreditStatus,
@@ -80,7 +82,7 @@ export const SalesDatabaseView: React.FC = () => {
   const [paymentNotes, setPaymentNotes] = useState('');
   const [sendWhatsAppOnPayment, setSendWhatsAppOnPayment] = useState(true);
 
-  // Modal para editar cliente / datos de factura
+  // Modal para editar cliente / tipo de venta / cuenta destino
   const [editSaleModal, setEditSaleModal] = useState<Sale | null>(null);
   const [editCustomerId, setEditCustomerId] = useState<string>('');
   const [editCustomerName, setEditCustomerName] = useState('');
@@ -88,6 +90,11 @@ export const SalesDatabaseView: React.FC = () => {
   const [editCustomerDocument, setEditCustomerDocument] = useState('');
   const [editCreditDueDate, setEditCreditDueDate] = useState('');
   const [editNotes, setEditNotes] = useState('');
+  const [editPaymentMethod, setEditPaymentMethod] = useState<PaymentMethod>('Pago Móvil');
+  const [editPagoMovilAccount, setEditPagoMovilAccount] =
+    useState<PagoMovilAccountOption>('BANESCO_PERSONAL');
+  const [editTreasuryAccountId, setEditTreasuryAccountId] = useState<string>('');
+  const [editPaymentTouched, setEditPaymentTouched] = useState<boolean>(false);
 
   // Modales de confirmación (reemplazan window.prompt / window.confirm bloqueados en iframes)
   const [voidModalSale, setVoidModalSale] = useState<Sale | null>(null);
@@ -290,8 +297,89 @@ export const SalesDatabaseView: React.FC = () => {
     }
   };
 
+  const findMatchingTreasuryAccountId = (
+    method: PaymentMethod,
+    pmAccount?: PagoMovilAccountOption
+  ): string => {
+    if (method === 'Pago Móvil') {
+      if (pmAccount === 'PROVINCIAL') {
+        return (
+          treasuryAccounts.find((a) => a.id === 'acc-provincial')?.id ||
+          treasuryAccounts.find((a) => /provincial/i.test(a.name))?.id ||
+          ''
+        );
+      }
+      return (
+        treasuryAccounts.find((a) => a.id === 'acc-banesco-personal')?.id ||
+        treasuryAccounts.find((a) => /banesco\s*personal/i.test(a.name))?.id ||
+        ''
+      );
+    }
+    if (method === 'Punto de Venta (Bs)') {
+      return (
+        treasuryAccounts.find((a) => a.id === 'acc-banesco-smcc')?.id ||
+        treasuryAccounts.find((a) => /banesco\s*smcc|\bsmcc\b/i.test(a.name))?.id ||
+        ''
+      );
+    }
+    if (method === 'Dólares Efectivo (USD)') {
+      return (
+        treasuryAccounts.find((a) => a.id === 'acc-efectivo-usd')?.id ||
+        treasuryAccounts.find((a) => a.currency === 'USD' && a.group === 'EFECTIVO')?.id ||
+        treasuryAccounts.find((a) => a.currency === 'USD')?.id ||
+        ''
+      );
+    }
+    if (method === 'Binance Pay (USDT)') {
+      return (
+        treasuryAccounts.find((a) => a.id === 'acc-billetera-usdt')?.id ||
+        treasuryAccounts.find((a) => a.currency === 'USDT')?.id ||
+        treasuryAccounts.find((a) => a.group === 'BILLETERA_DIVISAS')?.id ||
+        ''
+      );
+    }
+    return (
+      treasuryAccounts.find((a) => a.id === 'acc-banesco-smcc')?.id ||
+      treasuryAccounts.find((a) => /banesco\s*smcc|\bsmcc\b/i.test(a.name))?.id ||
+      treasuryAccounts.find((a) => a.group === 'BANCO_NACIONAL' && a.currency === 'BS')?.id ||
+      ''
+    );
+  };
+
+  const getDefaultAccountLabelForMethod = (
+    method: PaymentMethod,
+    pmAccount?: PagoMovilAccountOption
+  ): string => {
+    if (method === 'Pago Móvil') {
+      return pmAccount === 'PROVINCIAL' ? 'Provincial (Bs)' : 'Banesco Personal (Bs)';
+    }
+    if (method === 'Punto de Venta (Bs)') return 'Banesco SMCC (Bs)';
+    if (method === 'Dólares Efectivo (USD)') return 'Caja Efectivo USD ($)';
+    if (method === 'Binance Pay (USDT)') return 'Billetera USDT (Binance)';
+    return 'Banesco SMCC (Bs)';
+  };
+
   const handleOpenEditSaleModal = (sale: Sale, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
+    const initialMethod: PaymentMethod = sale.paymentMethod || 'Pago Móvil';
+    const inferredPmAccount: PagoMovilAccountOption =
+      sale.pagoMovilAccount ||
+      (/provincial/i.test(sale.treasuryAccountName || '') ? 'PROVINCIAL' : 'BANESCO_PERSONAL');
+    const linkedMov =
+      (sale.treasuryMovementId
+        ? treasuryMovements.find((m) => m.id === sale.treasuryMovementId)
+        : undefined) ||
+      treasuryMovements.find(
+        (m) =>
+          m.saleId === sale.id &&
+          m.type === 'INGRESO' &&
+          m.category !== 'Cobro Cuentas por Cobrar'
+      );
+    const existingAccId = linkedMov?.accountId || sale.treasuryAccountId || '';
+    const matchedAccId =
+      (existingAccId && treasuryAccounts.some((a) => a.id === existingAccId) && existingAccId) ||
+      findMatchingTreasuryAccountId(initialMethod, inferredPmAccount);
+
     setEditSaleModal(sale);
     setEditCustomerId('');
     setEditCustomerName(sale.customerName || '');
@@ -299,6 +387,24 @@ export const SalesDatabaseView: React.FC = () => {
     setEditCustomerDocument(sale.customerDocument || '');
     setEditCreditDueDate(sale.creditDueDate || '');
     setEditNotes(sale.notes || '');
+    setEditPaymentMethod(initialMethod);
+    setEditPagoMovilAccount(inferredPmAccount);
+    setEditTreasuryAccountId(matchedAccId);
+    setEditPaymentTouched(false);
+  };
+
+  const handleEditPaymentMethodChange = (nextMethod: PaymentMethod) => {
+    setEditPaymentMethod(nextMethod);
+    const matched = findMatchingTreasuryAccountId(nextMethod, editPagoMovilAccount);
+    setEditTreasuryAccountId(matched);
+    setEditPaymentTouched(true);
+  };
+
+  const handleEditPagoMovilAccountChange = (nextPm: PagoMovilAccountOption) => {
+    setEditPagoMovilAccount(nextPm);
+    const matched = findMatchingTreasuryAccountId('Pago Móvil', nextPm);
+    setEditTreasuryAccountId(matched);
+    setEditPaymentTouched(true);
   };
 
   const handleSaveEditedSale = (e: React.FormEvent) => {
@@ -317,6 +423,14 @@ export const SalesDatabaseView: React.FC = () => {
       customerDocument: editCustomerDocument.trim() || undefined,
       creditDueDate: editCreditDueDate || undefined,
       notes: editNotes.trim() || undefined,
+      ...(editPaymentTouched
+        ? {
+            paymentMethod: editPaymentMethod,
+            pagoMovilAccount: editPaymentMethod === 'Pago Móvil' ? editPagoMovilAccount : undefined,
+            treasuryAccountId: editTreasuryAccountId || undefined,
+            syncTreasuryPayment: true,
+          }
+        : {}),
       reassignCustomer: !editCustomerId,
     });
 
@@ -324,7 +438,17 @@ export const SalesDatabaseView: React.FC = () => {
       setSelectedSaleDetail(updated);
     }
 
-    showToast(`Factura ${editSaleModal.invoiceNumber} actualizada y asignada a ${cleanName}`);
+    if (editPaymentTouched) {
+      const destAccountLabel =
+        updated?.treasuryAccountName ||
+        treasuryAccounts.find((a) => a.id === editTreasuryAccountId)?.name ||
+        getDefaultAccountLabelForMethod(editPaymentMethod, editPagoMovilAccount);
+      showToast(
+        `Factura ${editSaleModal.invoiceNumber} actualizada: ${editPaymentMethod} → ${destAccountLabel} (Tesorería sincronizada)`
+      );
+    } else {
+      showToast(`Factura ${editSaleModal.invoiceNumber} actualizada y asignada a ${cleanName}`);
+    }
     setEditSaleModal(null);
   };
 
@@ -772,7 +896,7 @@ export const SalesDatabaseView: React.FC = () => {
                 <tr className="border-b border-slate-200 bg-slate-100/70 text-[11px] font-bold text-slate-600 uppercase tracking-wider">
                   <th className="py-3 px-4">Factura & Fecha</th>
                   <th className="py-3 px-4">Cliente (WhatsApp / CI)</th>
-                  <th className="py-3 px-4">Condición</th>
+                  <th className="py-3 px-4">Condición & Pago</th>
                   <th className="py-3 px-4">Repuestos / Servicios</th>
                   <th className="py-3 px-4 text-right">Monto Total</th>
                   <th className="py-3 px-4 text-center">Estado de Cobro</th>
@@ -824,8 +948,8 @@ export const SalesDatabaseView: React.FC = () => {
                         )}
                       </td>
 
-                      {/* Condición */}
-                      <td className="py-3.5 px-4 align-top">
+                      {/* Condición & Pago */}
+                      <td className="py-3.5 px-4 align-top space-y-1.5">
                         {saleType === 'CONTADO' && (
                           <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
                             <Banknote className="w-3 h-3 text-emerald-600" />
@@ -872,6 +996,26 @@ export const SalesDatabaseView: React.FC = () => {
                             <span>MercadoLibre</span>
                           </span>
                         )}
+
+                        {/* Método de pago y cuenta destino */}
+                        <div className="text-[10px] leading-tight">
+                          <span className="font-semibold text-slate-700 block">
+                            {sale.paymentMethod || 'Sin método'}
+                          </span>
+                          {(sale.treasuryAccountName ||
+                            (sale.paymentMethod === 'Pago Móvil' && sale.pagoMovilAccount) ||
+                            sale.paymentMethod === 'Punto de Venta (Bs)') && (
+                            <span className="text-slate-500 block">
+                              →{' '}
+                              {sale.treasuryAccountName ||
+                                (sale.paymentMethod === 'Pago Móvil'
+                                  ? sale.pagoMovilAccount === 'PROVINCIAL'
+                                    ? 'Provincial (Bs)'
+                                    : 'Banesco Personal (Bs)'
+                                  : 'Banesco SMCC (Bs)')}
+                            </span>
+                          )}
+                        </div>
                       </td>
 
                       {/* Repuestos / Servicios */}
@@ -1009,12 +1153,12 @@ export const SalesDatabaseView: React.FC = () => {
                             </button>
                           )}
 
-                          {/* Editar Cliente / Factura */}
+                          {/* Editar Tipo de Pago / Cuenta / Cliente */}
                           <button
                             type="button"
                             onClick={(e) => handleOpenEditSaleModal(sale, e)}
                             className="p-1.5 text-slate-600 hover:text-amber-700 hover:bg-amber-50 rounded-lg cursor-pointer transition-colors"
-                            title="Editar cliente o datos de esta factura"
+                            title="Editar tipo de venta, cuenta destino y datos de la factura"
                           >
                             <Edit2 className="w-3.5 h-3.5" />
                           </button>
@@ -1199,7 +1343,7 @@ export const SalesDatabaseView: React.FC = () => {
                     className="px-3.5 py-2 bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 font-bold rounded-xl flex items-center gap-1.5 cursor-pointer"
                   >
                     <Edit2 className="w-4 h-4" />
-                    <span>Editar Cliente</span>
+                    <span>Editar Pago / Cliente</span>
                   </button>
                   <button
                     type="button"
@@ -1419,17 +1563,17 @@ export const SalesDatabaseView: React.FC = () => {
         </div>
       )}
 
-      {/* Modal: EDITAR Cliente / Datos de Factura */}
+      {/* Modal: EDITAR Tipo de Pago, Cuenta Destino y Datos de Factura */}
       {editSaleModal && (
         <div className="fixed inset-0 bg-slate-950/70 backdrop-blur-xs z-50 flex items-center justify-center p-4 overflow-y-auto">
-          <div className="bg-white rounded-2xl max-w-md w-full border border-slate-200 shadow-2xl overflow-hidden animate-in fade-in zoom-in-95">
-            <div className="bg-slate-900 px-5 py-4 text-white flex items-center justify-between">
+          <div className="bg-white rounded-2xl max-w-lg w-full max-h-[92vh] flex flex-col border border-slate-200 shadow-2xl overflow-hidden animate-in fade-in zoom-in-95">
+            <div className="bg-slate-900 px-5 py-4 text-white flex items-center justify-between shrink-0">
               <div className="flex items-center gap-2">
                 <Edit2 className="w-5 h-5 text-amber-400" />
                 <div>
-                  <h3 className="font-bold text-sm">Editar Cliente / Factura</h3>
+                  <h3 className="font-bold text-sm">Editar Venta, Tipo de Pago y Cuenta</h3>
                   <span className="text-[11px] text-slate-300 font-mono">
-                    {editSaleModal.invoiceNumber} · {formatUSD(editSaleModal.total)}
+                    {editSaleModal.invoiceNumber} · {formatUSD(editSaleModal.total)} ({formatBs(editSaleModal.total * (editSaleModal.bcvRate || rate))})
                   </span>
                 </div>
               </div>
@@ -1442,119 +1586,320 @@ export const SalesDatabaseView: React.FC = () => {
               </button>
             </div>
 
-            <form onSubmit={handleSaveEditedSale} className="p-5 space-y-4 text-xs">
-              {customers.length > 0 && (
+            <form onSubmit={handleSaveEditedSale} className="p-5 space-y-4 text-xs overflow-y-auto flex-1">
+              {/* Sección 1: Tipo de Venta / Método de Pago y Cuenta Destino en Tesorería */}
+              <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 space-y-3">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[11px] font-bold uppercase tracking-wider text-slate-800 flex items-center gap-1.5">
+                    <CreditCard className="w-3.5 h-3.5 text-amber-600" />
+                    <span>Tipo de Venta y Cuenta en Tesorería</span>
+                  </span>
+                  {editSaleModal.treasuryAccountName && (
+                    <span className="text-[10px] font-semibold text-slate-500">
+                      Actual: {editSaleModal.treasuryAccountName}
+                    </span>
+                  )}
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1.5">
+                    Método / Tipo de Venta *
+                  </label>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
+                    {(
+                      [
+                        { id: 'Pago Móvil', label: 'Pago Móvil' },
+                        { id: 'Punto de Venta (Bs)', label: 'Punto de Venta (Bs)' },
+                        { id: 'Dólares Efectivo (USD)', label: 'Efectivo USD ($)' },
+                        { id: 'Transferencia Bancaria Bs', label: 'Transferencia Bs' },
+                        { id: 'Binance Pay (USDT)', label: 'Binance (USDT)' },
+                      ] as const
+                    ).map((opt) => (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        onClick={() => handleEditPaymentMethodChange(opt.id)}
+                        className={`px-2.5 py-2 rounded-lg border text-[11px] font-bold transition-all cursor-pointer text-left ${
+                          editPaymentMethod === opt.id
+                            ? 'bg-slate-900 border-slate-900 text-white'
+                            : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-100'
+                        }`}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {editPaymentMethod === 'Pago Móvil' && (
+                  <div className="p-2.5 rounded-xl bg-blue-50/80 border border-blue-200 space-y-2">
+                    <label className="block text-[11px] font-bold text-blue-950">
+                      ¿A qué cuenta cayó el Pago Móvil?
+                    </label>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => handleEditPagoMovilAccountChange('BANESCO_PERSONAL')}
+                        className={`px-2.5 py-2 rounded-lg border text-xs font-bold transition-all cursor-pointer ${
+                          editPagoMovilAccount === 'BANESCO_PERSONAL'
+                            ? 'bg-slate-900 border-slate-900 text-white'
+                            : 'bg-white border-blue-200 text-slate-700 hover:bg-blue-100/60'
+                        }`}
+                      >
+                        Banesco Personal
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleEditPagoMovilAccountChange('PROVINCIAL')}
+                        className={`px-2.5 py-2 rounded-lg border text-xs font-bold transition-all cursor-pointer ${
+                          editPagoMovilAccount === 'PROVINCIAL'
+                            ? 'bg-slate-900 border-slate-900 text-white'
+                            : 'bg-white border-blue-200 text-slate-700 hover:bg-blue-100/60'
+                        }`}
+                      >
+                        Provincial
+                      </button>
+                    </div>
+                  </div>
+                )}
+
                 <div>
                   <label className="block text-xs font-semibold text-slate-700 mb-1">
-                    Seleccionar Cliente Existente (Opcional)
+                    Cuenta de Tesorería donde cayó el pago *
                   </label>
                   <select
-                    value={editCustomerId}
+                    value={editTreasuryAccountId}
                     onChange={(e) => {
-                      const cid = e.target.value;
-                      setEditCustomerId(cid);
-                      if (cid) {
-                        const chosen = customers.find((c) => c.id === cid);
-                        if (chosen) {
-                          setEditCustomerName(chosen.name);
-                          setEditCustomerPhone(chosen.phone === 'N/A' ? '' : chosen.phone || '');
-                          setEditCustomerDocument(chosen.documentId || '');
+                      const accId = e.target.value;
+                      setEditTreasuryAccountId(accId);
+                      setEditPaymentTouched(true);
+                      const picked = treasuryAccounts.find((a) => a.id === accId);
+                      if (editPaymentMethod === 'Pago Móvil' && picked) {
+                        if (picked.id === 'acc-provincial' || /provincial/i.test(picked.name)) {
+                          setEditPagoMovilAccount('PROVINCIAL');
+                        } else if (
+                          picked.id === 'acc-banesco-personal' ||
+                          /banesco\s*personal/i.test(picked.name)
+                        ) {
+                          setEditPagoMovilAccount('BANESCO_PERSONAL');
                         }
                       }
                     }}
-                    className="w-full p-2.5 rounded-xl border border-slate-300 bg-slate-50 font-medium"
+                    className="w-full p-2.5 rounded-xl border border-slate-300 bg-white font-semibold text-slate-900"
                   >
-                    <option value="">-- Usar / Crear cliente con los campos de abajo --</option>
-                    {customers.map((c) => (
-                      <option key={c.id} value={c.id}>
-                        {c.name} {c.phone && c.phone !== 'N/A' ? `(${c.phone})` : ''} {c.documentId ? `- ${c.documentId}` : ''}
+                    <option value="">
+                      Automática ({getDefaultAccountLabelForMethod(editPaymentMethod, editPagoMovilAccount)})
+                    </option>
+                    {treasuryAccounts.map((acc) => (
+                      <option key={acc.id} value={acc.id}>
+                        {acc.name} ·{' '}
+                        {acc.currency === 'BS'
+                          ? formatBs(acc.nativeBalance)
+                          : formatUSD(acc.nativeBalance)}
                       </option>
                     ))}
                   </select>
                 </div>
-              )}
 
-              <div>
-                <label className="block text-xs font-bold text-slate-700 mb-1">
-                  Nombre Completo del Cliente *
-                </label>
-                <input
-                  type="text"
-                  required
-                  value={editCustomerName}
-                  onChange={(e) => {
-                    setEditCustomerName(e.target.value);
-                    setEditCustomerId('');
-                  }}
-                  placeholder="Ej. Edithson Ricardo Rondon Mendoza"
-                  className="w-full p-2.5 rounded-xl border border-slate-300 bg-slate-50 focus:bg-white font-semibold"
-                />
+                {/* Aviso en tiempo real del ajuste automático en Tesorería y Finanzas */}
+                {(() => {
+                  const isVoided = Boolean(
+                    editSaleModal.isVoided || editSaleModal.creditStatus === 'ANULADO'
+                  );
+                  const linkedMov =
+                    (editSaleModal.treasuryMovementId
+                      ? treasuryMovements.find((m) => m.id === editSaleModal.treasuryMovementId)
+                      : undefined) ||
+                    treasuryMovements.find(
+                      (m) =>
+                        m.saleId === editSaleModal.id &&
+                        m.type === 'INGRESO' &&
+                        m.category !== 'Cobro Cuentas por Cobrar'
+                    );
+                  const chosenAcc = treasuryAccounts.find((a) => a.id === editTreasuryAccountId);
+                  const newAccName =
+                    chosenAcc?.name ||
+                    getDefaultAccountLabelForMethod(editPaymentMethod, editPagoMovilAccount);
+                  const oldAccName =
+                    linkedMov?.accountName || editSaleModal.treasuryAccountName || '';
+                  const isDeferred =
+                    editSaleModal.paymentType === 'CREDITO' ||
+                    editSaleModal.paymentType === 'APARTADO';
+                  const subsequentSum = (editSaleModal.creditPayments || []).reduce(
+                    (s, p) => s + (Number(p.amountUSD) || 0),
+                    0
+                  );
+                  const movUSD = linkedMov
+                    ? Number(linkedMov.amountUSD) || 0
+                    : isDeferred
+                      ? Math.max(0, (editSaleModal.creditPaidAmount || 0) - subsequentSum)
+                      : editSaleModal.total;
+
+                  if (isVoided) {
+                    return (
+                      <div className="px-3 py-2 rounded-lg bg-slate-100 border border-slate-200 text-[11px] text-slate-600">
+                        Factura anulada: se actualizarán los datos informativos sin alterar los saldos de Tesorería.
+                      </div>
+                    );
+                  }
+
+                  if (linkedMov && oldAccName && oldAccName !== newAccName) {
+                    return (
+                      <div className="px-3 py-2 rounded-lg bg-emerald-50 border border-emerald-200 text-[11px] text-emerald-900">
+                        <strong>Ajuste automático en Tesorería:</strong> se descontarán{' '}
+                        <strong className="font-mono">{formatUSD(movUSD)}</strong> de{' '}
+                        <strong>{oldAccName}</strong> y se acreditarán en{' '}
+                        <strong>{newAccName}</strong>, actualizando el movimiento y la liquidez.
+                      </div>
+                    );
+                  }
+
+                  if (linkedMov) {
+                    return (
+                      <div className="px-3 py-2 rounded-lg bg-blue-50/70 border border-blue-200 text-[11px] text-blue-900">
+                        Se actualizará el método de pago en la factura y en el ingreso registrado en{' '}
+                        <strong>{newAccName}</strong> en Tesorería.
+                      </div>
+                    );
+                  }
+
+                  if (movUSD > 0) {
+                    return (
+                      <div className="px-3 py-2 rounded-lg bg-emerald-50 border border-emerald-200 text-[11px] text-emerald-900">
+                        <strong>Sincronización con Tesorería:</strong> esta venta no tenía ingreso vinculado aún; al cambiar el pago se registrarán{' '}
+                        <strong className="font-mono">{formatUSD(movUSD)}</strong> en{' '}
+                        <strong>{newAccName}</strong>.
+                      </div>
+                    );
+                  }
+
+                  return (
+                    <div className="px-3 py-2 rounded-lg bg-slate-100 border border-slate-200 text-[11px] text-slate-600">
+                      Se guardará el método y cuenta preferida ({newAccName}). Al registrar abonos se acreditarán en Tesorería.
+                    </div>
+                  );
+                })()}
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
+              {/* Sección 2: Datos del Cliente y Factura */}
+              <div className="space-y-3 pt-1">
+                <span className="text-[11px] font-bold uppercase tracking-wider text-slate-600 block">
+                  Datos del Cliente y Factura
+                </span>
+
+                {customers.length > 0 && (
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">
+                      Seleccionar Cliente Existente (Opcional)
+                    </label>
+                    <select
+                      value={editCustomerId}
+                      onChange={(e) => {
+                        const cid = e.target.value;
+                        setEditCustomerId(cid);
+                        if (cid) {
+                          const chosen = customers.find((c) => c.id === cid);
+                          if (chosen) {
+                            setEditCustomerName(chosen.name);
+                            setEditCustomerPhone(chosen.phone === 'N/A' ? '' : chosen.phone || '');
+                            setEditCustomerDocument(chosen.documentId || '');
+                          }
+                        }
+                      }}
+                      className="w-full p-2.5 rounded-xl border border-slate-300 bg-slate-50 font-medium"
+                    >
+                      <option value="">-- Usar / Crear cliente con los campos de abajo --</option>
+                      {customers.map((c) => (
+                        <option key={c.id} value={c.id}>
+                          {c.name} {c.phone && c.phone !== 'N/A' ? `(${c.phone})` : ''} {c.documentId ? `- ${c.documentId}` : ''}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
                 <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">
-                    Teléfono / WhatsApp
-                  </label>
-                  <input
-                    type="tel"
-                    value={editCustomerPhone}
-                    onChange={(e) => {
-                      setEditCustomerPhone(e.target.value);
-                      setEditCustomerId('');
-                    }}
-                    placeholder="Ej. 04141234567"
-                    className="w-full p-2.5 rounded-xl border border-slate-300 bg-slate-50 font-mono"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">
-                    Cédula / RIF
+                  <label className="block text-xs font-bold text-slate-700 mb-1">
+                    Nombre Completo del Cliente *
                   </label>
                   <input
                     type="text"
-                    value={editCustomerDocument}
+                    required
+                    value={editCustomerName}
                     onChange={(e) => {
-                      setEditCustomerDocument(e.target.value);
+                      setEditCustomerName(e.target.value);
                       setEditCustomerId('');
                     }}
-                    placeholder="Ej. V-12345678"
-                    className="w-full p-2.5 rounded-xl border border-slate-300 bg-slate-50 font-mono"
+                    placeholder="Ej. Edithson Ricardo Rondon Mendoza"
+                    className="w-full p-2.5 rounded-xl border border-slate-300 bg-slate-50 focus:bg-white font-semibold"
                   />
                 </div>
-              </div>
 
-              <div className="grid grid-cols-2 gap-3">
-                {(editSaleModal.paymentType === 'CREDITO' || editSaleModal.paymentType === 'APARTADO') && (
+                <div className="grid grid-cols-2 gap-3">
                   <div>
                     <label className="block text-xs font-semibold text-slate-700 mb-1">
-                      {editSaleModal.paymentType === 'APARTADO' ? 'Fecha Límite de Retiro' : 'Fecha de Vencimiento'}
+                      Teléfono / WhatsApp
                     </label>
                     <input
-                      type="date"
-                      value={editCreditDueDate}
-                      onChange={(e) => setEditCreditDueDate(e.target.value)}
+                      type="tel"
+                      value={editCustomerPhone}
+                      onChange={(e) => {
+                        setEditCustomerPhone(e.target.value);
+                        setEditCustomerId('');
+                      }}
+                      placeholder="Ej. 04141234567"
                       className="w-full p-2.5 rounded-xl border border-slate-300 bg-slate-50 font-mono"
                     />
                   </div>
-                )}
-                <div
-                  className={
-                    editSaleModal.paymentType === 'CREDITO' || editSaleModal.paymentType === 'APARTADO'
-                      ? ''
-                      : 'col-span-2'
-                  }
-                >
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">
-                    Notas
-                  </label>
-                  <input
-                    type="text"
-                    value={editNotes}
-                    onChange={(e) => setEditNotes(e.target.value)}
-                    placeholder="Observación opcional..."
-                    className="w-full p-2.5 rounded-xl border border-slate-300 bg-slate-50"
-                  />
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">
+                      Cédula / RIF
+                    </label>
+                    <input
+                      type="text"
+                      value={editCustomerDocument}
+                      onChange={(e) => {
+                        setEditCustomerDocument(e.target.value);
+                        setEditCustomerId('');
+                      }}
+                      placeholder="Ej. V-12345678"
+                      className="w-full p-2.5 rounded-xl border border-slate-300 bg-slate-50 font-mono"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  {(editSaleModal.paymentType === 'CREDITO' || editSaleModal.paymentType === 'APARTADO') && (
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-700 mb-1">
+                        {editSaleModal.paymentType === 'APARTADO' ? 'Fecha Límite de Retiro' : 'Fecha de Vencimiento'}
+                      </label>
+                      <input
+                        type="date"
+                        value={editCreditDueDate}
+                        onChange={(e) => setEditCreditDueDate(e.target.value)}
+                        className="w-full p-2.5 rounded-xl border border-slate-300 bg-slate-50 font-mono"
+                      />
+                    </div>
+                  )}
+                  <div
+                    className={
+                      editSaleModal.paymentType === 'CREDITO' || editSaleModal.paymentType === 'APARTADO'
+                        ? ''
+                        : 'col-span-2'
+                    }
+                  >
+                    <label className="block text-xs font-semibold text-slate-700 mb-1">
+                      Notas
+                    </label>
+                    <input
+                      type="text"
+                      value={editNotes}
+                      onChange={(e) => setEditNotes(e.target.value)}
+                      placeholder="Observación opcional..."
+                      className="w-full p-2.5 rounded-xl border border-slate-300 bg-slate-50"
+                    />
+                  </div>
                 </div>
               </div>
 
@@ -1571,7 +1916,7 @@ export const SalesDatabaseView: React.FC = () => {
                   className="px-5 py-2.5 bg-slate-900 hover:bg-slate-800 text-white font-bold rounded-xl shadow-xs cursor-pointer flex items-center gap-1.5"
                 >
                   <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-                  <span>Guardar Cambios</span>
+                  <span>Guardar y Actualizar Tesorería</span>
                 </button>
               </div>
             </form>

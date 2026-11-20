@@ -975,6 +975,127 @@ app.post('/api/auth/change-admin-password', (req, res) => {
   }
 });
 
+app.post('/api/auth/reset-admin-password', (req, res) => {
+  try {
+    const { email, documentId, phone, newPassword, confirmPassword } = req.body || {};
+
+    if (!newPassword || typeof newPassword !== 'string' || newPassword.trim().length < 4) {
+      return res.status(400).json({
+        success: false,
+        error: 'La nueva clave debe tener al menos 4 caracteres.',
+      });
+    }
+    if (confirmPassword !== undefined && newPassword !== confirmPassword) {
+      return res.status(400).json({
+        success: false,
+        error: 'La nueva clave y su confirmación no coinciden.',
+      });
+    }
+
+    const current = readDatabase();
+    const settings = current.settings || INITIAL_SETTINGS;
+
+    const cleanEmail = String(email || '').trim().toLowerCase();
+    const allowedEmails = new Set<string>(['servimotoscristocentro@gmail.com']);
+    if (settings?.email) allowedEmails.add(String(settings.email).trim().toLowerCase());
+    if (!cleanEmail || !allowedEmails.has(cleanEmail)) {
+      return res.status(403).json({
+        success: false,
+        error: 'El correo electrónico no coincide con el correo administrativo registrado.',
+      });
+    }
+
+    const docDigits = String(documentId || '').replace(/\D/g, '');
+    const allowedDocDigits = new Set<string>(['19996141']);
+    if (settings?.rif) {
+      const rifDigits = String(settings.rif).replace(/\D/g, '');
+      if (rifDigits.length >= 6) {
+        allowedDocDigits.add(rifDigits);
+        if (rifDigits.length > 8) allowedDocDigits.add(rifDigits.slice(0, 8));
+      }
+    }
+    if (
+      !docDigits ||
+      !Array.from(allowedDocDigits).some(
+        (d) => docDigits === d || docDigits.startsWith(d) || d.startsWith(docDigits)
+      )
+    ) {
+      return res.status(403).json({
+        success: false,
+        error: 'La Cédula o RIF no coincide con el documento del propietario registrado.',
+      });
+    }
+
+    const normTail = (v?: string) => {
+      const digits = String(v || '').replace(/\D/g, '');
+      return digits.length >= 10 ? digits.slice(-10) : digits;
+    };
+    const phoneTail = normTail(phone);
+    const allowedPhones = new Set<string>(['4127860509']);
+    if (settings?.phone) {
+      const t = normTail(settings.phone);
+      if (t.length >= 7) allowedPhones.add(t);
+    }
+    if (settings?.whatsapp) {
+      const t = normTail(settings.whatsapp);
+      if (t.length >= 7) allowedPhones.add(t);
+    }
+    if (!phoneTail || !allowedPhones.has(phoneTail)) {
+      return res.status(403).json({
+        success: false,
+        error: 'El teléfono no coincide con el teléfono del propietario registrado.',
+      });
+    }
+
+    const users = Array.isArray(current.users) ? [...current.users] : [{ ...DEFAULT_ADMIN_USER }];
+    let adminIndex = users.findIndex(
+      (u: any) =>
+        u.id === 'usr-admin-1' ||
+        u.role === 'ADMIN' ||
+        (u.email && u.email.toLowerCase() === 'servimotoscristocentro@gmail.com')
+    );
+    if (adminIndex === -1) {
+      users.unshift({ ...DEFAULT_ADMIN_USER });
+      adminIndex = 0;
+    }
+
+    const nowIso = new Date().toISOString();
+    const newHash = hashPassword(newPassword);
+    const updatedAdmin = {
+      ...users[adminIndex],
+      id: 'usr-admin-1',
+      role: 'ADMIN',
+      password: newHash,
+      hasCustomPassword: true,
+      passwordUpdatedAt: nowIso,
+    };
+
+    users[adminIndex] = updatedAdmin;
+    writeDatabase({ users });
+
+    const safeUser = {
+      id: updatedAdmin.id,
+      name: updatedAdmin.name,
+      documentId: updatedAdmin.documentId,
+      phone: updatedAdmin.phone,
+      email: updatedAdmin.email,
+      role: updatedAdmin.role,
+      createdAt: updatedAdmin.createdAt,
+      hasCustomPassword: true,
+      passwordUpdatedAt: nowIso,
+    };
+
+    return res.json({
+      success: true,
+      message: '¡Clave administrativa restablecida correctamente!',
+      user: safeUser,
+      passwordHash: newHash,
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 app.get('/api/auth/users', (_req, res) => {
   try {
     const current = readDatabase();

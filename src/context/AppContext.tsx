@@ -124,6 +124,7 @@ import {
   DEFAULT_ADMIN_FALLBACK_PASSWORDS,
   hashPasswordClient,
   isOwnerAdminIdentifier,
+  verifyOwnerRecoveryIdentity,
   verifyPasswordClient,
 } from '../utils/authCrypto';
 
@@ -279,7 +280,7 @@ interface AppContextType {
   }) => Sale;
   updateSale: (
     saleId: string,
-    updates: Partial<Sale> & { reassignCustomer?: boolean }
+    updates: Partial<Sale> & { reassignCustomer?: boolean; syncTreasuryPayment?: boolean }
   ) => Sale | null;
   updateSaleCreditStatus: (saleId: string, status: 'PENDIENTE' | 'PAGADO', paidAmount?: number) => void;
   recordCreditPayment: (
@@ -686,6 +687,13 @@ interface AppContextType {
   login: (identifier: string, password: string) => Promise<{ success: boolean; user?: AppUser; error?: string }>;
   register: (userData: { name: string; documentId: string; phone: string; email?: string; password: string }) => Promise<{ success: boolean; user?: AppUser; error?: string }>;
   changeAdminPassword: (currentPassword: string, newPassword: string, confirmPassword: string) => Promise<{ success: boolean; error?: string; user?: AppUser }>;
+  resetAdminPassword: (params: {
+    email: string;
+    documentId: string;
+    phone: string;
+    newPassword: string;
+    confirmPassword: string;
+  }) => Promise<{ success: boolean; error?: string; user?: AppUser }>;
   isChangePasswordModalOpen: boolean;
   setIsChangePasswordModalOpen: (open: boolean) => void;
   logout: () => void;
@@ -772,10 +780,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (stored === 'false') return false;
     } catch {}
 
-    // Public shared preview URL (ais-pre- or vercel.app) opens store if no admin route
+    // Public shared preview URL (ais-pre-, vercel.app or custom domain motocristoc.com) opens store if no admin route
     if (
       window.location.hostname.includes('ais-pre-') ||
-      window.location.hostname.includes('vercel.app')
+      window.location.hostname.includes('vercel.app') ||
+      window.location.hostname.includes('motocristoc.com')
     ) {
       return true;
     }
@@ -918,7 +927,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
 
       if (serverUnavailable) {
-        return { success: false, error: 'Contraseña incorrecta' };
+        return {
+          success: false,
+          error: targetAdmin.hasCustomPassword
+            ? 'Contraseña incorrecta. Verifica mayúsculas/minúsculas o usa "Restablecer clave de Administrador".'
+            : 'Contraseña incorrecta. En este dominio aún no hay clave personalizada sincronizada: prueba con "admin" o usa "Restablecer clave de Administrador".',
+        };
       }
     }
 
@@ -1057,6 +1071,92 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       success: false,
       error: serverError || 'No se pudo cambiar la clave administrativa.',
     };
+  };
+
+  const resetAdminPassword: AppContextType['resetAdminPassword'] = async ({
+    email,
+    documentId,
+    phone,
+    newPassword,
+    confirmPassword,
+  }) => {
+    if (!newPassword || newPassword.trim().length < 4) {
+      return { success: false, error: 'La nueva clave debe tener al menos 4 caracteres.' };
+    }
+    if (confirmPassword !== undefined && newPassword !== confirmPassword) {
+      return { success: false, error: 'La nueva clave y su confirmación no coinciden.' };
+    }
+
+    const identityCheck = verifyOwnerRecoveryIdentity(
+      email,
+      documentId,
+      phone,
+      settingsRef.current
+    );
+    if (!identityCheck.valid) {
+      return {
+        success: false,
+        error: identityCheck.reason || 'Los datos de verificación del propietario no coinciden.',
+      };
+    }
+
+    let cloudAdminUser: AppUser | null = null;
+    try {
+      cloudAdminUser = await fetchAdminUserFromFirestore();
+    } catch {
+      cloudAdminUser = null;
+    }
+
+    let serverHash: string | undefined;
+    let serverUser: AppUser | undefined;
+
+    try {
+      const res = await fetch('/api/auth/reset-admin-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email,
+          documentId,
+          phone,
+          newPassword,
+          confirmPassword,
+        }),
+      });
+      const contentType = res.headers.get('content-type') || '';
+      if (contentType.includes('application/json')) {
+        const data = await res.json();
+        if (res.ok && data.success && data.user) {
+          serverHash = data.passwordHash;
+          serverUser = data.user;
+        }
+      }
+    } catch {
+      // Static deployments (e.g. Vercel / custom domain) do not host /api/auth/* — handled directly via Firestore below
+    }
+
+    const nowIso = new Date().toISOString();
+    const hashToStore = serverHash || (await hashPasswordClient(newPassword));
+    const updatedUser: AppUser = {
+      ...DEFAULT_ADMIN_PROFILE,
+      ...(cloudAdminUser || {}),
+      ...(serverUser || {}),
+      id: 'usr-admin-1',
+      role: 'ADMIN',
+      hasCustomPassword: true,
+      passwordUpdatedAt: nowIso,
+    };
+
+    try {
+      await syncUserToFirestore({
+        ...updatedUser,
+        passwordHash: hashToStore,
+      });
+    } catch {
+      // Even if offline briefly, local session will still authenticate and retry on next sync
+    }
+
+    const cleanUser = applyAuthenticatedUser(updatedUser);
+    return { success: true, user: cleanUser };
   };
 
   const logout = () => {
@@ -4203,12 +4303,12 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
 
   const updateSale = (
     saleId: string,
-    updates: Partial<Sale> & { reassignCustomer?: boolean }
+    updates: Partial<Sale> & { reassignCustomer?: boolean; syncTreasuryPayment?: boolean }
   ): Sale | null => {
     const existing = salesRef.current.find((s) => s.id === saleId);
     if (!existing) return null;
 
-    const { reassignCustomer, ...saleUpdates } = updates;
+    const { reassignCustomer, syncTreasuryPayment, ...saleUpdates } = updates;
     const nextName =
       saleUpdates.customerName !== undefined ? saleUpdates.customerName.trim() : existing.customerName;
     const nextPhone =
@@ -4242,6 +4342,171 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     const nextSubtotal = saleUpdates.subtotal ?? existing.subtotal;
     const nextTotal = saleUpdates.total ?? existing.total;
 
+    // Resolve payment method, Pago Móvil destination & Treasury reconciliation
+    const nextPaymentMethod = (saleUpdates.paymentMethod ?? existing.paymentMethod) as PaymentMethod;
+    const explicitAccountId = saleUpdates.treasuryAccountId;
+    const explicitAccount = explicitAccountId
+      ? treasuryAccountsRef.current.find((a) => a.id === explicitAccountId)
+      : undefined;
+
+    let nextPagoMovilAccount: PagoMovilAccountOption | undefined =
+      nextPaymentMethod === 'Pago Móvil'
+        ? saleUpdates.pagoMovilAccount ?? existing.pagoMovilAccount ?? 'BANESCO_PERSONAL'
+        : undefined;
+
+    if (nextPaymentMethod === 'Pago Móvil' && explicitAccount) {
+      if (explicitAccount.id === 'acc-provincial' || /provincial/i.test(explicitAccount.name)) {
+        nextPagoMovilAccount = 'PROVINCIAL';
+      } else if (
+        explicitAccount.id === 'acc-banesco-personal' ||
+        /banesco\s*personal/i.test(explicitAccount.name)
+      ) {
+        nextPagoMovilAccount = 'BANESCO_PERSONAL';
+      }
+    }
+
+    const paymentChanged =
+      Boolean(syncTreasuryPayment) ||
+      (saleUpdates.paymentMethod !== undefined && saleUpdates.paymentMethod !== existing.paymentMethod) ||
+      (saleUpdates.pagoMovilAccount !== undefined &&
+        saleUpdates.pagoMovilAccount !== existing.pagoMovilAccount) ||
+      (saleUpdates.treasuryAccountId !== undefined &&
+        saleUpdates.treasuryAccountId !== (existing.treasuryAccountId || ''));
+
+    let nextTreasuryAccountId = existing.treasuryAccountId;
+    let nextTreasuryAccountName = existing.treasuryAccountName;
+    let nextTreasuryMovementId = existing.treasuryMovementId;
+
+    if (paymentChanged) {
+      const targetAccount =
+        explicitAccount ||
+        resolveOrCreateTreasuryAccountForSale(nextPaymentMethod, nextPagoMovilAccount);
+      const isVoidedSale = Boolean(existing.isVoided || existing.creditStatus === 'ANULADO');
+
+      const linkedMovement =
+        (existing.treasuryMovementId
+          ? treasuryMovementsRef.current.find((m) => m.id === existing.treasuryMovementId)
+          : undefined) ||
+        treasuryMovementsRef.current.find(
+          (m) =>
+            m.saleId === saleId &&
+            m.type === 'INGRESO' &&
+            m.category !== 'Cobro Cuentas por Cobrar'
+        );
+
+      if (!isVoidedSale && linkedMovement) {
+        const movAmountUSD = Math.round((Number(linkedMovement.amountUSD) || 0) * 100) / 100;
+        const movRate =
+          linkedMovement.bcvRate && linkedMovement.bcvRate > 0 ? linkedMovement.bcvRate : nextRate;
+        const movAmountBs =
+          Math.round((Number(linkedMovement.amountBs) || movAmountUSD * movRate) * 100) / 100;
+
+        // 1. Revert income from previous Treasury account
+        const oldAccount = treasuryAccountsRef.current.find(
+          (a) => a.id === linkedMovement.accountId
+        );
+        if (oldAccount && movAmountUSD > 0) {
+          const oldNativeRevert = oldAccount.currency === 'BS' ? -movAmountBs : -movAmountUSD;
+          applyAccountDelta(oldAccount, -movAmountUSD, movRate, oldNativeRevert);
+        }
+
+        // 2. Credit income to new destination Treasury account (re-fetch fresh reference)
+        const freshTarget =
+          treasuryAccountsRef.current.find((a) => a.id === targetAccount.id) || targetAccount;
+        const newNativeDelta = freshTarget.currency === 'BS' ? movAmountBs : movAmountUSD;
+        const updatedTargetAcc =
+          movAmountUSD > 0
+            ? applyAccountDelta(freshTarget, movAmountUSD, movRate, newNativeDelta)
+            : freshTarget;
+
+        const methodDetail =
+          nextPaymentMethod === 'Pago Móvil'
+            ? `Pago Móvil (${updatedTargetAcc.name})`
+            : nextPaymentMethod === 'Punto de Venta (Bs)'
+              ? `Punto de Venta · ${updatedTargetAcc.name}`
+              : `${nextPaymentMethod} · ${updatedTargetAcc.name}`;
+
+        const updatedMovement: TreasuryMovement = {
+          ...linkedMovement,
+          accountId: updatedTargetAcc.id,
+          accountName: updatedTargetAcc.name,
+          accountGroup: updatedTargetAcc.group,
+          description: `${existing.invoiceNumber} · ${nextName || existing.customerName} (${methodDetail})`,
+          notes:
+            (saleUpdates.notes !== undefined ? saleUpdates.notes.trim() : existing.notes) ||
+            undefined,
+          updatedAt: new Date().toISOString(),
+        };
+
+        pendingSyncTreasuryMovementIdsRef.current.add(updatedMovement.id);
+        const nextMovements = treasuryMovementsRef.current
+          .map((m) => (m.id === updatedMovement.id ? updatedMovement : m))
+          .sort(
+            (a, b) =>
+              (b.date || b.createdAt || '').localeCompare(a.date || a.createdAt || '') ||
+              (b.createdAt || '').localeCompare(a.createdAt || '')
+          );
+        treasuryMovementsRef.current = nextMovements;
+        setTreasuryMovements(nextMovements);
+        try {
+          localStorage.setItem(STORAGE_KEYS.TREASURY_MOVEMENTS, JSON.stringify(nextMovements));
+        } catch {}
+        syncTreasuryMovementToFirestore(updatedMovement)
+          .then(() => pendingSyncTreasuryMovementIdsRef.current.delete(updatedMovement.id))
+          .catch(() => {});
+
+        nextTreasuryAccountId = updatedTargetAcc.id;
+        nextTreasuryAccountName = updatedTargetAcc.name;
+        nextTreasuryMovementId = updatedMovement.id;
+      } else if (!isVoidedSale) {
+        // Legacy sale without a Treasury movement yet: compute initial collected amount and link it
+        const isDeferred =
+          existing.paymentType === 'CREDITO' || existing.paymentType === 'APARTADO';
+        const subsequentPaymentsSum = (existing.creditPayments || []).reduce(
+          (sum, p) => sum + (Number(p.amountUSD) || 0),
+          0
+        );
+        const initialCollectedUSD = isDeferred
+          ? Math.max(
+              0,
+              Math.round(((existing.creditPaidAmount || 0) - subsequentPaymentsSum) * 100) / 100
+            )
+          : Math.max(0, Math.round((Number(nextTotal) || 0) * 100) / 100);
+
+        if (initialCollectedUSD > 0) {
+          const incomeRes = recordAutomaticSaleIncomeInTreasury({
+            saleId,
+            invoiceNumber: existing.invoiceNumber,
+            customerName: nextName || existing.customerName,
+            amountUSD: initialCollectedUSD,
+            bcvRate: nextRate,
+            paymentMethod: nextPaymentMethod,
+            pagoMovilAccount: nextPagoMovilAccount,
+            explicitAccountId: targetAccount.id,
+            date: existing.createdAt ? existing.createdAt.split('T')[0] : undefined,
+            category: isDeferred
+              ? 'Abono Inicial Venta'
+              : existing.paymentType === 'MERCADOLIBRE'
+                ? 'Venta MercadoLibre'
+                : 'Ventas POS',
+            notes: saleUpdates.notes !== undefined ? saleUpdates.notes : existing.notes,
+          });
+          if (incomeRes) {
+            nextTreasuryAccountId = incomeRes.account.id;
+            nextTreasuryAccountName = incomeRes.account.name;
+            nextTreasuryMovementId = incomeRes.movement.id;
+          }
+        } else {
+          nextTreasuryAccountId = targetAccount.id;
+          nextTreasuryAccountName = targetAccount.name;
+        }
+      } else {
+        // Voided sale: update metadata only without altering Treasury liquidity
+        nextTreasuryAccountId = targetAccount.id;
+        nextTreasuryAccountName = targetAccount.name;
+      }
+    }
+
     const updatedSale: Sale = {
       ...existing,
       ...saleUpdates,
@@ -4254,6 +4519,11 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       total: nextTotal,
       subtotalBs: nextSubtotal * nextRate,
       totalBs: nextTotal * nextRate,
+      paymentMethod: nextPaymentMethod,
+      pagoMovilAccount: nextPagoMovilAccount,
+      treasuryAccountId: nextTreasuryAccountId,
+      treasuryAccountName: nextTreasuryAccountName,
+      treasuryMovementId: nextTreasuryMovementId,
     };
 
     setSales((prev) => {
@@ -7425,6 +7695,8 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     bcvRate: number;
     paymentMethod: PaymentMethod | string;
     pagoMovilAccount?: PagoMovilAccountOption;
+    explicitAccountId?: string;
+    date?: string;
     category: string;
     reference?: string;
     notes?: string;
@@ -7435,10 +7707,15 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     const safeRate = params.bcvRate > 0 ? params.bcvRate : settingsRef.current.bcvRate || 1;
     const cleanBs = Math.round(cleanUSD * safeRate * 100) / 100;
 
-    const targetAccount = resolveOrCreateTreasuryAccountForSale(
-      params.paymentMethod,
-      params.pagoMovilAccount
-    );
+    const explicitAcc = params.explicitAccountId
+      ? treasuryAccountsRef.current.find((a) => a.id === params.explicitAccountId)
+      : undefined;
+    const targetAccount =
+      explicitAcc ||
+      resolveOrCreateTreasuryAccountForSale(
+        params.paymentMethod,
+        params.pagoMovilAccount
+      );
 
     const explicitNativeDelta =
       targetAccount.currency === 'BS' ? cleanBs : cleanUSD;
@@ -7450,15 +7727,15 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     );
 
     const now = new Date().toISOString();
-    const movDate = now.split('T')[0];
+    const movDate = params.date || now.split('T')[0];
     const movementId = `mov-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
 
     const methodDetail =
       params.paymentMethod === 'Pago Móvil'
-        ? `Pago Móvil (${params.pagoMovilAccount === 'PROVINCIAL' ? 'Provincial' : 'Banesco Personal'})`
+        ? `Pago Móvil (${updatedAccount.name})`
         : params.paymentMethod === 'Punto de Venta (Bs)'
-          ? 'Punto de Venta · Banesco SMCC'
-          : String(params.paymentMethod);
+          ? `Punto de Venta · ${updatedAccount.name}`
+          : `${String(params.paymentMethod)} · ${updatedAccount.name}`;
 
     const newMovement: TreasuryMovement = {
       id: movementId,
@@ -9128,6 +9405,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
         login,
         register,
         changeAdminPassword,
+        resetAdminPassword,
         isChangePasswordModalOpen,
         setIsChangePasswordModalOpen,
         logout,

@@ -2,6 +2,7 @@ import {
   collection,
   doc,
   getDoc,
+  getDocs,
   getDocFromServer,
   setDoc,
   deleteDoc,
@@ -697,7 +698,6 @@ export async function fetchAdminUserFromFirestore(): Promise<AppUser | null> {
       const data = serverSnap.data() as AppUser;
       return { ...data, id: serverSnap.id };
     }
-    return null;
   } catch {
     try {
       const cacheSnap = await getDoc(adminRef);
@@ -708,6 +708,27 @@ export async function fetchAdminUserFromFirestore(): Promise<AppUser | null> {
     } catch (error) {
       logFirestoreError(error, OperationType.GET, 'users/usr-admin-1');
     }
+  }
+
+  // Fallback: check if admin user was saved under a different doc ID in `users`
+  try {
+    const allUsersSnap = await getDocs(collection(db, 'users'));
+    let fallbackAdmin: AppUser | null = null;
+    allUsersSnap.forEach((docSnap) => {
+      const data = docSnap.data() as AppUser;
+      const isAdminDoc =
+        data?.role === 'ADMIN' ||
+        (data?.email || '').trim().toLowerCase() === 'servimotoscristocentro@gmail.com';
+      if (isAdminDoc) {
+        const candidate: AppUser = { ...data, id: docSnap.id };
+        if (!fallbackAdmin || (candidate.hasCustomPassword && !fallbackAdmin.hasCustomPassword)) {
+          fallbackAdmin = candidate;
+        }
+      }
+    });
+    return fallbackAdmin;
+  } catch (error) {
+    logFirestoreError(error, OperationType.LIST, 'users');
     return null;
   }
 }

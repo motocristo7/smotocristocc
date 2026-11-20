@@ -79,7 +79,7 @@ export function buildWhatsAppSendUrl(rawPhone: string | undefined, message: stri
   return `https://api.whatsapp.com/send?text=${encodedText}`;
 }
 
-export const PUBLIC_APP_ORIGIN = 'https://smotocristocc-p5rg.vercel.app';
+export const PUBLIC_APP_ORIGIN = 'https://motocristoc.com';
 
 export function getPublicAppOrigin(): string {
   if (typeof window !== 'undefined' && window.location?.origin) {

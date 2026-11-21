@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { useApp } from '../../context/AppContext';
-import { Customer } from '../../types';
+import { Customer, isSaleWithCredit } from '../../types';
 import { VENEZUELA_LOCATIONS } from '../../data/venezuela';
 import { formatUSD, formatBs, sanitizePhone, buildInvoiceWhatsAppMessage } from '../../utils/whatsapp';
 import { downloadInvoicePDF } from '../../utils/pdfInvoice';
@@ -172,7 +172,7 @@ export const CustomersView: React.FC = () => {
       let pendingDebtUSD = 0;
       let pendingCreditCount = 0;
       for (const s of custSales) {
-        if (s.paymentType !== 'CREDITO' && s.paymentType !== 'APARTADO') continue;
+        if (!isSaleWithCredit(s)) continue;
         if (s.creditStatus === 'PAGADO' || s.creditStatus === 'ANULADO' || s.isVoided) continue;
         const pending = Math.max(0, s.total - (s.creditPaidAmount || 0));
         if (pending > 0.01) {

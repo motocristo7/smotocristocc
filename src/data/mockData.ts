@@ -13,6 +13,9 @@ export const INITIAL_SETTINGS: BusinessSettings = {
   state: 'Mérida',
   city: 'Mérida',
   bcvRate: 896.12,
+  usdtRate: 1120.00,
+  usdtSource: 'Referencia USDT Binance',
+  usdtLastUpdated: '03:54 p. m.',
   currencySymbol: '$',
   secondaryCurrencySymbol: 'Bs.',
   bankDetails: {

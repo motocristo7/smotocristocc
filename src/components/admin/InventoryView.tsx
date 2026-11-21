@@ -1,7 +1,15 @@
 import React, { useState, useMemo } from 'react';
 import { useApp } from '../../context/AppContext';
-import { Product, ProductCategory } from '../../types';
+import { Product, ProductCategory, ProductCostOrigin } from '../../types';
 import { formatUSD, formatBs } from '../../utils/whatsapp';
+import {
+  calculateProductPricing,
+  calculateReferenceCostUSD,
+  suggestPriceFromTargetProfit,
+  ProfitCalcMode,
+  round2,
+  round4,
+} from '../../utils/pricing';
 import {
   Boxes,
   Plus,
@@ -24,6 +32,10 @@ import {
   Upload,
   Loader2,
   Link2,
+  Lock,
+  Info,
+  Calculator,
+  TrendingUp,
 } from 'lucide-react';
 import {
   normalizeImageUrl,
@@ -49,6 +61,7 @@ export const InventoryView: React.FC = () => {
     adjustStock,
     bulkImportProducts,
     settings,
+    exchangeGap,
   } = useApp();
 
   const [searchTerm, setSearchTerm] = useState('');
@@ -67,21 +80,27 @@ export const InventoryView: React.FC = () => {
   const [formError, setFormError] = useState<string | null>(null);
 
   const rate = settings.bcvRate;
+  const usdtRate = exchangeGap.usdtRate;
 
   const handleBulkImportConfirmed = (parsedRows: ParsedProductRow[]) => {
     const result = bulkImportProducts(parsedRows);
     showToast(`✓ Carga completada: ${result.added} repuestos nuevos creados, ${result.updated} actualizados.`);
   };
 
-  // Form State in USD
+  // Form State (soporta costo por origen BCV o Divisas/USDT + doble precio de venta)
   const initialFormState = {
     sku: '',
     barcode: '',
     name: '',
     category: 'Frenos' as ProductCategory,
     description: '',
+    costCurrencyOrigin: 'DIVISAS' as ProductCostOrigin,
     costPrice: 0,
-    salePrice: 0,
+    costPriceBs: 0,
+    salePrice: 0, // Comercial USD-BCV (precio_venta_bs_bcv / tasa_bcv)
+    salePriceRefUSD: 0, // SOLO ADMIN: Precio de venta de referencia en divisas
+    salePriceBsBcv: 0, // Comercial en Bs a tasa BCV
+    targetProfitPct: 30,
     stock: 10,
     minStock: 2,
     brand: '',
@@ -90,6 +109,9 @@ export const InventoryView: React.FC = () => {
     imageUrl: '',
   };
   const [formData, setFormData] = useState(initialFormState);
+  const [syncBsWithGap, setSyncBsWithGap] = useState(true);
+  const [targetProfitMode, setTargetProfitMode] = useState<ProfitCalcMode>('margin');
+  const [targetProfitInput, setTargetProfitInput] = useState<string>('30');
   const [isAddingCategory, setIsAddingCategory] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState('');
 
@@ -189,6 +211,7 @@ export const InventoryView: React.FC = () => {
   };
 
   const handleStartEdit = (product: Product) => {
+    const pricing = calculateProductPricing(product, rate, usdtRate);
     setEditingProduct(product);
     setImagePreviewError(false);
     setUploadError(null);
@@ -196,14 +219,21 @@ export const InventoryView: React.FC = () => {
     setFormError(null);
     setIsAddingCategory(false);
     setNewCategoryName('');
+    setSyncBsWithGap(false);
+    setTargetProfitInput(String(product.targetProfitPct ?? 30));
     setFormData({
       sku: product.sku,
       barcode: product.barcode || '',
       name: product.name,
       category: product.category,
       description: product.description,
-      costPrice: product.costPrice,
+      costCurrencyOrigin: pricing.costOrigin,
+      costPrice: pricing.costOrigin === 'BS_BCV' ? pricing.costUsdAtBcv : product.costPrice,
+      costPriceBs: pricing.costBs,
       salePrice: product.salePrice,
+      salePriceRefUSD: pricing.salePriceRefUSD,
+      salePriceBsBcv: pricing.salePriceBsBcv,
+      targetProfitPct: product.targetProfitPct ?? 30,
       stock: product.stock,
       minStock: product.minStock,
       brand: product.brand,
@@ -211,6 +241,126 @@ export const InventoryView: React.FC = () => {
       warehouseLocation: product.warehouseLocation || '',
       imageUrl: normalizeImageUrl(product.imageUrl),
     });
+  };
+
+  // Cálculo en tiempo real dentro del formulario Crear / Editar repuesto
+  const formPricing = useMemo(() => {
+    const costCalc = calculateReferenceCostUSD({
+      origin: formData.costCurrencyOrigin,
+      costUSD: formData.costPrice,
+      costBs: formData.costCurrencyOrigin === 'BS_BCV' ? formData.costPriceBs : undefined,
+      bcvRate: rate,
+      usdtRate,
+    });
+    const analysis = calculateProductPricing(
+      {
+        costPrice: costCalc.costOrigin === 'BS_BCV' ? costCalc.costUsdAtBcv : costCalc.referenceCostUSD,
+        costCurrencyOrigin: formData.costCurrencyOrigin,
+        costPriceBs: costCalc.costBs,
+        referenceCostUSD: costCalc.referenceCostUSD,
+        salePrice: formData.salePrice,
+        salePriceRefUSD: formData.salePriceRefUSD,
+        salePriceBsBcv: formData.salePriceBsBcv,
+      },
+      rate,
+      usdtRate
+    );
+    return { costCalc, analysis };
+  }, [
+    formData.costCurrencyOrigin,
+    formData.costPrice,
+    formData.costPriceBs,
+    formData.salePrice,
+    formData.salePriceRefUSD,
+    formData.salePriceBsBcv,
+    rate,
+    usdtRate,
+  ]);
+
+  const handleCostOriginChange = (nextOrigin: ProductCostOrigin) => {
+    setFormData((prev) => {
+      if (nextOrigin === prev.costCurrencyOrigin) return prev;
+      if (nextOrigin === 'BS_BCV') {
+        const bsVal = prev.costPriceBs > 0 ? prev.costPriceBs : round2((prev.costPrice || 0) * rate);
+        return {
+          ...prev,
+          costCurrencyOrigin: 'BS_BCV',
+          costPriceBs: bsVal,
+          costPrice: rate > 0 ? round2(bsVal / rate) : prev.costPrice,
+        };
+      }
+      const refUsd =
+        prev.costPriceBs > 0 && usdtRate > 0 ? round2(prev.costPriceBs / usdtRate) : prev.costPrice;
+      return {
+        ...prev,
+        costCurrencyOrigin: 'DIVISAS',
+        costPrice: refUsd,
+        costPriceBs: round2(refUsd * usdtRate),
+      };
+    });
+  };
+
+  const handleSalePriceRefUsdChange = (raw: string) => {
+    const val = Math.max(0, parseFloat(raw) || 0);
+    setFormData((prev) => {
+      if (syncBsWithGap) {
+        const nextBs = round2(val * usdtRate);
+        const nextUsdBcv = rate > 0 ? round4(nextBs / rate) : val;
+        return {
+          ...prev,
+          salePriceRefUSD: val,
+          salePriceBsBcv: nextBs,
+          salePrice: nextUsdBcv,
+        };
+      }
+      return {
+        ...prev,
+        salePriceRefUSD: val,
+      };
+    });
+  };
+
+  const handleSalePriceBsBcvChange = (raw: string) => {
+    const bsVal = Math.max(0, parseFloat(raw) || 0);
+    const nextUsdBcv = rate > 0 ? round4(bsVal / rate) : 0;
+    const nextRefUsd = usdtRate > 0 ? round2(bsVal / usdtRate) : nextUsdBcv;
+    setFormData((prev) => ({
+      ...prev,
+      salePriceBsBcv: bsVal,
+      salePrice: nextUsdBcv,
+      ...(syncBsWithGap ? { salePriceRefUSD: nextRefUsd } : {}),
+    }));
+  };
+
+  const handleSalePriceUsdBcvChange = (raw: string) => {
+    const usdBcv = Math.max(0, parseFloat(raw) || 0);
+    const nextBs = round2(usdBcv * rate);
+    const nextRefUsd = usdtRate > 0 ? round2(nextBs / usdtRate) : usdBcv;
+    setFormData((prev) => ({
+      ...prev,
+      salePrice: usdBcv,
+      salePriceBsBcv: nextBs,
+      ...(syncBsWithGap ? { salePriceRefUSD: nextRefUsd } : {}),
+    }));
+  };
+
+  const handleApplyTargetProfitSuggestion = () => {
+    const pct = parseFloat(targetProfitInput);
+    if (isNaN(pct) || pct < 0) return;
+    const suggested = suggestPriceFromTargetProfit({
+      referenceCostUSD: formPricing.costCalc.referenceCostUSD,
+      targetPct: pct,
+      mode: targetProfitMode,
+      bcvRate: rate,
+      usdtRate,
+    });
+    setFormData((prev) => ({
+      ...prev,
+      salePriceRefUSD: suggested.salePriceRefUSD,
+      salePriceBsBcv: suggested.salePriceBsBcv,
+      salePrice: suggested.salePriceUsdBcv,
+      targetProfitPct: pct,
+    }));
   };
 
   const handleImageUrlChange = (val: string) => {
@@ -335,28 +485,50 @@ export const InventoryView: React.FC = () => {
     const sanitizedBarcode = formData.barcode.trim() || undefined;
     const sanitizedLocation = formData.warehouseLocation.trim() || undefined;
 
+    const costCalc = formPricing.costCalc;
+    const finalSalePriceUsdBcv =
+      formData.salePrice > 0
+        ? round4(formData.salePrice)
+        : rate > 0 && formData.salePriceBsBcv > 0
+        ? round4(formData.salePriceBsBcv / rate)
+        : 0;
+    const finalSalePriceBsBcv = round2(finalSalePriceUsdBcv * rate);
+    const finalSalePriceRefUSD =
+      formData.salePriceRefUSD > 0
+        ? round2(formData.salePriceRefUSD)
+        : usdtRate > 0
+        ? round2(finalSalePriceBsBcv / usdtRate)
+        : round2(finalSalePriceUsdBcv);
+
+    const payloadToSave: Omit<Product, 'id'> = {
+      sku: trimmedSku,
+      barcode: sanitizedBarcode,
+      name: trimmedName,
+      category: categoryToSave,
+      description: formData.description,
+      costPrice:
+        costCalc.costOrigin === 'BS_BCV' ? costCalc.costUsdAtBcv : costCalc.referenceCostUSD,
+      costCurrencyOrigin: formData.costCurrencyOrigin,
+      costPriceBs: costCalc.costBs,
+      referenceCostUSD: costCalc.referenceCostUSD,
+      salePrice: finalSalePriceUsdBcv,
+      salePriceRefUSD: finalSalePriceRefUSD,
+      salePriceBsBcv: finalSalePriceBsBcv,
+      targetProfitPct: parseFloat(targetProfitInput) || formData.targetProfitPct,
+      stock: formData.stock,
+      minStock: formData.minStock,
+      brand: formData.brand,
+      compatibility: formData.compatibility,
+      warehouseLocation: sanitizedLocation,
+      imageUrl: finalImageUrl,
+    };
+
     if (editingProduct) {
-      updateProduct(editingProduct.id, {
-        ...formData,
-        category: categoryToSave,
-        name: trimmedName,
-        sku: trimmedSku,
-        barcode: sanitizedBarcode,
-        warehouseLocation: sanitizedLocation,
-        imageUrl: finalImageUrl,
-      });
+      updateProduct(editingProduct.id, payloadToSave);
       showToast(`✓ Repuesto "${trimmedName}" actualizado.`);
       setEditingProduct(null);
     } else {
-      addProduct({
-        ...formData,
-        category: categoryToSave,
-        name: trimmedName,
-        sku: trimmedSku,
-        barcode: sanitizedBarcode,
-        warehouseLocation: sanitizedLocation,
-        imageUrl: finalImageUrl,
-      });
+      addProduct(payloadToSave);
       showToast(`✓ Nuevo repuesto "${trimmedName}" registrado.`);
       setIsAddModalOpen(false);
     }
@@ -367,8 +539,30 @@ export const InventoryView: React.FC = () => {
     setImagePreviewError(false);
   };
 
-  const totalValueAtSaleUSD = products.reduce((sum, p) => sum + p.salePrice * p.stock, 0);
-  const totalValueAtCostUSD = products.reduce((sum, p) => sum + p.costPrice * p.stock, 0);
+  const inventoryMetrics = useMemo(() => {
+    let totalSaleBcvUSD = 0;
+    let totalRefCostUSD = 0;
+    let totalSaleRefUSD = 0;
+    let lowOrNegMarginCount = 0;
+
+    products.forEach((p) => {
+      const pricing = calculateProductPricing(p, rate, usdtRate);
+      totalSaleBcvUSD += p.salePrice * p.stock;
+      totalRefCostUSD += pricing.referenceCostUSD * p.stock;
+      totalSaleRefUSD += pricing.salePriceRefUSD * p.stock;
+      if (pricing.status === 'negative' || pricing.status === 'low') {
+        lowOrNegMarginCount += 1;
+      }
+    });
+
+    return {
+      totalSaleBcvUSD,
+      totalRefCostUSD,
+      totalSaleRefUSD,
+      lowOrNegMarginCount,
+    };
+  }, [products, rate, usdtRate]);
+
   const outOfStockCount = products.filter((p) => p.stock === 0).length;
 
   return (
@@ -425,6 +619,8 @@ export const InventoryView: React.FC = () => {
           <button
             onClick={() => {
               setFormData(initialFormState);
+              setSyncBsWithGap(true);
+              setTargetProfitInput('30');
               setFormError(null);
               setUploadError(null);
               setImagePreviewError(false);
@@ -441,39 +637,71 @@ export const InventoryView: React.FC = () => {
         </div>
       </div>
 
-      {/* KPI Stats on Inventory */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+      {/* KPI Stats & Brecha Cambiaria (Admin Only) */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="bg-slate-900 text-white p-4 rounded-xl border border-amber-500/40 shadow-2xs">
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] uppercase font-bold text-amber-300 tracking-wider">
+              Tasas &amp; Brecha (Admin)
+            </span>
+            <TrendingUp className="w-3.5 h-3.5 text-amber-400" />
+          </div>
+          <div className="flex items-baseline gap-2 mt-1">
+            <span className="text-xl font-black font-mono text-amber-400">
+              {exchangeGap.gapPct >= 0 ? '+' : ''}
+              {exchangeGap.gapPct.toFixed(2)}%
+            </span>
+            <span className="text-[11px] font-mono text-slate-400">
+              (×{exchangeGap.gapFactor.toFixed(3)})
+            </span>
+          </div>
+          <p className="text-[11px] font-mono text-slate-300 mt-1">
+            BCV {formatBs(rate)} · USDT {formatBs(usdtRate)}
+          </p>
+        </div>
+
         <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-2xs">
           <span className="text-[10px] uppercase font-bold text-slate-500 tracking-wider">
             Catálogo Activo en Tienda
           </span>
           <p className="text-xl font-bold font-mono text-emerald-600 mt-1">
             {products.length - outOfStockCount}{' '}
-            <span className="text-xs font-normal text-slate-500">visibles para clientes</span>
+            <span className="text-xs font-normal text-slate-500">visibles</span>
           </p>
-          <p className="text-[11px] text-slate-400 mt-1">Con existencias en almacén</p>
+          <p className="text-[11px] text-slate-400 mt-1">
+            {outOfStockCount} agotado(s) ocultos automáticamente
+          </p>
         </div>
 
         <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-2xs">
           <span className="text-[10px] uppercase font-bold text-slate-500 tracking-wider">
-            Agotados / Ocultos de Tienda
-          </span>
-          <p className="text-xl font-bold font-mono text-rose-600 mt-1">
-            {outOfStockCount}{' '}
-            <span className="text-xs font-normal text-slate-500">ítems en 0</span>
-          </p>
-          <p className="text-[11px] text-slate-400 mt-1">Ocultos de la tienda automáticamente</p>
-        </div>
-
-        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-2xs">
-          <span className="text-[10px] uppercase font-bold text-slate-500 tracking-wider">
-            Valorización del Inventario
+            Valorización Venta (Bs BCV)
           </span>
           <p className="text-xl font-bold font-mono text-slate-900 mt-1">
-            {formatUSD(totalValueAtSaleUSD)}
+            {formatBs(inventoryMetrics.totalSaleBcvUSD * rate)}
           </p>
-          <p className="text-[11px] font-semibold text-emerald-700 font-mono mt-0.5">
-            Equiv. {formatBs(totalValueAtSaleUSD * rate)} (BCV)
+          <p className="text-[11px] font-semibold text-amber-700 font-mono mt-0.5">
+            Ref. Divisas (Admin): {formatUSD(inventoryMetrics.totalSaleRefUSD)}
+          </p>
+        </div>
+
+        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-2xs">
+          <span className="text-[10px] uppercase font-bold text-slate-500 tracking-wider">
+            Costo Ref. &amp; Salud de Margen
+          </span>
+          <p className="text-xl font-bold font-mono text-slate-900 mt-1">
+            {formatUSD(inventoryMetrics.totalRefCostUSD)}
+          </p>
+          <p className="text-[11px] mt-0.5 font-medium">
+            {inventoryMetrics.lowOrNegMarginCount > 0 ? (
+              <span className="text-amber-700 font-semibold">
+                {inventoryMetrics.lowOrNegMarginCount} ítem(s) con margen bajo/negativo
+              </span>
+            ) : (
+              <span className="text-emerald-700 font-semibold">
+                Todos los ítems en rango saludable
+              </span>
+            )}
           </p>
         </div>
       </div>
@@ -626,19 +854,29 @@ export const InventoryView: React.FC = () => {
                     </span>
                   </button>
                 </th>
-                <th className="py-3 px-3">Categoría & Marca</th>
-                <th className="py-3 px-3">Ubicación Almacén</th>
-                <th className="py-3 px-3">Compatibilidad</th>
-                <th className="py-3 px-3 text-right">Precio ($ USD / Bs)</th>
-                <th className="py-3 px-3 text-center">Stock Actual</th>
-                <th className="py-3 px-3 text-center">Estado Tienda</th>
+                <th className="py-3 px-3">Categoría &amp; Marca</th>
+                <th className="py-3 px-3">Ubicación</th>
+                <th className="py-3 px-3 text-right">
+                  <span className="block">Costo &amp; Ref. Divisas</span>
+                  <span className="text-[9px] text-amber-700 font-bold">Ajuste Brecha</span>
+                </th>
+                <th className="py-3 px-3 text-right">
+                  <span className="block">P. Venta Dual</span>
+                  <span className="text-[9px] text-amber-700 font-bold">Ref. Divisas (Admin) / Bs BCV</span>
+                </th>
+                <th className="py-3 px-3 text-right">
+                  <span className="block">% Utilidad</span>
+                  <span className="text-[9px] text-amber-700 font-bold">Solo Admin</span>
+                </th>
+                <th className="py-3 px-3 text-center">Stock</th>
+                <th className="py-3 px-3 text-center">Tienda</th>
                 <th className="py-3 px-4 text-right">Acciones</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
               {filteredProducts.length === 0 ? (
                 <tr>
-                  <td colSpan={9} className="py-8 text-center text-slate-400">
+                  <td colSpan={10} className="py-8 text-center text-slate-400">
                     No se encontraron repuestos con los filtros seleccionados.
                   </td>
                 </tr>
@@ -646,7 +884,7 @@ export const InventoryView: React.FC = () => {
                 filteredProducts.map((product) => {
                   const isOutOfStock = product.stock === 0;
                   const isLowStock = product.stock > 0 && product.stock <= product.minStock;
-                  const priceBs = product.salePrice * rate;
+                  const pricing = calculateProductPricing(product, rate, usdtRate);
                   const isSelected = selectedProductIds.includes(product.id);
 
                   return (
@@ -763,8 +1001,8 @@ export const InventoryView: React.FC = () => {
                         <p className="text-[10px] text-slate-400">{product.brand}</p>
                       </td>
 
-                      {/* Warehouse Location */}
-                      <td className="py-3 px-3 align-top">
+                      {/* Warehouse Location + Compatibility compact */}
+                      <td className="py-3 px-3 align-top max-w-[175px]">
                         {product.warehouseLocation ? (
                           <span
                             className="inline-flex items-start gap-1 font-mono text-[11px] font-semibold text-amber-900 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-md whitespace-normal break-words"
@@ -774,25 +1012,108 @@ export const InventoryView: React.FC = () => {
                             <span>{product.warehouseLocation}</span>
                           </span>
                         ) : (
-                          <span className="text-[11px] text-slate-400 italic">Sin asignar</span>
+                          <span className="text-[11px] text-slate-400 italic block">Sin asignar</span>
+                        )}
+                        {product.compatibility && (
+                          <p
+                            className="text-[10px] text-slate-500 mt-1 line-clamp-2 leading-snug"
+                            title={product.compatibility}
+                          >
+                            {product.compatibility}
+                          </p>
                         )}
                       </td>
 
-                      {/* Compatibility */}
-                      <td className="py-3 px-3 text-slate-500 min-w-[150px] max-w-[240px] align-top">
-                        <p className="whitespace-normal break-words leading-snug">
-                          {product.compatibility}
-                        </p>
+                      {/* Costo Registrado + Costo Ref. Divisas (Ajustado por brecha BCV/USDT) */}
+                      <td className="py-3 px-3 text-right align-top whitespace-nowrap">
+                        <div className="inline-flex items-center justify-end gap-1">
+                          <span
+                            className={`text-[9px] font-bold px-1.5 py-0.5 rounded uppercase ${
+                              pricing.costOrigin === 'BS_BCV'
+                                ? 'bg-blue-100 text-blue-800'
+                                : 'bg-slate-200 text-slate-700'
+                            }`}
+                          >
+                            {pricing.costOrigin === 'BS_BCV' ? 'BCV' : 'Div'}
+                          </span>
+                          <span className="font-mono text-[11px] text-slate-600 tabular-nums">
+                            {pricing.costOrigin === 'BS_BCV'
+                              ? formatBs(pricing.costBs)
+                              : formatUSD(product.costPrice)}
+                          </span>
+                        </div>
+                        <div
+                          className="font-mono font-bold text-slate-900 text-xs mt-0.5 tabular-nums"
+                          title="Costo de referencia en divisas ajustado por brecha BCV/USDT: (Costo Bs ÷ Tasa BCV) ÷ (1 + Brecha%) = Costo Bs ÷ Tasa USDT"
+                        >
+                          Ref: {formatUSD(pricing.referenceCostUSD)}
+                        </div>
                       </td>
 
-                      {/* Price in USD and Bs */}
-                      <td className="py-3 px-3 text-right">
-                        <span className="font-mono font-bold text-slate-900 block tabular-nums">
-                          {formatUSD(product.salePrice)}
+                      {/* Precios de Venta Duales: Ref. Divisas (Solo Admin) vs Bs a BCV (Comercial) */}
+                      <td className="py-3 px-3 text-right align-top whitespace-nowrap">
+                        <div
+                          className="inline-flex items-center justify-end gap-1 bg-amber-50 border border-amber-200/80 px-1.5 py-0.5 rounded"
+                          title="Precio de Venta de Referencia en Divisas — USO EXCLUSIVO ADMIN (nunca visible en tienda ni facturas)"
+                        >
+                          <Lock className="w-2.5 h-2.5 text-amber-700 shrink-0" />
+                          <span className="font-mono font-bold text-amber-950 text-xs tabular-nums">
+                            {formatUSD(pricing.salePriceRefUSD)}
+                          </span>
+                        </div>
+                        <span className="font-mono text-[11px] font-bold text-emerald-700 block mt-1 tabular-nums">
+                          {formatBs(pricing.salePriceBsBcv)}
                         </span>
-                        <span className="font-mono text-[10px] font-semibold text-emerald-700 block tabular-nums">
-                          {formatBs(priceBs)}
+                        <span className="font-mono text-[10px] text-slate-400 block tabular-nums">
+                          {formatUSD(pricing.salePriceUsdBcv)} BCV
                         </span>
+                        {pricing.isBsLaggingRef && (
+                          <span
+                            className="inline-block text-[9px] font-bold text-amber-800 bg-amber-100 px-1.5 py-0.5 rounded mt-0.5"
+                            title={`El precio en Bs BCV equivale hoy a ${formatUSD(pricing.realRevenueDivisasUSD)} USDT, menor que tu ref. ${formatUSD(pricing.salePriceRefUSD)}`}
+                          >
+                            Bs rezagado ({formatUSD(pricing.realRevenueDivisasUSD)})
+                          </span>
+                        )}
+                      </td>
+
+                      {/* % Utilidad (SOLO ADMIN) */}
+                      <td className="py-3 px-3 text-right align-top whitespace-nowrap">
+                        {pricing.realProfitMarginPct !== null ? (
+                          <div className="inline-flex flex-col items-end gap-0.5">
+                            <span
+                              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md font-mono font-bold text-[11px] border tabular-nums ${
+                                pricing.status === 'healthy'
+                                  ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                                  : pricing.status === 'low'
+                                  ? 'bg-amber-50 text-amber-900 border-amber-300'
+                                  : 'bg-rose-50 text-rose-700 border-rose-300'
+                              }`}
+                              title="Utilidad (Margen % sobre venta) = ((Venta Ref. Divisas - Costo Ref. Divisas) / Venta Ref. Divisas) × 100"
+                            >
+                              Margen {pricing.realProfitMarginPct.toFixed(1)}%
+                            </span>
+                            {pricing.realProfitMarkupPct !== null && (
+                              <span
+                                className="font-mono text-[10px] text-slate-500 tabular-nums"
+                                title="Utilidad (s/Costo %) = ((Venta - Costo) / Costo) × 100"
+                              >
+                                s/Costo: {pricing.realProfitMarkupPct >= 0 ? '+' : ''}
+                                {pricing.realProfitMarkupPct.toFixed(1)}%
+                              </span>
+                            )}
+                            <span
+                              className={`font-mono text-[10px] font-semibold tabular-nums ${
+                                pricing.realProfitAmountUSD >= 0 ? 'text-emerald-700' : 'text-rose-600'
+                              }`}
+                            >
+                              {pricing.realProfitAmountUSD >= 0 ? '+' : ''}
+                              {formatUSD(pricing.realProfitAmountUSD)}/u
+                            </span>
+                          </div>
+                        ) : (
+                          <span className="text-[10px] text-slate-400 italic">Sin costo</span>
+                        )}
                       </td>
 
                       {/* Stock Stepper */}
@@ -1069,35 +1390,333 @@ export const InventoryView: React.FC = () => {
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
-                <div>
-                  <label className="block font-semibold text-slate-700 mb-1">Precio Costo ($ USD)</label>
-                  <input
-                    type="number"
-                    step="any"
-                    min="0"
-                    value={formData.costPrice}
-                    onChange={(e) => setFormData({ ...formData, costPrice: Number(e.target.value) })}
-                    className="w-full p-2.5 rounded-lg border border-slate-200 bg-slate-50 font-mono"
-                  />
-                </div>
-
-                <div>
-                  <label className="block font-semibold text-slate-700 mb-1">Precio Venta ($ USD) *</label>
-                  <input
-                    type="number"
-                    step="any"
-                    min="0"
-                    required
-                    value={formData.salePrice}
-                    onChange={(e) => setFormData({ ...formData, salePrice: Number(e.target.value) })}
-                    className="w-full p-2.5 rounded-lg border border-slate-200 bg-slate-50 font-mono font-bold"
-                  />
-                  <span className="text-[10px] text-emerald-700 font-mono">
-                    = {formatBs(formData.salePrice * rate)}
+              {/* BLOQUE FINANCIERO: COSTO (BCV / DIVISAS), PRECIOS DUALES Y UTILIDAD (SOLO ADMIN) */}
+              <div className="rounded-xl border border-slate-200 bg-slate-50/80 p-4 space-y-4">
+                <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-slate-200">
+                  <div className="flex items-center gap-2">
+                    <Calculator className="w-4 h-4 text-amber-600" />
+                    <span className="font-bold text-slate-900 text-xs">
+                      Estructura de Costos, Brecha BCV/USDT y Precios Duales
+                    </span>
+                  </div>
+                  <span className="font-mono text-[10px] font-bold bg-slate-900 text-amber-300 px-2 py-0.5 rounded">
+                    BCV {formatBs(rate)} · USDT {formatBs(usdtRate)} · Brecha{' '}
+                    {exchangeGap.gapPct >= 0 ? '+' : ''}
+                    {exchangeGap.gapPct.toFixed(2)}%
                   </span>
                 </div>
 
+                {/* 1. Origen del Costo & Costo de Referencia en Divisas */}
+                <div className="space-y-2.5">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <label className="font-bold text-slate-700">1. Origen del Costo Registrado</label>
+                    <div className="inline-flex rounded-lg border border-slate-300 bg-white p-0.5">
+                      <button
+                        type="button"
+                        onClick={() => handleCostOriginChange('DIVISAS')}
+                        className={`px-2.5 py-1 rounded-md text-[11px] font-bold transition-colors cursor-pointer ${
+                          formData.costCurrencyOrigin === 'DIVISAS'
+                            ? 'bg-slate-900 text-amber-400'
+                            : 'text-slate-600 hover:bg-slate-100'
+                        }`}
+                      >
+                        Divisas / USDT ($)
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleCostOriginChange('BS_BCV')}
+                        className={`px-2.5 py-1 rounded-md text-[11px] font-bold transition-colors cursor-pointer ${
+                          formData.costCurrencyOrigin === 'BS_BCV'
+                            ? 'bg-blue-700 text-white'
+                            : 'text-slate-600 hover:bg-slate-100'
+                        }`}
+                      >
+                        Tasa BCV (Bs)
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    {formData.costCurrencyOrigin === 'BS_BCV' ? (
+                      <>
+                        <div>
+                          <label className="block font-semibold text-blue-900 mb-1">
+                            Costo en Bs (Tasa BCV) *
+                          </label>
+                          <input
+                            type="number"
+                            step="any"
+                            min="0"
+                            value={formData.costPriceBs}
+                            onChange={(e) => {
+                              const bsVal = Math.max(0, Number(e.target.value) || 0);
+                              setFormData({
+                                ...formData,
+                                costPriceBs: bsVal,
+                                costPrice: rate > 0 ? round2(bsVal / rate) : 0,
+                              });
+                            }}
+                            className="w-full p-2 rounded-lg border border-blue-300 bg-white font-mono font-bold text-blue-950"
+                          />
+                          <span className="text-[10px] text-slate-500 font-mono block mt-0.5">
+                            Nominal BCV: {formatUSD(formPricing.costCalc.costUsdAtBcv)}
+                          </span>
+                        </div>
+
+                        <div>
+                          <label className="block font-semibold text-slate-700 mb-1">
+                            O ingresar en $ BCV
+                          </label>
+                          <input
+                            type="number"
+                            step="any"
+                            min="0"
+                            value={formData.costPrice}
+                            onChange={(e) => {
+                              const usdBcv = Math.max(0, Number(e.target.value) || 0);
+                              setFormData({
+                                ...formData,
+                                costPrice: usdBcv,
+                                costPriceBs: round2(usdBcv * rate),
+                              });
+                            }}
+                            className="w-full p-2 rounded-lg border border-slate-200 bg-white font-mono"
+                          />
+                          <span className="text-[10px] text-slate-500 font-mono block mt-0.5">
+                            × {formatBs(rate)} = {formatBs(formData.costPriceBs)}
+                          </span>
+                        </div>
+                      </>
+                    ) : (
+                      <div className="sm:col-span-2">
+                        <label className="block font-semibold text-slate-700 mb-1">
+                          Costo Base en Divisas / USDT ($)
+                        </label>
+                        <input
+                          type="number"
+                          step="any"
+                          min="0"
+                          value={formData.costPrice}
+                          onChange={(e) => {
+                            const usdVal = Math.max(0, Number(e.target.value) || 0);
+                            setFormData({
+                              ...formData,
+                              costPrice: usdVal,
+                              costPriceBs: round2(usdVal * usdtRate),
+                            });
+                          }}
+                          className="w-full p-2 rounded-lg border border-slate-300 bg-white font-mono font-bold text-slate-900"
+                        />
+                        <span className="text-[10px] text-slate-500 font-mono block mt-0.5">
+                          Equiv. Bs (USDT): {formatBs(formPricing.costCalc.costBs)} · Equiv. Bs (BCV):{' '}
+                          {formatBs(formPricing.costCalc.costBsAtBcv)}
+                        </span>
+                      </div>
+                    )}
+
+                    {/* Costo de Referencia en Divisas calculado */}
+                    <div
+                      className="rounded-lg bg-amber-50 border border-amber-300 p-2.5 flex flex-col justify-center"
+                      title="Costo de referencia en divisas ajustado por brecha BCV/USDT: (Costo Bs / Tasa BCV) ÷ (1 + Brecha%) = Costo Bs ÷ Tasa USDT"
+                    >
+                      <span className="text-[10px] font-bold text-amber-900 flex items-center gap-1">
+                        <Info className="w-3 h-3 shrink-0" />
+                        <span>Costo Ref. Divisas (Brecha)</span>
+                      </span>
+                      <span className="text-base font-black font-mono text-amber-950 mt-0.5">
+                        {formatUSD(formPricing.costCalc.referenceCostUSD)}
+                      </span>
+                      <span className="text-[9px] text-amber-800 leading-tight mt-0.5">
+                        {formData.costCurrencyOrigin === 'BS_BCV'
+                          ? `Costo Bs ÷ USDT (${formatBs(usdtRate)})`
+                          : 'Costo directo en divisas'}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* 2. Calculadora rápida por % de Utilidad Objetivo (Solo Admin) */}
+                <div className="bg-white rounded-lg border border-slate-200 p-3 flex flex-wrap items-end justify-between gap-2.5">
+                  <div className="flex flex-wrap items-end gap-2">
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-600 mb-1">
+                        Sugerir Precio por % Utilidad Objetivo
+                      </label>
+                      <div className="inline-flex rounded-lg border border-slate-200 bg-slate-50 p-0.5">
+                        <button
+                          type="button"
+                          onClick={() => setTargetProfitMode('margin')}
+                          className={`px-2 py-1 rounded text-[10px] font-bold cursor-pointer ${
+                            targetProfitMode === 'margin'
+                              ? 'bg-slate-900 text-white'
+                              : 'text-slate-600'
+                          }`}
+                        >
+                          Margen % (s/Venta)
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setTargetProfitMode('markup')}
+                          className={`px-2 py-1 rounded text-[10px] font-bold cursor-pointer ${
+                            targetProfitMode === 'markup'
+                              ? 'bg-slate-900 text-white'
+                              : 'text-slate-600'
+                          }`}
+                        >
+                          Markup % (s/Costo)
+                        </button>
+                      </div>
+                    </div>
+                    <div className="w-20">
+                      <label className="block text-[10px] font-bold text-slate-600 mb-1">% Objetivo</label>
+                      <input
+                        type="number"
+                        step="1"
+                        min="0"
+                        max={targetProfitMode === 'margin' ? 95 : 1000}
+                        value={targetProfitInput}
+                        onChange={(e) => setTargetProfitInput(e.target.value)}
+                        className="w-full p-1.5 rounded-lg border border-slate-300 font-mono font-bold text-xs text-center"
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleApplyTargetProfitSuggestion}
+                      disabled={formPricing.costCalc.referenceCostUSD <= 0}
+                      className="px-3 py-1.5 bg-amber-500 hover:bg-amber-400 disabled:opacity-40 text-slate-950 font-bold text-[11px] rounded-lg cursor-pointer transition-colors"
+                    >
+                      Calcular y Aplicar
+                    </button>
+                  </div>
+
+                  <label className="inline-flex items-center gap-1.5 text-[11px] text-slate-600 font-medium cursor-pointer select-none">
+                    <input
+                      type="checkbox"
+                      checked={syncBsWithGap}
+                      onChange={(e) => setSyncBsWithGap(e.target.checked)}
+                      className="rounded border-slate-300 text-amber-600 focus:ring-amber-500"
+                    />
+                    <span>Sincronizar Bs BCV ↔ Divisas con brecha</span>
+                  </label>
+                </div>
+
+                {/* 3. Dos Precios de Venta (Ref. Divisas Solo Admin vs Bs BCV Comercial) */}
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div className="bg-amber-50/70 border border-amber-300 rounded-xl p-2.5">
+                    <label className="flex items-center justify-between font-bold text-amber-950 mb-1">
+                      <span className="inline-flex items-center gap-1">
+                        <Lock className="w-3 h-3 text-amber-700" />
+                        <span>P. Venta Ref. Divisas ($)</span>
+                      </span>
+                      <span className="text-[9px] uppercase bg-amber-200 text-amber-950 px-1.5 py-0.5 rounded font-extrabold">
+                        Solo Admin
+                      </span>
+                    </label>
+                    <input
+                      type="number"
+                      step="any"
+                      min="0"
+                      value={formData.salePriceRefUSD}
+                      onChange={(e) => handleSalePriceRefUsdChange(e.target.value)}
+                      className="w-full p-2 rounded-lg border border-amber-400 bg-white font-mono font-bold text-amber-950"
+                    />
+                    <span className="text-[10px] text-amber-800 block mt-1">
+                      Nunca visible en tienda ni facturas
+                    </span>
+                  </div>
+
+                  <div className="bg-emerald-50/70 border border-emerald-300 rounded-xl p-2.5">
+                    <label className="flex items-center justify-between font-bold text-emerald-950 mb-1">
+                      <span>P. Venta Bs (Tasa BCV) *</span>
+                      <span className="text-[9px] uppercase bg-emerald-200 text-emerald-950 px-1.5 py-0.5 rounded font-extrabold">
+                        Tienda / Factura
+                      </span>
+                    </label>
+                    <input
+                      type="number"
+                      step="any"
+                      min="0"
+                      required
+                      value={formData.salePriceBsBcv}
+                      onChange={(e) => handleSalePriceBsBcvChange(e.target.value)}
+                      className="w-full p-2 rounded-lg border border-emerald-400 bg-white font-mono font-bold text-emerald-950"
+                    />
+                    <span className="text-[10px] text-emerald-800 font-mono block mt-1">
+                      Divisas reales (USDT): {formatUSD(formPricing.analysis.realRevenueDivisasUSD)}
+                    </span>
+                  </div>
+
+                  <div className="bg-white border border-slate-200 rounded-xl p-2.5">
+                    <label className="block font-semibold text-slate-700 mb-1">
+                      Equiv. Comercial ($ BCV) *
+                    </label>
+                    <input
+                      type="number"
+                      step="any"
+                      min="0"
+                      required
+                      value={formData.salePrice}
+                      onChange={(e) => handleSalePriceUsdBcvChange(e.target.value)}
+                      className="w-full p-2 rounded-lg border border-slate-300 bg-slate-50 font-mono font-bold text-slate-900"
+                    />
+                    <span className="text-[10px] text-slate-500 font-mono block mt-1">
+                      × {formatBs(rate)} = {formatBs(formData.salePrice * rate)}
+                    </span>
+                  </div>
+                </div>
+
+                {/* 4. Indicador en Tiempo Real de % de Utilidad (Solo Admin) */}
+                <div
+                  className={`rounded-xl p-3 border flex flex-wrap items-center justify-between gap-3 ${
+                    formPricing.analysis.status === 'healthy'
+                      ? 'bg-emerald-50 border-emerald-300 text-emerald-950'
+                      : formPricing.analysis.status === 'low'
+                      ? 'bg-amber-50 border-amber-300 text-amber-950'
+                      : formPricing.analysis.status === 'negative'
+                      ? 'bg-rose-50 border-rose-300 text-rose-950'
+                      : 'bg-slate-100 border-slate-200 text-slate-700'
+                  }`}
+                >
+                  <div>
+                    <span className="text-[10px] uppercase tracking-wider font-extrabold flex items-center gap-1">
+                      <Lock className="w-3 h-3" />
+                      <span>% Utilidad Real en Divisas (Solo Admin)</span>
+                    </span>
+                    <div className="flex flex-wrap items-baseline gap-3 mt-0.5 font-mono">
+                      <span className="text-base font-black">
+                        Margen:{' '}
+                        {formPricing.analysis.realProfitMarginPct !== null
+                          ? `${formPricing.analysis.realProfitMarginPct.toFixed(2)}%`
+                          : '—'}
+                      </span>
+                      <span className="text-xs font-bold opacity-85">
+                        s/Costo:{' '}
+                        {formPricing.analysis.realProfitMarkupPct !== null
+                          ? `${formPricing.analysis.realProfitMarkupPct >= 0 ? '+' : ''}${formPricing.analysis.realProfitMarkupPct.toFixed(2)}%`
+                          : '—'}
+                      </span>
+                      <span className="text-xs font-bold">
+                        Ganancia: {formPricing.analysis.realProfitAmountUSD >= 0 ? '+' : ''}
+                        {formatUSD(formPricing.analysis.realProfitAmountUSD)}/u
+                      </span>
+                    </div>
+                  </div>
+                  <div className="text-right text-[10px] leading-tight">
+                    <span className="font-bold block">
+                      {formPricing.analysis.status === 'healthy' && '✓ Margen saludable (≥20%)'}
+                      {formPricing.analysis.status === 'low' && '⚠ Margen bajo (<20%)'}
+                      {formPricing.analysis.status === 'negative' && '⛔ Pérdida / Utilidad negativa'}
+                      {formPricing.analysis.status === 'unknown' && 'Ingresa costo y precio de venta'}
+                    </span>
+                    <span className="opacity-75 block">
+                      Margen = (Venta − Costo) ÷ Venta · s/Costo = (Venta − Costo) ÷ Costo
+                    </span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Stock Inicial y Stock Mínimo */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
                   <label className="block font-semibold text-slate-700 mb-1">Stock Inicial *</label>
                   <input

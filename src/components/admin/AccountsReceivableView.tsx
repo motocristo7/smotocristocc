@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { useApp } from '../../context/AppContext';
-import { Sale, PaymentMethod, PagoMovilAccountOption, Customer, CreditPaymentRecord } from '../../types';
+import { Sale, PaymentMethod, PagoMovilAccountOption, Customer, CreditPaymentRecord, isSaleWithCredit } from '../../types';
 import {
   formatUSD,
   formatBs,
@@ -141,10 +141,10 @@ export const AccountsReceivableView: React.FC = () => {
     }
   };
 
-  // Filter only pending active credit/apartado sales (excludes fully paid and voided/anuladas)
+  // Filter only pending active credit/apartado/mixto-con-crédito sales (excludes fully paid and voided/anuladas)
   const allPendingSales = useMemo(() => {
     return sales.filter((s) => {
-      if (s.paymentType !== 'CREDITO' && s.paymentType !== 'APARTADO') return false;
+      if (!isSaleWithCredit(s)) return false;
       if (s.creditStatus === 'PAGADO') return false;
       if (s.creditStatus === 'ANULADO' || s.isVoided) return false;
       const pendingUSD = Math.max(0, s.total - (s.creditPaidAmount || 0));
@@ -152,24 +152,24 @@ export const AccountsReceivableView: React.FC = () => {
     });
   }, [sales]);
 
-  // All paid credit/apartado sales (history / audit)
+  // All paid credit/apartado/mixto-con-crédito sales (history / audit)
   const allPaidCreditSales = useMemo(() => {
     return sales
       .filter(
         (s) =>
-          (s.paymentType === 'CREDITO' || s.paymentType === 'APARTADO') &&
+          isSaleWithCredit(s) &&
           !s.isVoided &&
           s.creditStatus === 'PAGADO'
       )
       .sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
   }, [sales]);
 
-  // All voided credit/apartado sales
+  // All voided credit/apartado/mixto-con-crédito sales
   const allVoidedSales = useMemo(() => {
     return sales
       .filter(
         (s) =>
-          (s.paymentType === 'CREDITO' || s.paymentType === 'APARTADO') &&
+          isSaleWithCredit(s) &&
           (s.creditStatus === 'ANULADO' || s.isVoided)
       )
       .sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));

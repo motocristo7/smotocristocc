@@ -30,9 +30,14 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenCart }) => {
     cartItemCount,
     settings,
     updateBcvRate,
+    updateUsdtRate,
     isSyncingBcv,
     bcvSyncMessage,
     syncBcvRate,
+    isSyncingUsdt,
+    usdtSyncMessage,
+    syncUsdtRate,
+    exchangeGap,
     isAdminSidebarCollapsed,
     toggleAdminSidebar,
     isAdminMobileMenuOpen,
@@ -50,6 +55,8 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenCart }) => {
   } = useApp();
   const [isEditingRate, setIsEditingRate] = useState(false);
   const [tempRate, setTempRate] = useState(settings.bcvRate.toString());
+  const [isEditingUsdt, setIsEditingUsdt] = useState(false);
+  const [tempUsdtRate, setTempUsdtRate] = useState(exchangeGap.usdtRate.toString());
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
   const userMenuRef = useRef<HTMLDivElement>(null);
 
@@ -75,6 +82,15 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenCart }) => {
     }
   };
 
+  const handleSaveUsdtRate = (e: React.FormEvent) => {
+    e.preventDefault();
+    const parsed = parseFloat(tempUsdtRate);
+    if (!isNaN(parsed) && parsed > 0) {
+      updateUsdtRate(parsed);
+      setIsEditingUsdt(false);
+    }
+  };
+
   return (
     <header className="sticky top-0 z-40 bg-white/95 backdrop-blur-md border-b border-slate-200">
       {/* BCV Sync Toast Notice */}
@@ -83,6 +99,15 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenCart }) => {
           <RefreshCw className={`w-3 h-3 shrink-0 ${isSyncingBcv ? 'animate-spin' : ''}`} />
           <span className="truncate">{bcvSyncMessage}</span>
           <span className="opacity-80 hidden sm:inline shrink-0">· Oficial bcv.org.ve</span>
+        </div>
+      )}
+
+      {/* USDT Sync Toast Notice (SOLO ADMIN) */}
+      {isAdminView && usdtSyncMessage && (
+        <div className="bg-amber-600 text-white text-[11px] font-medium py-1 px-4 text-center transition-all flex items-center justify-center gap-2 shadow-xs">
+          <RefreshCw className={`w-3 h-3 shrink-0 ${isSyncingUsdt ? 'animate-spin' : ''}`} />
+          <span className="truncate">{usdtSyncMessage}</span>
+          <span className="opacity-80 hidden sm:inline shrink-0">· Referencia USDT Binance</span>
         </div>
       )}
 
@@ -227,6 +252,58 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenCart }) => {
               </button>
             )}
           </div>
+
+          {/* USDT Binance + Brecha Cambiaria (ESTRICTAMENTE SOLO EN PANEL ADMINISTRATIVO) */}
+          {isAdminView && (
+            <div className="hidden xl:flex items-center gap-1.5 bg-amber-50 text-amber-950 border border-amber-200 px-2.5 py-1.5 rounded-lg text-xs font-semibold shrink-0">
+              <span className="text-amber-700 text-[11px] font-bold">USDT</span>
+              {isEditingUsdt ? (
+                <form onSubmit={handleSaveUsdtRate} className="inline-flex items-center gap-1">
+                  <input
+                    type="number"
+                    step="0.01"
+                    value={tempUsdtRate}
+                    onChange={(e) => setTempUsdtRate(e.target.value)}
+                    className="w-16 p-0.5 text-xs font-mono bg-white border border-amber-400 rounded text-slate-900"
+                    autoFocus
+                  />
+                  <button type="submit" className="text-[10px] bg-amber-600 text-white px-1.5 py-0.5 rounded cursor-pointer">
+                    OK
+                  </button>
+                </form>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setTempUsdtRate(exchangeGap.usdtRate.toString());
+                    setIsEditingUsdt(true);
+                  }}
+                  className="font-mono tabular-nums text-amber-950 font-bold whitespace-nowrap hover:underline cursor-pointer"
+                  title={`Tasa USDT Binance (Solo Admin): Bs. ${exchangeGap.usdtRate.toFixed(2)} · Clic para editar`}
+                >
+                  Bs. {exchangeGap.usdtRate.toFixed(2)}
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => syncUsdtRate()}
+                disabled={isSyncingUsdt}
+                className={`p-0.5 text-amber-700 hover:text-amber-950 hover:bg-amber-100 rounded transition-colors cursor-pointer ${
+                  isSyncingUsdt ? 'opacity-60 cursor-not-allowed' : ''
+                }`}
+                title="Sincronizar tasa referencia USDT Binance"
+              >
+                <RefreshCw className={`w-3 h-3 ${isSyncingUsdt ? 'animate-spin text-amber-700' : ''}`} />
+              </button>
+              <span
+                className="ml-0.5 pl-1.5 border-l border-amber-300 font-mono text-[11px] font-extrabold text-amber-800 whitespace-nowrap"
+                title={`Brecha cambiaria: ((${exchangeGap.usdtRate.toFixed(2)} - ${exchangeGap.bcvRate.toFixed(2)}) / ${exchangeGap.bcvRate.toFixed(2)}) × 100 · Factor ×${exchangeGap.gapFactor.toFixed(3)}`}
+              >
+                Brecha {exchangeGap.gapPct >= 0 ? '+' : ''}
+                {exchangeGap.gapPct.toFixed(1)}%
+              </span>
+            </div>
+          )}
 
           {/* User Account / Login Button */}
           {!currentUser ? (

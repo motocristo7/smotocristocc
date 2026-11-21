@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useApp } from '../../context/AppContext';
 import { formatUSD, formatBs, sanitizePhone, buildInvoiceWhatsAppMessage, buildServiceStatusWhatsAppMessage } from '../../utils/whatsapp';
-import { ServiceOrderStatus, Sale, ServiceOrder } from '../../types';
+import { ServiceOrderStatus, Sale, ServiceOrder, isSaleWithCredit } from '../../types';
 import { downloadInvoicePDF, downloadServiceOrderPDF } from '../../utils/pdfInvoice';
 import {
   Search,
@@ -87,7 +87,7 @@ export const CustomerPortal: React.FC = () => {
 
   const matchingPendingSales = useMemo(() => {
     return matchingSales.filter((s) => {
-      if (s.paymentType !== 'CREDITO' && s.paymentType !== 'APARTADO') return false;
+      if (!isSaleWithCredit(s)) return false;
       if (s.isVoided || s.creditStatus === 'PAGADO' || s.creditStatus === 'ANULADO') return false;
       return Math.max(0, s.total - (s.creditPaidAmount || 0)) > 0.01;
     });
@@ -657,7 +657,12 @@ export const CustomerPortal: React.FC = () => {
                     const paidUSD = sale.creditPaidAmount || 0;
                     const pendingUSD = Math.max(0, sale.total - paidUSD);
                     const pendingBs = pendingUSD * settings.bcvRate;
-                    const modality = sale.paymentType === 'APARTADO' ? 'Sistema de Apartado' : 'Crédito';
+                    const modality =
+                      sale.paymentType === 'APARTADO'
+                        ? 'Sistema de Apartado'
+                        : sale.paymentType === 'MIXTO'
+                        ? 'Pago Mixto (Crédito)'
+                        : 'Crédito';
 
                     return (
                       <div

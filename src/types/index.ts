@@ -38,14 +38,22 @@ export const DEFAULT_PRODUCT_CATEGORIES: DefaultProductCategory[] = [
 
 export type ProductCategory = DefaultProductCategory | (string & {});
 
+export type ProductCostOrigin = 'DIVISAS' | 'BS_BCV';
+
 export interface Product {
   id: string;
   sku: string;
   name: string;
   category: ProductCategory;
   description: string;
-  costPrice: number; // In USD ($)
-  salePrice: number; // In USD ($)
+  costPrice: number; // Costo base en USD (nominal BCV si origen es BS_BCV, o directo en divisas si DIVISAS)
+  costCurrencyOrigin?: ProductCostOrigin; // 'DIVISAS' (USD/USDT) | 'BS_BCV' (cotizado en Bs a tasa BCV)
+  costPriceBs?: number; // Costo registrado en Bs (cuando origen es BS_BCV) o equivalente en Bs
+  referenceCostUSD?: number; // Costo de referencia en divisas ajustado por brecha BCV/USDT (Solo Admin)
+  salePrice: number; // Precio comercial USD-BCV (precio_venta_bs_bcv / tasa_bcv) usado en tienda y facturación
+  salePriceRefUSD?: number; // SOLO ADMIN: Precio de venta de referencia en divisas (nunca visible en tienda ni facturas)
+  salePriceBsBcv?: number; // Precio de venta comercial en Bs a tasa BCV (sincronizado con tasa_bcv)
+  targetProfitPct?: number; // SOLO ADMIN: % de utilidad objetivo guardado para referencia interna
   stock: number;
   minStock: number;
   brand: string;
@@ -97,10 +105,44 @@ export type PaymentMethod =
   | 'Punto de Venta (Bs)'
   | 'Binance Pay (USDT)';
 
-export type SalePaymentType = 'CONTADO' | 'CREDITO' | 'APARTADO' | 'MERCADOLIBRE';
+export type SalePaymentType = 'CONTADO' | 'CREDITO' | 'APARTADO' | 'MERCADOLIBRE' | 'MIXTO';
 export type SaleCreditStatus = 'PENDIENTE' | 'PAGADO' | 'ANULADO';
 
 export type PagoMovilAccountOption = 'BANESCO_PERSONAL' | 'PROVINCIAL';
+
+export type SaleSplitCondition = 'CONTADO' | 'CREDITO';
+
+export interface SalePaymentSplit {
+  id: string;
+  splitType?: SaleSplitCondition; // 'CONTADO' (default, ingresa a Tesorería) o 'CREDITO' (genera Cuenta por Cobrar)
+  paymentMethod: PaymentMethod;
+  amountUSD: number;
+  amountBs: number;
+  pagoMovilAccount?: PagoMovilAccountOption;
+  treasuryAccountId?: string;
+  treasuryAccountName?: string;
+  treasuryMovementId?: string;
+  reference?: string;
+}
+
+export function isSaleWithCredit(
+  sale: Pick<Sale, 'paymentType' | 'paymentSplits' | 'creditStatus'> | null | undefined
+): boolean {
+  if (!sale) return false;
+  if (sale.paymentType === 'CREDITO' || sale.paymentType === 'APARTADO') return true;
+  if (sale.paymentType === 'MIXTO') {
+    if (
+      Array.isArray(sale.paymentSplits) &&
+      sale.paymentSplits.some(
+        (sp) => sp.splitType === 'CREDITO' && (Number(sp.amountUSD) || 0) > 0
+      )
+    ) {
+      return true;
+    }
+    if (sale.creditStatus === 'PENDIENTE') return true;
+  }
+  return false;
+}
 
 export interface CreditPaymentRecord {
   id: string;
@@ -136,12 +178,13 @@ export interface Sale {
   treasuryAccountId?: string; // Cuenta de Tesorería donde ingresó el pago
   treasuryAccountName?: string; // Nombre de la cuenta de Tesorería (ej. Banesco Personal, Provincial, Banesco SMCC)
   treasuryMovementId?: string; // ID del movimiento de ingreso registrado en Tesorería
+  paymentSplits?: SalePaymentSplit[]; // Desglose de pagos cuando paymentType === 'MIXTO'
   notes?: string;
   createdAt: string; // ISO date
   source: 'POS' | 'TIENDA_ONLINE';
 
-  // Modalidad de pago: De Contado, A Crédito, Sistema de Apartado o MercadoLibre
-  paymentType?: SalePaymentType; // 'CONTADO' | 'CREDITO' | 'APARTADO' | 'MERCADOLIBRE'
+  // Modalidad de pago: De Contado, Pago Mixto, A Crédito, Sistema de Apartado o MercadoLibre
+  paymentType?: SalePaymentType; // 'CONTADO' | 'CREDITO' | 'APARTADO' | 'MERCADOLIBRE' | 'MIXTO'
   creditDays?: number; // p. ej. 7, 15, 30 días
   creditDueDate?: string; // Fecha límite de pago (YYYY-MM-DD)
   creditPaidAmount?: number; // Monto abonado acumulado en USD
@@ -270,10 +313,13 @@ export interface BusinessSettings {
   address: string;
   state: string; // Estado venezolano
   city: string; // Ciudad venezolana
-  bcvRate: number; // Tasa oficial del Banco Central de Venezuela (Bs/USD)
+  bcvRate: number; // Tasa oficial del Banco Central de Venezuela (Bs/USD) — tasa_bcv
   bcvLastUpdated?: string; // Fecha y hora de última sincronización
   bcvOfficialDate?: string; // Fecha Valor oficial reportada por el BCV
   bcvSource?: string; // Fuente oficial (bcv.org.ve)
+  usdtRate?: number; // Tasa referencia USDT Binance (Bs/USDT) — tasa_usdt (Solo Admin)
+  usdtLastUpdated?: string; // Fecha y hora de última actualización USDT
+  usdtSource?: string; // Fuente de la tasa USDT (Binance / Manual)
   currencySymbol: string; // $
   secondaryCurrencySymbol: string; // Bs.
   bankDetails: {
@@ -398,7 +444,12 @@ export interface PurchaseOrderItem {
   imageUrl?: string;
   quantity: number;
   unitCostUSD: number;
-  salePriceUSD?: number; // Precio de venta para inventario ($) — no se suma al total de la orden de compra
+  costCurrencyOrigin?: ProductCostOrigin; // 'DIVISAS' | 'BS_BCV'
+  costPriceBs?: number; // Costo unitario en Bs si fue cotizado a tasa BCV
+  referenceCostUSD?: number; // Costo unitario de referencia en divisas ajustado por brecha BCV/USDT
+  salePriceUSD?: number; // Precio de venta comercial USD-BCV para inventario y facturación
+  salePriceRefUSD?: number; // SOLO ADMIN: Precio de venta de referencia en divisas
+  salePriceBsBcv?: number; // Precio de venta comercial en Bs a tasa BCV
   minStock?: number;
   totalCostUSD: number;
   isNewProduct?: boolean;

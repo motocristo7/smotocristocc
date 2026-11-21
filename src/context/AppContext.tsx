@@ -22,6 +22,9 @@ import {
   TechnicianPayoutItem,
   PaymentMethod,
   PagoMovilAccountOption,
+  SalePaymentType,
+  SalePaymentSplit,
+  isSaleWithCredit,
   CreditPaymentRecord,
   Supplier,
   PurchaseOrder,
@@ -56,8 +59,13 @@ import {
   INITIAL_SERVICE_ORDERS,
   INITIAL_ONLINE_ORDERS,
 } from '../data/mockData';
-import { fetchOfficialBcvRate, BcvSyncResult } from '../services/bcvService';
+import { fetchOfficialBcvRate, fetchBinanceUsdtRate, BcvSyncResult } from '../services/bcvService';
 import { normalizeImageUrl, PRESET_PRODUCT_IMAGES } from '../utils/imageUrl';
+import {
+  calculateExchangeGap,
+  ExchangeGapInfo,
+  sanitizeProductForPublic,
+} from '../utils/pricing';
 import { getPublicAppOrigin, PUBLIC_APP_ORIGIN } from '../utils/whatsapp';
 import firebaseConfig from '../../firebase-applet-config.json';
 import {
@@ -226,13 +234,18 @@ interface AppContextType {
   publicStoreUrl: string;
   onlineStoreBrand: string;
 
-  // Settings & BCV Exchange Rate
+  // Settings, BCV & USDT Exchange Rates
   settings: BusinessSettings;
   updateSettings: (newSettings: Partial<BusinessSettings>) => Promise<void>;
   updateBcvRate: (newRate: number) => void;
+  updateUsdtRate: (newRate: number) => void;
   isSyncingBcv: boolean;
   bcvSyncMessage: string | null;
   syncBcvRate: () => Promise<BcvSyncResult>;
+  isSyncingUsdt: boolean;
+  usdtSyncMessage: string | null;
+  syncUsdtRate: () => Promise<BcvSyncResult>;
+  exchangeGap: ExchangeGapInfo;
 
   // Inventory / Products (in USD)
   products: Product[];
@@ -267,9 +280,10 @@ interface AppContextType {
     total: number;
     paymentMethod: any;
     pagoMovilAccount?: PagoMovilAccountOption;
+    paymentSplits?: SalePaymentSplit[];
     notes?: string;
     source?: 'POS' | 'TIENDA_ONLINE';
-    paymentType?: 'CONTADO' | 'CREDITO' | 'APARTADO' | 'MERCADOLIBRE';
+    paymentType?: SalePaymentType;
     creditDays?: number;
     creditDueDate?: string;
     creditPaidAmount?: number;
@@ -419,7 +433,10 @@ interface AppContextType {
   }) => PurchaseOrder | null;
   updatePurchaseOrder: (
     id: string,
-    updates: Partial<PurchaseOrder> & { applyStockToInventory?: boolean }
+    updates: Partial<PurchaseOrder> & {
+      applyStockToInventory?: boolean;
+      syncInventoryDelta?: boolean;
+    }
   ) => PurchaseOrder | null;
   deletePurchaseOrder: (id: string) => void;
   markPurchaseOrderReceived: (
@@ -3602,12 +3619,19 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     };
   }, [settings, products, customers, sales, serviceOrders, onlineOrders, technicians, serviceCommissions, technicianPayouts, suppliers, purchaseOrders, expenses, treasuryAccounts, treasuryCommitments, treasuryMovements, treasuryDebts, deletedIds]);
 
-  // Online products: strictly filter where stock > 0 and sort alphabetically (A-Z) by name
+  // Online products: strictly filter where stock > 0, sanitize internal pricing fields, and sort A-Z
   const onlineProducts = useMemo(() => {
     return products
       .filter((p) => p.stock > 0)
+      .map((p) => sanitizeProductForPublic(p))
       .sort((a, b) => a.name.localeCompare(b.name, 'es', { sensitivity: 'base' }));
   }, [products]);
+
+  // Brecha cambiaria activa entre tasa_bcv y tasa_usdt (uso exclusivamente interno / administrativo)
+  const exchangeGap = useMemo(
+    () => calculateExchangeGap(settings.bcvRate, settings.usdtRate),
+    [settings.bcvRate, settings.usdtRate]
+  );
 
   // Combined product categories: defaults + saved custom categories + any categories on existing products
   const categories = useMemo<ProductCategory[]>(() => {
@@ -3767,6 +3791,53 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     }
   };
 
+  const [isSyncingUsdt, setIsSyncingUsdt] = useState(false);
+  const [usdtSyncMessage, setUsdtSyncMessage] = useState<string | null>(null);
+
+  const syncUsdtRate = async (): Promise<BcvSyncResult> => {
+    setIsSyncingUsdt(true);
+    setUsdtSyncMessage('Consultando referencia USDT Binance...');
+    try {
+      const result = await fetchBinanceUsdtRate();
+      if (result.success && result.rate > 0) {
+        setSettings((prev) => {
+          const updated: BusinessSettings = {
+            ...prev,
+            usdtRate: result.rate,
+            usdtSource: result.source,
+            usdtLastUpdated: new Date().toLocaleTimeString('es-VE', {
+              hour: '2-digit',
+              minute: '2-digit',
+            }),
+          };
+          try {
+            localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(updated));
+          } catch {}
+          syncSettingsToFirestore(updated).catch(() => {});
+          return updated;
+        });
+        setUsdtSyncMessage(`Tasa USDT ref.: Bs. ${result.rate.toFixed(2)}`);
+      } else {
+        setUsdtSyncMessage(result.error || 'No se pudo consultar la tasa USDT');
+      }
+      setTimeout(() => setUsdtSyncMessage(null), 4500);
+      return result;
+    } catch {
+      const errMsg = 'Error al consultar tasa USDT Binance';
+      setUsdtSyncMessage(errMsg);
+      setTimeout(() => setUsdtSyncMessage(null), 4500);
+      return {
+        success: false,
+        rate: 0,
+        source: 'Referencia USDT Binance',
+        timestamp: new Date().toISOString(),
+        error: errMsg,
+      };
+    } finally {
+      setIsSyncingUsdt(false);
+    }
+  };
+
   const updateBcvRate = (newRate: number) => {
     if (newRate > 0) {
       setSettings((prev) => {
@@ -3779,6 +3850,30 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
           }),
           bcvSource: 'Ajuste Manual / BCV',
         };
+        try {
+          localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(updated));
+        } catch {}
+        syncSettingsToFirestore(updated).catch(() => {});
+        return updated;
+      });
+    }
+  };
+
+  const updateUsdtRate = (newRate: number) => {
+    if (newRate > 0) {
+      setSettings((prev) => {
+        const updated: BusinessSettings = {
+          ...prev,
+          usdtRate: newRate,
+          usdtLastUpdated: new Date().toLocaleTimeString('es-VE', {
+            hour: '2-digit',
+            minute: '2-digit',
+          }),
+          usdtSource: 'Ajuste Manual / Binance USDT',
+        };
+        try {
+          localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(updated));
+        } catch {}
         syncSettingsToFirestore(updated).catch(() => {});
         return updated;
       });
@@ -4129,9 +4224,10 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     total: number;
     paymentMethod: any;
     pagoMovilAccount?: PagoMovilAccountOption;
+    paymentSplits?: SalePaymentSplit[];
     notes?: string;
     source?: 'POS' | 'TIENDA_ONLINE';
-    paymentType?: 'CONTADO' | 'CREDITO' | 'APARTADO' | 'MERCADOLIBRE';
+    paymentType?: SalePaymentType;
     creditDays?: number;
     creditDueDate?: string;
     creditPaidAmount?: number;
@@ -4191,8 +4287,14 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     const rate = settingsRef.current.bcvRate;
 
     const saleId = `sale-${Date.now()}-${Math.floor(Math.random() * 1000).toString().padStart(3, '0')}`;
-    const resolvedPaymentType = saleData.paymentType || 'CONTADO';
-    const resolvedPagoMovilAccount: PagoMovilAccountOption | undefined =
+    const resolvedPaymentType: SalePaymentType = saleData.paymentType || 'CONTADO';
+    const rawSplits = Array.isArray(saleData.paymentSplits)
+      ? saleData.paymentSplits.filter((sp) => (Number(sp.amountUSD) || 0) > 0)
+      : [];
+    const isMixto = resolvedPaymentType === 'MIXTO' && rawSplits.length > 0;
+
+    let resolvedPaymentMethod: PaymentMethod = saleData.paymentMethod;
+    let resolvedPagoMovilAccount: PagoMovilAccountOption | undefined =
       saleData.paymentMethod === 'Pago Móvil'
         ? saleData.pagoMovilAccount || 'BANESCO_PERSONAL'
         : undefined;
@@ -4206,8 +4308,100 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     let linkedTreasuryAccountId: string | undefined;
     let linkedTreasuryAccountName: string | undefined;
     let linkedTreasuryMovementId: string | undefined;
+    let resolvedPaymentSplits: SalePaymentSplit[] | undefined;
 
-    if (collectedUSD > 0) {
+    if (isMixto) {
+      const recordedSplits: SalePaymentSplit[] = [];
+      let cashPartUSD = 0;
+      let creditPartUSD = 0;
+
+      for (let i = 0; i < rawSplits.length; i += 1) {
+        const leg = rawSplits[i];
+        const legUSD = Math.round((Number(leg.amountUSD) || 0) * 100) / 100;
+        const legBs = Math.round(legUSD * rate * 100) / 100;
+        const splitType = leg.splitType === 'CREDITO' ? 'CREDITO' : 'CONTADO';
+
+        if (splitType === 'CREDITO') {
+          creditPartUSD = Math.round((creditPartUSD + legUSD) * 100) / 100;
+          recordedSplits.push({
+            id: leg.id || `split-${Date.now()}-${i}`,
+            splitType: 'CREDITO',
+            paymentMethod: leg.paymentMethod,
+            amountUSD: legUSD,
+            amountBs: legBs,
+            pagoMovilAccount: undefined,
+            treasuryAccountId: undefined,
+            treasuryAccountName: 'Cuenta por Cobrar (Crédito)',
+            treasuryMovementId: undefined,
+            reference: leg.reference?.trim() || undefined,
+          });
+        } else {
+          cashPartUSD = Math.round((cashPartUSD + legUSD) * 100) / 100;
+          const legPmAccount: PagoMovilAccountOption | undefined =
+            leg.paymentMethod === 'Pago Móvil'
+              ? leg.pagoMovilAccount || 'BANESCO_PERSONAL'
+              : undefined;
+          const treasuryIncome = recordAutomaticSaleIncomeInTreasury({
+            saleId,
+            invoiceNumber: invoiceNum,
+            customerName: customer.name || saleData.customerName,
+            amountUSD: legUSD,
+            bcvRate: rate,
+            paymentMethod: leg.paymentMethod,
+            pagoMovilAccount: legPmAccount,
+            explicitAccountId: leg.treasuryAccountId,
+            category: 'Ventas POS (Pago Mixto)',
+            reference: leg.reference?.trim() || invoiceNum,
+            notes: saleData.notes
+              ? `${saleData.notes} · Pago Mixto (${i + 1}/${rawSplits.length})`
+              : `Pago Mixto (${i + 1}/${rawSplits.length})`,
+          });
+          recordedSplits.push({
+            id: leg.id || `split-${Date.now()}-${i}`,
+            splitType: 'CONTADO',
+            paymentMethod: leg.paymentMethod,
+            amountUSD: legUSD,
+            amountBs: legBs,
+            pagoMovilAccount: legPmAccount,
+            treasuryAccountId: treasuryIncome?.account.id || leg.treasuryAccountId,
+            treasuryAccountName: treasuryIncome?.account.name || leg.treasuryAccountName,
+            treasuryMovementId: treasuryIncome?.movement.id,
+            reference: leg.reference?.trim() || undefined,
+          });
+        }
+      }
+
+      resolvedPaymentSplits = recordedSplits;
+      const cashLegs = recordedSplits.filter((sp) => sp.splitType !== 'CREDITO');
+      const primaryLeg = (cashLegs.length > 0 ? cashLegs : recordedSplits).reduce(
+        (best, cur) => (cur.amountUSD > best.amountUSD ? cur : best),
+        (cashLegs.length > 0 ? cashLegs : recordedSplits)[0]
+      );
+      if (primaryLeg) {
+        resolvedPaymentMethod = primaryLeg.paymentMethod;
+        resolvedPagoMovilAccount =
+          primaryLeg.splitType !== 'CREDITO' && primaryLeg.paymentMethod === 'Pago Móvil'
+            ? primaryLeg.pagoMovilAccount
+            : undefined;
+        linkedTreasuryAccountId = primaryLeg.treasuryAccountId;
+        linkedTreasuryMovementId = primaryLeg.treasuryMovementId;
+      }
+      const uniqueAccNames = Array.from(
+        new Set(recordedSplits.map((sp) => sp.treasuryAccountName).filter(Boolean) as string[])
+      );
+      linkedTreasuryAccountName = uniqueAccNames.join(' + ') || primaryLeg?.treasuryAccountName;
+
+      // Si alguna parte es a crédito, vincular automáticamente a Cuentas por Cobrar
+      if (creditPartUSD > 0.01) {
+        saleData = {
+          ...saleData,
+          creditDays: saleData.creditDays || 15,
+          creditDueDate: saleData.creditDueDate,
+          creditPaidAmount: cashPartUSD,
+          creditStatus: 'PENDIENTE',
+        };
+      }
+    } else if (collectedUSD > 0) {
       const treasuryIncome = recordAutomaticSaleIncomeInTreasury({
         saleId,
         invoiceNumber: invoiceNum,
@@ -4231,6 +4425,11 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       }
     }
 
+    const mixtoHasCredit =
+      isMixto &&
+      Array.isArray(resolvedPaymentSplits) &&
+      resolvedPaymentSplits.some((sp) => sp.splitType === 'CREDITO' && sp.amountUSD > 0);
+
     const newSale: Sale = {
       ...saleData,
       id: saleId,
@@ -4248,21 +4447,29 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       bcvRate: rate,
       subtotalBs: saleData.subtotal * rate,
       totalBs: saleData.total * rate,
+      paymentMethod: resolvedPaymentMethod,
       pagoMovilAccount: resolvedPagoMovilAccount,
       treasuryAccountId: linkedTreasuryAccountId,
       treasuryAccountName: linkedTreasuryAccountName,
       treasuryMovementId: linkedTreasuryMovementId,
+      paymentSplits: resolvedPaymentSplits,
       createdAt: new Date().toISOString(),
       source: saleData.source || 'POS',
       paymentType: resolvedPaymentType,
-      creditDays: saleData.creditDays,
-      creditDueDate: saleData.creditDueDate,
+      creditDays:
+        resolvedPaymentType === 'CREDITO' || resolvedPaymentType === 'APARTADO' || mixtoHasCredit
+          ? saleData.creditDays
+          : undefined,
+      creditDueDate:
+        resolvedPaymentType === 'CREDITO' || resolvedPaymentType === 'APARTADO' || mixtoHasCredit
+          ? saleData.creditDueDate
+          : undefined,
       creditPaidAmount:
-        resolvedPaymentType === 'CREDITO' || resolvedPaymentType === 'APARTADO'
+        resolvedPaymentType === 'CREDITO' || resolvedPaymentType === 'APARTADO' || mixtoHasCredit
           ? (saleData.creditPaidAmount ?? 0)
           : saleData.creditPaidAmount,
       creditStatus:
-        resolvedPaymentType === 'CREDITO' || resolvedPaymentType === 'APARTADO'
+        resolvedPaymentType === 'CREDITO' || resolvedPaymentType === 'APARTADO' || mixtoHasCredit
           ? (saleData.creditStatus || 'PENDIENTE')
           : undefined,
       creditPayments: [],
@@ -4342,8 +4549,9 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     const nextSubtotal = saleUpdates.subtotal ?? existing.subtotal;
     const nextTotal = saleUpdates.total ?? existing.total;
 
-    // Resolve payment method, Pago Móvil destination & Treasury reconciliation
-    const nextPaymentMethod = (saleUpdates.paymentMethod ?? existing.paymentMethod) as PaymentMethod;
+    // Resolve payment type, payment method, payment splits, Pago Móvil destination & Treasury reconciliation
+    const nextPaymentType: SalePaymentType = (saleUpdates.paymentType ?? existing.paymentType ?? 'CONTADO') as SalePaymentType;
+    let nextPaymentMethod = (saleUpdates.paymentMethod ?? existing.paymentMethod) as PaymentMethod;
     const explicitAccountId = saleUpdates.treasuryAccountId;
     const explicitAccount = explicitAccountId
       ? treasuryAccountsRef.current.find((a) => a.id === explicitAccountId)
@@ -4365,8 +4573,20 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       }
     }
 
+    const incomingSplitsRaw =
+      saleUpdates.paymentSplits !== undefined ? saleUpdates.paymentSplits : existing.paymentSplits;
+    const validIncomingSplits = Array.isArray(incomingSplitsRaw)
+      ? incomingSplitsRaw.filter((sp) => (Number(sp.amountUSD) || 0) > 0)
+      : [];
+    const isNextMixto = nextPaymentType === 'MIXTO' && validIncomingSplits.length > 0;
+    const wasMixto =
+      existing.paymentType === 'MIXTO' ||
+      (Array.isArray(existing.paymentSplits) && existing.paymentSplits.length > 0);
+
     const paymentChanged =
       Boolean(syncTreasuryPayment) ||
+      (saleUpdates.paymentType !== undefined && saleUpdates.paymentType !== existing.paymentType) ||
+      saleUpdates.paymentSplits !== undefined ||
       (saleUpdates.paymentMethod !== undefined && saleUpdates.paymentMethod !== existing.paymentMethod) ||
       (saleUpdates.pagoMovilAccount !== undefined &&
         saleUpdates.pagoMovilAccount !== existing.pagoMovilAccount) ||
@@ -4376,134 +4596,356 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     let nextTreasuryAccountId = existing.treasuryAccountId;
     let nextTreasuryAccountName = existing.treasuryAccountName;
     let nextTreasuryMovementId = existing.treasuryMovementId;
+    let nextPaymentSplits: SalePaymentSplit[] | undefined = isNextMixto
+      ? existing.paymentSplits
+      : undefined;
+    let nextCreditPaidAmount = saleUpdates.creditPaidAmount ?? existing.creditPaidAmount;
+    let nextCreditStatus = saleUpdates.creditStatus ?? existing.creditStatus;
+    let nextCreditDays = saleUpdates.creditDays ?? existing.creditDays;
+    let nextCreditDueDate = saleUpdates.creditDueDate ?? existing.creditDueDate;
 
     if (paymentChanged) {
-      const targetAccount =
-        explicitAccount ||
-        resolveOrCreateTreasuryAccountForSale(nextPaymentMethod, nextPagoMovilAccount);
       const isVoidedSale = Boolean(existing.isVoided || existing.creditStatus === 'ANULADO');
-
-      const linkedMovement =
-        (existing.treasuryMovementId
-          ? treasuryMovementsRef.current.find((m) => m.id === existing.treasuryMovementId)
-          : undefined) ||
-        treasuryMovementsRef.current.find(
-          (m) =>
-            m.saleId === saleId &&
+      const existingSplitMovIds = new Set(
+        (existing.paymentSplits || [])
+          .map((sp) => sp.treasuryMovementId)
+          .filter(Boolean) as string[]
+      );
+      const linkedSaleMovements = treasuryMovementsRef.current.filter(
+        (m) =>
+          (m.saleId === saleId &&
             m.type === 'INGRESO' &&
-            m.category !== 'Cobro Cuentas por Cobrar'
-        );
+            m.category !== 'Cobro Cuentas por Cobrar') ||
+          (existing.treasuryMovementId && m.id === existing.treasuryMovementId) ||
+          existingSplitMovIds.has(m.id)
+      );
 
-      if (!isVoidedSale && linkedMovement) {
-        const movAmountUSD = Math.round((Number(linkedMovement.amountUSD) || 0) * 100) / 100;
-        const movRate =
-          linkedMovement.bcvRate && linkedMovement.bcvRate > 0 ? linkedMovement.bcvRate : nextRate;
-        const movAmountBs =
-          Math.round((Number(linkedMovement.amountBs) || movAmountUSD * movRate) * 100) / 100;
-
-        // 1. Revert income from previous Treasury account
-        const oldAccount = treasuryAccountsRef.current.find(
-          (a) => a.id === linkedMovement.accountId
-        );
-        if (oldAccount && movAmountUSD > 0) {
-          const oldNativeRevert = oldAccount.currency === 'BS' ? -movAmountBs : -movAmountUSD;
-          applyAccountDelta(oldAccount, -movAmountUSD, movRate, oldNativeRevert);
-        }
-
-        // 2. Credit income to new destination Treasury account (re-fetch fresh reference)
-        const freshTarget =
-          treasuryAccountsRef.current.find((a) => a.id === targetAccount.id) || targetAccount;
-        const newNativeDelta = freshTarget.currency === 'BS' ? movAmountBs : movAmountUSD;
-        const updatedTargetAcc =
-          movAmountUSD > 0
-            ? applyAccountDelta(freshTarget, movAmountUSD, movRate, newNativeDelta)
-            : freshTarget;
-
-        const methodDetail =
-          nextPaymentMethod === 'Pago Móvil'
-            ? `Pago Móvil (${updatedTargetAcc.name})`
-            : nextPaymentMethod === 'Punto de Venta (Bs)'
-              ? `Punto de Venta · ${updatedTargetAcc.name}`
-              : `${nextPaymentMethod} · ${updatedTargetAcc.name}`;
-
-        const updatedMovement: TreasuryMovement = {
-          ...linkedMovement,
-          accountId: updatedTargetAcc.id,
-          accountName: updatedTargetAcc.name,
-          accountGroup: updatedTargetAcc.group,
-          description: `${existing.invoiceNumber} · ${nextName || existing.customerName} (${methodDetail})`,
-          notes:
-            (saleUpdates.notes !== undefined ? saleUpdates.notes.trim() : existing.notes) ||
-            undefined,
-          updatedAt: new Date().toISOString(),
-        };
-
-        pendingSyncTreasuryMovementIdsRef.current.add(updatedMovement.id);
-        const nextMovements = treasuryMovementsRef.current
-          .map((m) => (m.id === updatedMovement.id ? updatedMovement : m))
-          .sort(
-            (a, b) =>
-              (b.date || b.createdAt || '').localeCompare(a.date || a.createdAt || '') ||
-              (b.createdAt || '').localeCompare(a.createdAt || '')
-          );
-        treasuryMovementsRef.current = nextMovements;
-        setTreasuryMovements(nextMovements);
-        try {
-          localStorage.setItem(STORAGE_KEYS.TREASURY_MOVEMENTS, JSON.stringify(nextMovements));
-        } catch {}
-        syncTreasuryMovementToFirestore(updatedMovement)
-          .then(() => pendingSyncTreasuryMovementIdsRef.current.delete(updatedMovement.id))
-          .catch(() => {});
-
-        nextTreasuryAccountId = updatedTargetAcc.id;
-        nextTreasuryAccountName = updatedTargetAcc.name;
-        nextTreasuryMovementId = updatedMovement.id;
-      } else if (!isVoidedSale) {
-        // Legacy sale without a Treasury movement yet: compute initial collected amount and link it
-        const isDeferred =
-          existing.paymentType === 'CREDITO' || existing.paymentType === 'APARTADO';
+      if (isNextMixto) {
         const subsequentPaymentsSum = (existing.creditPayments || []).reduce(
           (sum, p) => sum + (Number(p.amountUSD) || 0),
           0
         );
-        const initialCollectedUSD = isDeferred
-          ? Math.max(
-              0,
-              Math.round(((existing.creditPaidAmount || 0) - subsequentPaymentsSum) * 100) / 100
-            )
-          : Math.max(0, Math.round((Number(nextTotal) || 0) * 100) / 100);
+        let cashPartUSD = 0;
+        let creditPartUSD = 0;
 
-        if (initialCollectedUSD > 0) {
-          const incomeRes = recordAutomaticSaleIncomeInTreasury({
-            saleId,
-            invoiceNumber: existing.invoiceNumber,
-            customerName: nextName || existing.customerName,
-            amountUSD: initialCollectedUSD,
-            bcvRate: nextRate,
-            paymentMethod: nextPaymentMethod,
-            pagoMovilAccount: nextPagoMovilAccount,
-            explicitAccountId: targetAccount.id,
-            date: existing.createdAt ? existing.createdAt.split('T')[0] : undefined,
-            category: isDeferred
-              ? 'Abono Inicial Venta'
-              : existing.paymentType === 'MERCADOLIBRE'
-                ? 'Venta MercadoLibre'
-                : 'Ventas POS',
-            notes: saleUpdates.notes !== undefined ? saleUpdates.notes : existing.notes,
-          });
-          if (incomeRes) {
-            nextTreasuryAccountId = incomeRes.account.id;
-            nextTreasuryAccountName = incomeRes.account.name;
-            nextTreasuryMovementId = incomeRes.movement.id;
+        if (!isVoidedSale) {
+          // Revert all previous initial-sale Treasury movements before recording new split legs
+          linkedSaleMovements.forEach((m) => deleteTreasuryMovement(m.id, true));
+
+          const recordedSplits: SalePaymentSplit[] = [];
+          const movDate = existing.createdAt ? existing.createdAt.split('T')[0] : undefined;
+          for (let i = 0; i < validIncomingSplits.length; i += 1) {
+            const leg = validIncomingSplits[i];
+            const legUSD = Math.round((Number(leg.amountUSD) || 0) * 100) / 100;
+            const legBs = Math.round(legUSD * nextRate * 100) / 100;
+            const splitType = leg.splitType === 'CREDITO' ? 'CREDITO' : 'CONTADO';
+
+            if (splitType === 'CREDITO') {
+              creditPartUSD = Math.round((creditPartUSD + legUSD) * 100) / 100;
+              recordedSplits.push({
+                id: leg.id || `split-${Date.now()}-${i}`,
+                splitType: 'CREDITO',
+                paymentMethod: leg.paymentMethod,
+                amountUSD: legUSD,
+                amountBs: legBs,
+                pagoMovilAccount: undefined,
+                treasuryAccountId: undefined,
+                treasuryAccountName: 'Cuenta por Cobrar (Crédito)',
+                treasuryMovementId: undefined,
+                reference: leg.reference?.trim() || undefined,
+              });
+            } else {
+              cashPartUSD = Math.round((cashPartUSD + legUSD) * 100) / 100;
+              const legExplicitAcc = leg.treasuryAccountId
+                ? treasuryAccountsRef.current.find((a) => a.id === leg.treasuryAccountId)
+                : undefined;
+              let legPmAccount: PagoMovilAccountOption | undefined =
+                leg.paymentMethod === 'Pago Móvil'
+                  ? leg.pagoMovilAccount || 'BANESCO_PERSONAL'
+                  : undefined;
+              if (leg.paymentMethod === 'Pago Móvil' && legExplicitAcc) {
+                if (legExplicitAcc.id === 'acc-provincial' || /provincial/i.test(legExplicitAcc.name)) {
+                  legPmAccount = 'PROVINCIAL';
+                } else if (
+                  legExplicitAcc.id === 'acc-banesco-personal' ||
+                  /banesco\s*personal/i.test(legExplicitAcc.name)
+                ) {
+                  legPmAccount = 'BANESCO_PERSONAL';
+                }
+              }
+              const incomeRes = recordAutomaticSaleIncomeInTreasury({
+                saleId,
+                invoiceNumber: existing.invoiceNumber,
+                customerName: nextName || existing.customerName,
+                amountUSD: legUSD,
+                bcvRate: nextRate,
+                paymentMethod: leg.paymentMethod,
+                pagoMovilAccount: legPmAccount,
+                explicitAccountId: legExplicitAcc?.id,
+                date: movDate,
+                category: 'Ventas POS (Pago Mixto)',
+                reference: leg.reference?.trim() || existing.invoiceNumber,
+                notes:
+                  (saleUpdates.notes !== undefined ? saleUpdates.notes.trim() : existing.notes) ||
+                  `Pago Mixto (${i + 1}/${validIncomingSplits.length})`,
+              });
+              recordedSplits.push({
+                id: leg.id || `split-${Date.now()}-${i}`,
+                splitType: 'CONTADO',
+                paymentMethod: leg.paymentMethod,
+                amountUSD: legUSD,
+                amountBs: legBs,
+                pagoMovilAccount: legPmAccount,
+                treasuryAccountId: incomeRes?.account.id || leg.treasuryAccountId,
+                treasuryAccountName: incomeRes?.account.name || leg.treasuryAccountName,
+                treasuryMovementId: incomeRes?.movement.id,
+                reference: leg.reference?.trim() || undefined,
+              });
+            }
+          }
+
+          nextPaymentSplits = recordedSplits;
+          const cashLegs = recordedSplits.filter((sp) => sp.splitType !== 'CREDITO');
+          const primaryLeg = (cashLegs.length > 0 ? cashLegs : recordedSplits).reduce(
+            (best, cur) => (cur.amountUSD > best.amountUSD ? cur : best),
+            (cashLegs.length > 0 ? cashLegs : recordedSplits)[0]
+          );
+          if (primaryLeg) {
+            nextPaymentMethod = primaryLeg.paymentMethod;
+            nextPagoMovilAccount =
+              primaryLeg.splitType !== 'CREDITO' && primaryLeg.paymentMethod === 'Pago Móvil'
+                ? primaryLeg.pagoMovilAccount
+                : undefined;
+            nextTreasuryAccountId = primaryLeg.treasuryAccountId;
+            nextTreasuryMovementId = primaryLeg.treasuryMovementId;
+          }
+          const uniqueAccNames = Array.from(
+            new Set(recordedSplits.map((sp) => sp.treasuryAccountName).filter(Boolean) as string[])
+          );
+          nextTreasuryAccountName = uniqueAccNames.join(' + ') || primaryLeg?.treasuryAccountName;
+
+          if (creditPartUSD > 0.01) {
+            const totalPaidNow = Math.min(
+              nextTotal,
+              Math.round((cashPartUSD + subsequentPaymentsSum) * 100) / 100
+            );
+            nextCreditPaidAmount = totalPaidNow;
+            nextCreditStatus = totalPaidNow >= nextTotal - 0.01 ? 'PAGADO' : 'PENDIENTE';
+            nextCreditDays = nextCreditDays || 15;
+          } else {
+            nextCreditPaidAmount = undefined;
+            nextCreditStatus = undefined;
+            nextCreditDays = undefined;
+            nextCreditDueDate = undefined;
           }
         } else {
-          nextTreasuryAccountId = targetAccount.id;
-          nextTreasuryAccountName = targetAccount.name;
+          // Voided sale: update split metadata without altering Treasury balances
+          nextPaymentSplits = validIncomingSplits.map((leg, i) => {
+            const legUSD = Math.round((Number(leg.amountUSD) || 0) * 100) / 100;
+            const splitType = leg.splitType === 'CREDITO' ? 'CREDITO' : 'CONTADO';
+            const legAcc =
+              splitType !== 'CREDITO' && leg.treasuryAccountId
+                ? treasuryAccountsRef.current.find((a) => a.id === leg.treasuryAccountId)
+                : undefined;
+            return {
+              ...leg,
+              id: leg.id || `split-${Date.now()}-${i}`,
+              splitType,
+              amountUSD: legUSD,
+              amountBs: Math.round(legUSD * nextRate * 100) / 100,
+              treasuryAccountName:
+                splitType === 'CREDITO'
+                  ? 'Cuenta por Cobrar (Crédito)'
+                  : legAcc?.name || leg.treasuryAccountName,
+              treasuryMovementId: undefined,
+            };
+          });
+          const primaryLeg = nextPaymentSplits[0];
+          if (primaryLeg) {
+            nextPaymentMethod = primaryLeg.paymentMethod;
+            nextPagoMovilAccount =
+              primaryLeg.splitType !== 'CREDITO' && primaryLeg.paymentMethod === 'Pago Móvil'
+                ? primaryLeg.pagoMovilAccount
+                : undefined;
+            nextTreasuryAccountId = primaryLeg.treasuryAccountId;
+          }
+          nextTreasuryAccountName =
+            Array.from(
+              new Set(nextPaymentSplits.map((sp) => sp.treasuryAccountName).filter(Boolean) as string[])
+            ).join(' + ') || undefined;
+          nextTreasuryMovementId = undefined;
         }
       } else {
-        // Voided sale: update metadata only without altering Treasury liquidity
-        nextTreasuryAccountId = targetAccount.id;
-        nextTreasuryAccountName = targetAccount.name;
+        // Single-payment destination
+        nextPaymentSplits = undefined;
+        if (nextPaymentType !== 'CREDITO' && nextPaymentType !== 'APARTADO') {
+          nextCreditPaidAmount = undefined;
+          nextCreditStatus = existing.isVoided ? existing.creditStatus : undefined;
+          nextCreditDays = undefined;
+          nextCreditDueDate = undefined;
+        }
+        const targetAccount =
+          explicitAccount ||
+          resolveOrCreateTreasuryAccountForSale(nextPaymentMethod, nextPagoMovilAccount);
+
+        if (!isVoidedSale && (wasMixto || linkedSaleMovements.length > 1)) {
+          // Transitioning from multi-movement MIXTO to single payment: revert all old movements and create one clean movement
+          linkedSaleMovements.forEach((m) => deleteTreasuryMovement(m.id, true));
+
+          const isDeferred = nextPaymentType === 'CREDITO' || nextPaymentType === 'APARTADO';
+          const subsequentPaymentsSum = (existing.creditPayments || []).reduce(
+            (sum, p) => sum + (Number(p.amountUSD) || 0),
+            0
+          );
+          const initialCollectedUSD = isDeferred
+            ? Math.max(
+                0,
+                Math.round(((existing.creditPaidAmount || 0) - subsequentPaymentsSum) * 100) / 100
+              )
+            : Math.max(0, Math.round((Number(nextTotal) || 0) * 100) / 100);
+
+          if (initialCollectedUSD > 0) {
+            const incomeRes = recordAutomaticSaleIncomeInTreasury({
+              saleId,
+              invoiceNumber: existing.invoiceNumber,
+              customerName: nextName || existing.customerName,
+              amountUSD: initialCollectedUSD,
+              bcvRate: nextRate,
+              paymentMethod: nextPaymentMethod,
+              pagoMovilAccount: nextPagoMovilAccount,
+              explicitAccountId: targetAccount.id,
+              date: existing.createdAt ? existing.createdAt.split('T')[0] : undefined,
+              category: isDeferred
+                ? 'Abono Inicial Venta'
+                : nextPaymentType === 'MERCADOLIBRE'
+                  ? 'Venta MercadoLibre'
+                  : 'Ventas POS',
+              notes: saleUpdates.notes !== undefined ? saleUpdates.notes : existing.notes,
+            });
+            if (incomeRes) {
+              nextTreasuryAccountId = incomeRes.account.id;
+              nextTreasuryAccountName = incomeRes.account.name;
+              nextTreasuryMovementId = incomeRes.movement.id;
+            }
+          } else {
+            nextTreasuryAccountId = targetAccount.id;
+            nextTreasuryAccountName = targetAccount.name;
+            nextTreasuryMovementId = undefined;
+          }
+        } else {
+          const linkedMovement = linkedSaleMovements[0];
+
+          if (!isVoidedSale && linkedMovement) {
+            const movAmountUSD = Math.round((Number(linkedMovement.amountUSD) || 0) * 100) / 100;
+            const movRate =
+              linkedMovement.bcvRate && linkedMovement.bcvRate > 0 ? linkedMovement.bcvRate : nextRate;
+            const movAmountBs =
+              Math.round((Number(linkedMovement.amountBs) || movAmountUSD * movRate) * 100) / 100;
+
+            // 1. Revert income from previous Treasury account
+            const oldAccount = treasuryAccountsRef.current.find(
+              (a) => a.id === linkedMovement.accountId
+            );
+            if (oldAccount && movAmountUSD > 0) {
+              const oldNativeRevert = oldAccount.currency === 'BS' ? -movAmountBs : -movAmountUSD;
+              applyAccountDelta(oldAccount, -movAmountUSD, movRate, oldNativeRevert);
+            }
+
+            // 2. Credit income to new destination Treasury account (re-fetch fresh reference)
+            const freshTarget =
+              treasuryAccountsRef.current.find((a) => a.id === targetAccount.id) || targetAccount;
+            const newNativeDelta = freshTarget.currency === 'BS' ? movAmountBs : movAmountUSD;
+            const updatedTargetAcc =
+              movAmountUSD > 0
+                ? applyAccountDelta(freshTarget, movAmountUSD, movRate, newNativeDelta)
+                : freshTarget;
+
+            const methodDetail =
+              nextPaymentMethod === 'Pago Móvil'
+                ? `Pago Móvil (${updatedTargetAcc.name})`
+                : nextPaymentMethod === 'Punto de Venta (Bs)'
+                  ? `Punto de Venta · ${updatedTargetAcc.name}`
+                  : `${nextPaymentMethod} · ${updatedTargetAcc.name}`;
+
+            const updatedMovement: TreasuryMovement = {
+              ...linkedMovement,
+              accountId: updatedTargetAcc.id,
+              accountName: updatedTargetAcc.name,
+              accountGroup: updatedTargetAcc.group,
+              description: `${existing.invoiceNumber} · ${nextName || existing.customerName} (${methodDetail})`,
+              notes:
+                (saleUpdates.notes !== undefined ? saleUpdates.notes.trim() : existing.notes) ||
+                undefined,
+              updatedAt: new Date().toISOString(),
+            };
+
+            pendingSyncTreasuryMovementIdsRef.current.add(updatedMovement.id);
+            const nextMovements = treasuryMovementsRef.current
+              .map((m) => (m.id === updatedMovement.id ? updatedMovement : m))
+              .sort(
+                (a, b) =>
+                  (b.date || b.createdAt || '').localeCompare(a.date || a.createdAt || '') ||
+                  (b.createdAt || '').localeCompare(a.createdAt || '')
+              );
+            treasuryMovementsRef.current = nextMovements;
+            setTreasuryMovements(nextMovements);
+            try {
+              localStorage.setItem(STORAGE_KEYS.TREASURY_MOVEMENTS, JSON.stringify(nextMovements));
+            } catch {}
+            syncTreasuryMovementToFirestore(updatedMovement)
+              .then(() => pendingSyncTreasuryMovementIdsRef.current.delete(updatedMovement.id))
+              .catch(() => {});
+
+            nextTreasuryAccountId = updatedTargetAcc.id;
+            nextTreasuryAccountName = updatedTargetAcc.name;
+            nextTreasuryMovementId = updatedMovement.id;
+          } else if (!isVoidedSale) {
+            // Legacy sale without a Treasury movement yet: compute initial collected amount and link it
+            const isDeferred = nextPaymentType === 'CREDITO' || nextPaymentType === 'APARTADO';
+            const subsequentPaymentsSum = (existing.creditPayments || []).reduce(
+              (sum, p) => sum + (Number(p.amountUSD) || 0),
+              0
+            );
+            const initialCollectedUSD = isDeferred
+              ? Math.max(
+                  0,
+                  Math.round(((existing.creditPaidAmount || 0) - subsequentPaymentsSum) * 100) / 100
+                )
+              : Math.max(0, Math.round((Number(nextTotal) || 0) * 100) / 100);
+
+            if (initialCollectedUSD > 0) {
+              const incomeRes = recordAutomaticSaleIncomeInTreasury({
+                saleId,
+                invoiceNumber: existing.invoiceNumber,
+                customerName: nextName || existing.customerName,
+                amountUSD: initialCollectedUSD,
+                bcvRate: nextRate,
+                paymentMethod: nextPaymentMethod,
+                pagoMovilAccount: nextPagoMovilAccount,
+                explicitAccountId: targetAccount.id,
+                date: existing.createdAt ? existing.createdAt.split('T')[0] : undefined,
+                category: isDeferred
+                  ? 'Abono Inicial Venta'
+                  : nextPaymentType === 'MERCADOLIBRE'
+                    ? 'Venta MercadoLibre'
+                    : 'Ventas POS',
+                notes: saleUpdates.notes !== undefined ? saleUpdates.notes : existing.notes,
+              });
+              if (incomeRes) {
+                nextTreasuryAccountId = incomeRes.account.id;
+                nextTreasuryAccountName = incomeRes.account.name;
+                nextTreasuryMovementId = incomeRes.movement.id;
+              }
+            } else {
+              nextTreasuryAccountId = targetAccount.id;
+              nextTreasuryAccountName = targetAccount.name;
+            }
+          } else {
+            // Voided sale: update metadata only without altering Treasury liquidity
+            nextTreasuryAccountId = targetAccount.id;
+            nextTreasuryAccountName = targetAccount.name;
+          }
+        }
       }
     }
 
@@ -4519,11 +4961,17 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       total: nextTotal,
       subtotalBs: nextSubtotal * nextRate,
       totalBs: nextTotal * nextRate,
+      paymentType: nextPaymentType,
       paymentMethod: nextPaymentMethod,
       pagoMovilAccount: nextPagoMovilAccount,
       treasuryAccountId: nextTreasuryAccountId,
       treasuryAccountName: nextTreasuryAccountName,
       treasuryMovementId: nextTreasuryMovementId,
+      paymentSplits: nextPaymentSplits,
+      creditDays: nextCreditDays,
+      creditDueDate: nextCreditDueDate,
+      creditPaidAmount: nextCreditPaidAmount,
+      creditStatus: nextCreditStatus,
     };
 
     setSales((prev) => {
@@ -4685,7 +5133,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     const totalCustomerDebtAfterUSD = Math.round(
       nextSalesList
         .filter((s) => {
-          if (s.paymentType !== 'CREDITO' && s.paymentType !== 'APARTADO') return false;
+          if (!isSaleWithCredit(s)) return false;
           if (s.isVoided || s.creditStatus === 'ANULADO' || s.creditStatus === 'PAGADO') return false;
           const matchesId = Boolean(updatedSale.customerId && s.customerId === updatedSale.customerId);
           const matchesDoc = Boolean(targetDoc.length >= 5 && normDoc(s.customerDocument) === targetDoc);
@@ -4718,11 +5166,17 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     clearSalePendingSync(saleId);
     recordDeleted('sales', [saleId]);
 
-    // Revertir ingresos automáticos vinculados en Tesorería para no inflar liquidez
+    // Revertir ingresos automáticos vinculados en Tesorería para no inflar liquidez (incluye Pago Mixto)
+    const splitMovIds = new Set(
+      (saleToDelete?.paymentSplits || [])
+        .map((sp) => sp.treasuryMovementId)
+        .filter(Boolean) as string[]
+    );
     const linkedMovements = treasuryMovementsRef.current.filter(
       (m) =>
         m.saleId === saleId ||
-        (saleToDelete?.treasuryMovementId && m.id === saleToDelete.treasuryMovementId)
+        (saleToDelete?.treasuryMovementId && m.id === saleToDelete.treasuryMovementId) ||
+        splitMovIds.has(m.id)
     );
     linkedMovements.forEach((m) => deleteTreasuryMovement(m.id, true));
 
@@ -4798,11 +5252,17 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       });
     }
 
-    // Revertir ingresos automáticos vinculados en Tesorería al anular la venta
+    // Revertir ingresos automáticos vinculados en Tesorería al anular la venta (incluye Pago Mixto)
+    const splitMovIds = new Set(
+      (saleToVoid.paymentSplits || [])
+        .map((sp) => sp.treasuryMovementId)
+        .filter(Boolean) as string[]
+    );
     const linkedMovements = treasuryMovementsRef.current.filter(
       (m) =>
         m.saleId === saleId ||
-        (saleToVoid.treasuryMovementId && m.id === saleToVoid.treasuryMovementId)
+        (saleToVoid.treasuryMovementId && m.id === saleToVoid.treasuryMovementId) ||
+        splitMovIds.has(m.id)
     );
     linkedMovements.forEach((m) => deleteTreasuryMovement(m.id, true));
 
@@ -4814,6 +5274,9 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       voidedAt: now,
       voidReason: reason,
       treasuryMovementId: undefined,
+      paymentSplits: saleToVoid.paymentSplits
+        ? saleToVoid.paymentSplits.map((sp) => ({ ...sp, treasuryMovementId: undefined }))
+        : undefined,
     };
 
     setSales((prev) => {
@@ -4844,7 +5307,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     const sale = salesRef.current.find((s) => s.id === saleId);
     if (!sale) return false;
 
-    const isDeferred = sale.paymentType === 'CREDITO' || sale.paymentType === 'APARTADO';
+    const isDeferred = isSaleWithCredit(sale);
     const isPaid =
       !isDeferred || (sale.creditPaidAmount || 0) >= sale.total;
     const updatedTargetSale: Sale = {
@@ -4886,13 +5349,13 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     if (Array.isArray(customerIdOrPhoneOrIds)) {
       const explicitIds = new Set(customerIdOrPhoneOrIds);
       targetSales = currentSales.filter(
-        (s) => (s.paymentType === 'CREDITO' || s.paymentType === 'APARTADO') && explicitIds.has(s.id)
+        (s) => isSaleWithCredit(s) && explicitIds.has(s.id)
       );
     } else {
       const normSearchPhone = normalizePhoneKey(customerIdOrPhoneOrIds);
       targetSales = currentSales.filter(
         (s) =>
-          (s.paymentType === 'CREDITO' || s.paymentType === 'APARTADO') &&
+          isSaleWithCredit(s) &&
           (s.customerId === customerIdOrPhoneOrIds ||
             (normSearchPhone !== '' && normalizePhoneKey(s.customerPhone) === normSearchPhone))
       );
@@ -4962,7 +5425,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       const explicitIds = new Set(customerIdOrPhoneOrIds);
       targetSales = currentSales.filter(
         (s) =>
-          (s.paymentType === 'CREDITO' || s.paymentType === 'APARTADO') &&
+          isSaleWithCredit(s) &&
           !s.isVoided &&
           explicitIds.has(s.id)
       );
@@ -4970,7 +5433,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       const normSearchPhone = normalizePhoneKey(customerIdOrPhoneOrIds);
       targetSales = currentSales.filter(
         (s) =>
-          (s.paymentType === 'CREDITO' || s.paymentType === 'APARTADO') &&
+          isSaleWithCredit(s) &&
           !s.isVoided &&
           (s.customerId === customerIdOrPhoneOrIds ||
             (normSearchPhone !== '' && normalizePhoneKey(s.customerPhone) === normSearchPhone))
@@ -5043,9 +5506,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
   };
 
   const clearAllTestCreditSales = async (): Promise<number> => {
-    const targetSales = salesRef.current.filter(
-      (s) => s.paymentType === 'CREDITO' || s.paymentType === 'APARTADO'
-    );
+    const targetSales = salesRef.current.filter((s) => isSaleWithCredit(s));
     if (targetSales.length === 0) return 0;
 
     const idsArray = targetSales.map((s) => s.id);
@@ -5077,11 +5538,11 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     return targetSales.length;
   };
 
-  // Cuentas por Cobrar & Créditos Computados (Excluye ventas anuladas o canceladas)
+  // Cuentas por Cobrar & Créditos Computados (Excluye ventas anuladas o canceladas; incluye Pago Mixto con parte a crédito)
   const pendingCreditSales = useMemo(() => {
     return sales.filter(
       (s) =>
-        (s.paymentType === 'CREDITO' || s.paymentType === 'APARTADO') &&
+        isSaleWithCredit(s) &&
         !s.isVoided &&
         s.creditStatus !== 'PAGADO' &&
         s.creditStatus !== 'ANULADO' &&
@@ -6159,7 +6620,24 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
               : prod.minStock,
           stock: Math.max(0, (Number(prod.stock) || 0) + qty),
           costPrice: unitCost > 0 ? unitCost : prod.costPrice,
+          costCurrencyOrigin: it.costCurrencyOrigin ?? prod.costCurrencyOrigin,
+          costPriceBs:
+            it.costPriceBs !== undefined && Number(it.costPriceBs) > 0
+              ? Number(it.costPriceBs)
+              : prod.costPriceBs,
+          referenceCostUSD:
+            it.referenceCostUSD !== undefined && Number(it.referenceCostUSD) > 0
+              ? Number(it.referenceCostUSD)
+              : prod.referenceCostUSD,
           salePrice: salePrice !== undefined && salePrice > 0 ? salePrice : prod.salePrice,
+          salePriceRefUSD:
+            it.salePriceRefUSD !== undefined && Number(it.salePriceRefUSD) > 0
+              ? Number(it.salePriceRefUSD)
+              : prod.salePriceRefUSD,
+          salePriceBsBcv:
+            it.salePriceBsBcv !== undefined && Number(it.salePriceBsBcv) > 0
+              ? Number(it.salePriceBsBcv)
+              : prod.salePriceBsBcv,
           imageUrl: cleanImage || prod.imageUrl,
         };
         updatedList[existingIdx] = updatedProd;
@@ -6196,7 +6674,24 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
           category: (it.category?.trim() || 'Accesorios') as ProductCategory,
           description: it.description?.trim() || '',
           costPrice: unitCost,
+          costCurrencyOrigin: it.costCurrencyOrigin || 'DIVISAS',
+          costPriceBs:
+            it.costPriceBs !== undefined && Number(it.costPriceBs) > 0
+              ? Number(it.costPriceBs)
+              : undefined,
+          referenceCostUSD:
+            it.referenceCostUSD !== undefined && Number(it.referenceCostUSD) > 0
+              ? Number(it.referenceCostUSD)
+              : unitCost,
           salePrice: salePrice !== undefined && salePrice >= 0 ? salePrice : unitCost,
+          salePriceRefUSD:
+            it.salePriceRefUSD !== undefined && Number(it.salePriceRefUSD) > 0
+              ? Number(it.salePriceRefUSD)
+              : undefined,
+          salePriceBsBcv:
+            it.salePriceBsBcv !== undefined && Number(it.salePriceBsBcv) > 0
+              ? Number(it.salePriceBsBcv)
+              : undefined,
           stock: qty,
           minStock:
             it.minStock !== undefined && !isNaN(Number(it.minStock))
@@ -6362,19 +6857,241 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     return newOrder;
   };
 
+  const reconcilePurchaseItemsInInventory = (
+    oldItems: PurchaseOrderItem[],
+    newItems: PurchaseOrderItem[]
+  ): PurchaseOrderItem[] => {
+    const updatedList = [...productsRef.current];
+    const changedProducts: Product[] = [];
+    const timestamp = Date.now();
+
+    const markChanged = (prod: Product) => {
+      const idx = changedProducts.findIndex((p) => p.id === prod.id);
+      if (idx >= 0) {
+        changedProducts[idx] = prod;
+      } else {
+        changedProducts.push(prod);
+      }
+    };
+
+    const findProductIdx = (it: PurchaseOrderItem): number => {
+      const rawSku = (it.sku || '').trim();
+      const normalizedSku =
+        rawSku && rawSku.toUpperCase() !== 'NUEVO' ? rawSku.toLowerCase() : '';
+      return updatedList.findIndex(
+        (prod) =>
+          (it.productId && prod.id === it.productId) ||
+          (normalizedSku && prod.sku && prod.sku.trim().toLowerCase() === normalizedSku)
+      );
+    };
+
+    // 1. Aggregate previous quantities per matched product
+    const oldQtyByProdId = new Map<string, number>();
+    (oldItems || []).forEach((it) => {
+      const idx = findProductIdx(it);
+      if (idx >= 0) {
+        const prodId = updatedList[idx].id;
+        const qty = Math.max(0, Math.floor(Number(it.quantity) || 0));
+        oldQtyByProdId.set(prodId, (oldQtyByProdId.get(prodId) || 0) + qty);
+      }
+    });
+
+    // 2. Aggregate new quantities per matched existing product
+    const newQtyByProdId = new Map<string, number>();
+    const resolvedItems: PurchaseOrderItem[] = [];
+
+    (newItems || []).forEach((it, index) => {
+      const qty = Math.max(0, Math.floor(Number(it.quantity) || 0));
+      const unitCost = Math.round(Math.max(0, Number(it.unitCostUSD) || 0) * 10000) / 10000;
+      const salePrice =
+        it.salePriceUSD !== undefined && !isNaN(Number(it.salePriceUSD))
+          ? Math.round(Math.max(0, Number(it.salePriceUSD)) * 10000) / 10000
+          : undefined;
+
+      if (it.category && it.category.trim()) {
+        addCategory(it.category.trim());
+      }
+
+      const existingIdx = findProductIdx(it);
+      if (existingIdx >= 0) {
+        const prod = updatedList[existingIdx];
+        newQtyByProdId.set(prod.id, (newQtyByProdId.get(prod.id) || 0) + qty);
+
+        let cleanImage = it.imageUrl ? normalizeImageUrl(it.imageUrl) : '';
+        if (!cleanImage && (it.name || prod.name).toLowerCase().includes('maleta')) {
+          cleanImage = prod.imageUrl || PRESET_PRODUCT_IMAGES.maletaParaMoto;
+        }
+
+        const updatedProd: Product = {
+          ...prod,
+          name: it.name?.trim() ? it.name.trim() : prod.name,
+          category: (it.category?.trim() || prod.category) as ProductCategory,
+          description:
+            it.description !== undefined && it.description.trim() !== ''
+              ? it.description.trim()
+              : prod.description,
+          brand: it.brand?.trim() ? it.brand.trim() : prod.brand,
+          compatibility: it.compatibility?.trim() ? it.compatibility.trim() : prod.compatibility,
+          warehouseLocation:
+            it.warehouseLocation !== undefined
+              ? it.warehouseLocation.trim() || prod.warehouseLocation
+              : prod.warehouseLocation,
+          barcode:
+            it.barcode !== undefined
+              ? it.barcode.trim() || prod.barcode
+              : prod.barcode,
+          minStock:
+            it.minStock !== undefined && !isNaN(Number(it.minStock))
+              ? Math.max(0, Math.floor(Number(it.minStock)))
+              : prod.minStock,
+          costPrice: unitCost > 0 ? unitCost : prod.costPrice,
+          costCurrencyOrigin: it.costCurrencyOrigin ?? prod.costCurrencyOrigin,
+          costPriceBs:
+            it.costPriceBs !== undefined && Number(it.costPriceBs) > 0
+              ? Number(it.costPriceBs)
+              : prod.costPriceBs,
+          referenceCostUSD:
+            it.referenceCostUSD !== undefined && Number(it.referenceCostUSD) > 0
+              ? Number(it.referenceCostUSD)
+              : prod.referenceCostUSD,
+          salePrice: salePrice !== undefined && salePrice > 0 ? salePrice : prod.salePrice,
+          salePriceRefUSD:
+            it.salePriceRefUSD !== undefined && Number(it.salePriceRefUSD) > 0
+              ? Number(it.salePriceRefUSD)
+              : prod.salePriceRefUSD,
+          salePriceBsBcv:
+            it.salePriceBsBcv !== undefined && Number(it.salePriceBsBcv) > 0
+              ? Number(it.salePriceBsBcv)
+              : prod.salePriceBsBcv,
+          imageUrl: cleanImage || prod.imageUrl,
+        };
+        updatedList[existingIdx] = updatedProd;
+        markChanged(updatedProd);
+
+        resolvedItems.push({
+          ...it,
+          productId: updatedProd.id,
+          sku: updatedProd.sku,
+          isNewProduct: false,
+        });
+      } else {
+        const rawSku = (it.sku || '').trim();
+        const finalSku =
+          rawSku && rawSku.toUpperCase() !== 'NUEVO'
+            ? rawSku.toUpperCase()
+            : `REP-${String(timestamp).slice(-5)}${index + 1}`;
+        let cleanImage = normalizeImageUrl(it.imageUrl || '');
+        if (!cleanImage && (it.name || '').toLowerCase().includes('maleta')) {
+          cleanImage = PRESET_PRODUCT_IMAGES.maletaParaMoto;
+        }
+        if (!cleanImage) {
+          cleanImage = PRESET_PRODUCT_IMAGES.brakeKit;
+        }
+
+        const newProd: Product = {
+          id: `prod-po-${timestamp}-${index}-${Math.random().toString(36).slice(2, 5)}`,
+          sku: finalSku,
+          barcode: it.barcode?.trim() || undefined,
+          name: (it.name || '').trim() || 'Repuesto Nuevo',
+          category: (it.category?.trim() || 'Accesorios') as ProductCategory,
+          description: it.description?.trim() || '',
+          costPrice: unitCost,
+          costCurrencyOrigin: it.costCurrencyOrigin || 'DIVISAS',
+          costPriceBs:
+            it.costPriceBs !== undefined && Number(it.costPriceBs) > 0
+              ? Number(it.costPriceBs)
+              : undefined,
+          referenceCostUSD:
+            it.referenceCostUSD !== undefined && Number(it.referenceCostUSD) > 0
+              ? Number(it.referenceCostUSD)
+              : unitCost,
+          salePrice: salePrice !== undefined && salePrice >= 0 ? salePrice : unitCost,
+          salePriceRefUSD:
+            it.salePriceRefUSD !== undefined && Number(it.salePriceRefUSD) > 0
+              ? Number(it.salePriceRefUSD)
+              : undefined,
+          salePriceBsBcv:
+            it.salePriceBsBcv !== undefined && Number(it.salePriceBsBcv) > 0
+              ? Number(it.salePriceBsBcv)
+              : undefined,
+          stock: qty,
+          minStock:
+            it.minStock !== undefined && !isNaN(Number(it.minStock))
+              ? Math.max(0, Math.floor(Number(it.minStock)))
+              : 2,
+          brand: it.brand?.trim() || 'Genérico',
+          compatibility: it.compatibility?.trim() || 'Universal',
+          warehouseLocation: it.warehouseLocation?.trim() || undefined,
+          imageUrl: cleanImage,
+          featured: false,
+        };
+        updatedList.unshift(newProd);
+        markChanged(newProd);
+        resolvedItems.push({
+          ...it,
+          productId: newProd.id,
+          sku: newProd.sku,
+          isNewProduct: false,
+        });
+      }
+    });
+
+    // 3. Apply stock delta (newQty - oldQty) for every product touched in old or new order
+    const allTouchedProdIds = new Set<string>([
+      ...Array.from(oldQtyByProdId.keys()),
+      ...Array.from(newQtyByProdId.keys()),
+    ]);
+    allTouchedProdIds.forEach((prodId) => {
+      const oldQty = oldQtyByProdId.get(prodId) || 0;
+      const newQty = newQtyByProdId.get(prodId) || 0;
+      const delta = newQty - oldQty;
+      if (delta !== 0) {
+        const pIdx = updatedList.findIndex((p) => p.id === prodId);
+        if (pIdx >= 0) {
+          const prod = updatedList[pIdx];
+          const adjustedProd: Product = {
+            ...prod,
+            stock: Math.max(0, (Number(prod.stock) || 0) + delta),
+          };
+          updatedList[pIdx] = adjustedProd;
+          markChanged(adjustedProd);
+        }
+      }
+    });
+
+    if (changedProducts.length > 0) {
+      productsRef.current = updatedList;
+      setProducts(updatedList);
+      queueMicrotask(() => {
+        changedProducts.forEach((p) => syncProductToFirestore(p).catch(() => {}));
+      });
+    }
+
+    return resolvedItems;
+  };
+
   const updatePurchaseOrder: AppContextType['updatePurchaseOrder'] = (id, updates) => {
     const existing = purchaseOrdersRef.current.find((po) => po.id === id);
     if (!existing) return null;
 
-    const rate = settingsRef.current.bcvRate || existing.bcvRate || 1;
+    const rate =
+      updates.bcvRate !== undefined && Number(updates.bcvRate) > 0
+        ? Number(updates.bcvRate)
+        : existing.bcvRate || settingsRef.current.bcvRate || 1;
+
     const nextItems = Array.isArray(updates.items)
       ? updates.items.map((it) => {
-          const qty = Math.max(1, Number(it.quantity) || 1);
-          const unitCost = Math.max(0, Number(it.unitCostUSD) || 0);
+          const qty = Math.max(1, Math.floor(Number(it.quantity) || 1));
+          const unitCost = Math.round(Math.max(0, Number(it.unitCostUSD) || 0) * 10000) / 10000;
+          const salePrice =
+            it.salePriceUSD !== undefined && !isNaN(Number(it.salePriceUSD))
+              ? Math.round(Math.max(0, Number(it.salePriceUSD)) * 10000) / 10000
+              : undefined;
           return {
             ...it,
             quantity: qty,
-            unitCostUSD: Math.round(unitCost * 100) / 100,
+            unitCostUSD: unitCost,
+            salePriceUSD: salePrice,
             totalCostUSD: Math.round(qty * unitCost * 100) / 100,
           };
         })
@@ -6410,11 +7127,45 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       (updates.applyStockToInventory === true ||
         (nextReceivedStatus === 'RECIBIDA' && updates.applyStockToInventory !== false));
 
+    const shouldReconcileStock =
+      Boolean(existing.stockApplied) &&
+      Array.isArray(updates.items) &&
+      updates.syncInventoryDelta !== false;
+
     const resolvedItems = shouldApplyStock
       ? applyPurchaseItemsToInventory(nextItems)
+      : shouldReconcileStock
+      ? reconcilePurchaseItemsInInventory(existing.items, nextItems)
       : nextItems;
 
-    const nextPaidUSD = updates.paidAmountUSD !== undefined ? updates.paidAmountUSD : existing.paidAmountUSD;
+    // Normalize payments if provided in updates
+    const nextPayments: PurchasePaymentRecord[] = Array.isArray(updates.payments)
+      ? updates.payments
+          .filter((p) => Number(p.amountUSD) > 0)
+          .map((p) => {
+            const pAmountUSD = Math.round(Math.max(0, Number(p.amountUSD) || 0) * 100) / 100;
+            const pRate = Number(p.bcvRate) > 0 ? Number(p.bcvRate) : rate;
+            return {
+              ...p,
+              id: p.id || `popay-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+              date: p.date || new Date().toISOString(),
+              amountUSD: pAmountUSD,
+              bcvRate: pRate,
+              amountBs: Math.round(pAmountUSD * pRate * 100) / 100,
+              currencyCategory: p.currencyCategory || 'DIVISAS',
+              paymentMethod: p.paymentMethod || 'Divisas ($ Efectivo)',
+              reference: p.reference?.trim() || undefined,
+              notes: p.notes?.trim() || undefined,
+            };
+          })
+      : existing.payments || [];
+
+    const nextPaidUSD = Array.isArray(updates.payments)
+      ? Math.round(nextPayments.reduce((sum, p) => sum + (Number(p.amountUSD) || 0), 0) * 100) / 100
+      : updates.paidAmountUSD !== undefined
+      ? Math.round(Math.max(0, Number(updates.paidAmountUSD) || 0) * 100) / 100
+      : existing.paidAmountUSD || 0;
+
     const nextPaymentStatus: PurchaseOrder['paymentStatus'] =
       nextPaidUSD >= nextTotalUSD - 0.01 && nextTotalUSD > 0
         ? 'PAGADO'
@@ -6422,15 +7173,42 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
         ? 'PARCIAL'
         : 'PENDIENTE';
 
-    const { applyStockToInventory: _ignore, ...cleanUpdates } = updates;
+    const {
+      applyStockToInventory: _ignoreApply,
+      syncInventoryDelta: _ignoreDelta,
+      ...cleanUpdates
+    } = updates;
+
+    const nextPaymentType = updates.paymentType || existing.paymentType;
+    const nextOrderNumber =
+      updates.orderNumber && updates.orderNumber.trim()
+        ? updates.orderNumber.trim()
+        : existing.orderNumber;
+
     const updatedOrder: PurchaseOrder = {
       ...existing,
       ...cleanUpdates,
       ...supplierFields,
+      orderNumber: nextOrderNumber,
+      createdAt: updates.createdAt || existing.createdAt,
       items: resolvedItems,
       totalUSD: nextTotalUSD,
       bcvRate: rate,
       totalBs: nextTotalBs,
+      paymentType: nextPaymentType,
+      creditDays:
+        nextPaymentType === 'CREDITO'
+          ? updates.creditDays !== undefined
+            ? updates.creditDays
+            : existing.creditDays
+          : undefined,
+      creditDueDate:
+        nextPaymentType === 'CREDITO'
+          ? updates.creditDueDate !== undefined
+            ? updates.creditDueDate
+            : existing.creditDueDate
+          : undefined,
+      payments: nextPayments,
       paidAmountUSD: nextPaidUSD,
       paymentStatus: updates.paymentStatus || nextPaymentStatus,
       receivedStatus: nextReceivedStatus,
@@ -6446,9 +7224,51 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     const nextList = purchaseOrdersRef.current.map((po) => (po.id === id ? updatedOrder : po));
     purchaseOrdersRef.current = nextList;
     setPurchaseOrders(nextList);
+    try {
+      localStorage.setItem(STORAGE_KEYS.PURCHASE_ORDERS, JSON.stringify(nextList));
+    } catch {}
     syncPurchaseOrderToFirestore(updatedOrder)
       .then(() => pendingSyncPurchaseOrderIdsRef.current.delete(id))
       .catch(() => {});
+
+    // Keep any linked Treasury Commitment synchronized with the edited Purchase Order
+    const linkedCommitments = treasuryCommitmentsRef.current.filter(
+      (c) => c.linkedPurchaseOrderId === id
+    );
+    if (linkedCommitments.length > 0) {
+      const pendingUSD = Math.round(Math.max(0, updatedOrder.totalUSD - (updatedOrder.paidAmountUSD || 0)) * 100) / 100;
+      const isBsBcv = updatedOrder.paymentCurrencyCondition === 'BS_BCV';
+      const currentRate = settingsRef.current.bcvRate || rate || 1;
+      const updatedCommitments: TreasuryCommitment[] = [];
+      const nextCommitments = treasuryCommitmentsRef.current.map((c) => {
+        if (c.linkedPurchaseOrderId !== id) return c;
+        const synced: TreasuryCommitment = {
+          ...c,
+          title: `${updatedOrder.supplierName} (${updatedOrder.orderNumber})`,
+          dueDate: updatedOrder.creditDueDate || updatedOrder.createdAt.split('T')[0],
+          amountUSD: pendingUSD > 0.01 ? pendingUSD : updatedOrder.totalUSD,
+          amountBs: Math.round((pendingUSD > 0.01 ? pendingUSD : updatedOrder.totalUSD) * currentRate * 100) / 100,
+          bcvRate: currentRate,
+          paymentCurrency: isBsBcv ? 'BS' : c.paymentCurrency || 'EFECTIVO_USD',
+          isPaid: pendingUSD <= 0.01,
+          paidAt: pendingUSD <= 0.01 ? c.paidAt || new Date().toISOString() : undefined,
+          notes: updatedOrder.supplierInvoiceNumber
+            ? `Factura proveedor: ${updatedOrder.supplierInvoiceNumber}`
+            : c.notes,
+          updatedAt: new Date().toISOString(),
+        };
+        updatedCommitments.push(synced);
+        return synced;
+      });
+      treasuryCommitmentsRef.current = nextCommitments;
+      setTreasuryCommitments(nextCommitments);
+      try {
+        localStorage.setItem(STORAGE_KEYS.TREASURY_COMMITMENTS, JSON.stringify(nextCommitments));
+      } catch {}
+      updatedCommitments.forEach((cm) => {
+        syncTreasuryCommitmentToFirestore(cm).catch(() => {});
+      });
+    }
 
     return updatedOrder;
   };
@@ -6476,6 +7296,9 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     const nextList = purchaseOrdersRef.current.map((po) => (po.id === id ? updatedOrder : po));
     purchaseOrdersRef.current = nextList;
     setPurchaseOrders(nextList);
+    try {
+      localStorage.setItem(STORAGE_KEYS.PURCHASE_ORDERS, JSON.stringify(nextList));
+    } catch {}
     syncPurchaseOrderToFirestore(updatedOrder)
       .then(() => pendingSyncPurchaseOrderIdsRef.current.delete(id))
       .catch(() => {});
@@ -9254,9 +10077,14 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
         settings,
         updateSettings,
         updateBcvRate,
+        updateUsdtRate,
         isSyncingBcv,
         bcvSyncMessage,
         syncBcvRate,
+        isSyncingUsdt,
+        usdtSyncMessage,
+        syncUsdtRate,
+        exchangeGap,
         products,
         onlineProducts,
         categories,

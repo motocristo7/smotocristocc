@@ -116,3 +116,66 @@ export async function fetchOfficialEuroBcvRate(): Promise<BcvSyncResult> {
   };
 }
 
+export async function fetchBinanceUsdtRate(): Promise<BcvSyncResult> {
+  // Intento 1: Servidor local /api/usdt
+  try {
+    const res = await fetch('/api/usdt', {
+      headers: { Accept: 'application/json' },
+    });
+    if (res.ok) {
+      const data = await res.json();
+      if (data.success && data.rate && !isNaN(data.rate)) {
+        return {
+          success: true,
+          rate: Number(data.rate),
+          rawRate: data.rawRate ? Number(data.rawRate) : Number(data.rate),
+          date: data.date || 'Referencia USDT Binance',
+          source: data.source || 'Referencia USDT Binance',
+          timestamp: data.timestamp || new Date().toISOString(),
+        };
+      }
+    }
+  } catch (err) {
+    console.warn('No se pudo conectar con /api/usdt, intentando mirror directo:', err);
+  }
+
+  // Intento 2: Mirror público de referencia paralelo/USDT
+  try {
+    const mirrorRes = await fetch('https://ve.dolarapi.com/v1/dolares/paralelo', {
+      headers: { Accept: 'application/json' },
+    });
+    if (mirrorRes.ok) {
+      const mirrorJson = await mirrorRes.json();
+      const rateVal = mirrorJson.promedio || mirrorJson.venta || mirrorJson.compra;
+      if (rateVal && !isNaN(rateVal)) {
+        const roundedRate = Math.round(Number(rateVal) * 100) / 100;
+        return {
+          success: true,
+          rate: roundedRate,
+          rawRate: Number(rateVal),
+          date: mirrorJson.fechaActualizacion
+            ? new Date(mirrorJson.fechaActualizacion).toLocaleDateString('es-VE', {
+                day: 'numeric',
+                month: 'short',
+                year: 'numeric',
+              })
+            : 'Referencia USDT Binance',
+          source: 'Referencia USDT Binance / Paralelo',
+          timestamp: new Date().toISOString(),
+        };
+      }
+    }
+  } catch (err) {
+    console.warn('No se pudo consultar referencia USDT:', err);
+  }
+
+  return {
+    success: false,
+    rate: 0,
+    source: 'Referencia USDT Binance',
+    timestamp: new Date().toISOString(),
+    error: 'No se pudo consultar la tasa USDT Binance automáticamente. Puedes ingresarla manualmente.',
+  };
+}
+
+

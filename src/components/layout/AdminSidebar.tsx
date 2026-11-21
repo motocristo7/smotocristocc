@@ -37,6 +37,7 @@ export const AdminSidebar: React.FC = () => {
     currentView,
     setCurrentView,
     settings,
+    exchangeGap,
     isAdminSidebarCollapsed,
     toggleAdminSidebar,
     isAdminMobileMenuOpen,
@@ -338,21 +339,38 @@ export const AdminSidebar: React.FC = () => {
 
         {/* Sidebar Footer: BCV Rate & 1-Click Collapse Bar */}
         <div className="p-3 border-t border-slate-800 bg-slate-950/40 space-y-2">
-          {/* BCV Rate Indicator */}
+          {/* BCV, USDT & Brecha Indicator (Solo Admin) */}
           {!isAdminSidebarCollapsed ? (
-            <div className="bg-slate-800/60 rounded-xl p-2.5 border border-slate-700/50 flex items-center justify-between text-xs">
-              <div className="flex items-center gap-1.5">
-                <TrendingUp className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                <span className="text-[11px] text-slate-400">Tasa BCV:</span>
+            <div className="bg-slate-800/60 rounded-xl p-2.5 border border-slate-700/50 space-y-1.5 text-xs">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-1.5">
+                  <TrendingUp className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                  <span className="text-[11px] text-slate-400">BCV:</span>
+                </div>
+                <span className="font-mono font-bold text-emerald-400 text-xs">
+                  Bs. {settings.bcvRate.toFixed(2)}
+                </span>
               </div>
-              <span className="font-mono font-bold text-emerald-400 text-xs">
-                Bs. {settings.bcvRate.toFixed(2)}
-              </span>
+              <div className="flex items-center justify-between">
+                <span className="text-[11px] text-slate-400 pl-5">USDT:</span>
+                <span className="font-mono font-bold text-amber-400 text-xs">
+                  Bs. {exchangeGap.usdtRate.toFixed(2)}
+                </span>
+              </div>
+              <div className="flex items-center justify-between pt-1 border-t border-slate-700/60">
+                <span className="text-[10px] uppercase tracking-wider font-semibold text-slate-400">
+                  Brecha
+                </span>
+                <span className="font-mono font-bold text-amber-300 text-[11px]">
+                  {exchangeGap.gapPct >= 0 ? '+' : ''}
+                  {exchangeGap.gapPct.toFixed(2)}% · ×{exchangeGap.gapFactor.toFixed(2)}
+                </span>
+              </div>
             </div>
           ) : (
             <div
               className="flex justify-center p-1"
-              title={`Tasa BCV oficial: Bs. ${settings.bcvRate.toFixed(2)}`}
+              title={`BCV: Bs. ${settings.bcvRate.toFixed(2)} · USDT: Bs. ${exchangeGap.usdtRate.toFixed(2)} · Brecha: ${exchangeGap.gapPct.toFixed(2)}%`}
             >
               <div className="w-8 h-8 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
                 <TrendingUp className="w-3.5 h-3.5" />

@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import { createServer as createViteServer } from 'vite';
+import http from 'http';
 import https from 'https';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -563,23 +564,75 @@ app.get('/api/bcv', async (_req, res) => {
   }
 });
 
-// Endpoint público para que la tienda online consulte todos los repuestos del catálogo
+// API endpoint to fetch USDT Binance / parallel reference rate (used by Admin panel)
+app.get('/api/usdt', async (_req, res) => {
+  try {
+    const mirrorRes = await fetch('https://ve.dolarapi.com/v1/dolares/paralelo', {
+      headers: { Accept: 'application/json' },
+    });
+    if (mirrorRes.ok) {
+      const json: any = await mirrorRes.json();
+      const rateVal = Number(json.promedio || json.venta || json.compra);
+      if (Number.isFinite(rateVal) && rateVal > 0) {
+        return res.json({
+          success: true,
+          rate: Math.round(rateVal * 100) / 100,
+          rawRate: rateVal,
+          date: json.fechaActualizacion || new Date().toISOString(),
+          source: 'Referencia USDT Binance / Paralelo',
+          timestamp: new Date().toISOString(),
+        });
+      }
+    }
+  } catch (err) {
+    console.warn('Consulta remota USDT falló, usando valor guardado en BD:', err);
+  }
+
+  const db = readDatabase();
+  const bcv = Number(db.settings?.bcvRate) || 896.12;
+  const currentUsdt = Number(db.settings?.usdtRate) || Math.round(bcv * 1.25 * 100) / 100;
+  return res.json({
+    success: true,
+    rate: currentUsdt,
+    rawRate: currentUsdt,
+    date: db.settings?.usdtLastUpdated || new Date().toLocaleDateString('es-VE'),
+    source: db.settings?.usdtSource || 'Base de Datos (Tasa USDT activa)',
+    timestamp: new Date().toISOString(),
+  });
+});
+
+// Endpoint público para que la tienda online consulte todos los repuestos del catálogo.
+// FILTRO ESTRICTO DE VISIBILIDAD: Nunca exponer costos internos, precio_venta_divisa (salePriceRefUSD) ni utilidad_pct.
 app.get('/api/products', (req, res) => {
   try {
     const dbData = readDatabase();
     const host = req.get('host') || 'localhost:3000';
     const protocol = req.protocol === 'http' && !host.includes('localhost') ? 'https' : req.protocol;
     const baseUrl = `${protocol}://${host}`;
+    const bcvRate = Number(dbData.settings?.bcvRate) || 0;
 
     const rawProducts = Array.isArray(dbData.products) ? dbData.products : [];
-    const products = rawProducts.map((p) => {
+    const products = rawProducts.map((p: any) => {
       let img = p.imageUrl || '';
       if (img.startsWith('/')) {
         img = `${baseUrl}${img}`;
       }
+      const salePrice = Number(p.salePrice) || 0;
       return {
-        ...p,
+        id: p.id,
+        sku: p.sku,
+        name: p.name,
+        category: p.category,
+        description: p.description || '',
+        salePrice,
+        ...(bcvRate > 0 ? { salePriceBsBcv: Math.round(salePrice * bcvRate * 100) / 100 } : {}),
+        stock: Number(p.stock) || 0,
+        minStock: Number(p.minStock) || 0,
+        brand: p.brand || '',
+        compatibility: p.compatibility || '',
         imageUrl: img,
+        barcode: p.barcode || '',
+        featured: Boolean(p.featured),
       };
     });
     return res.json(products);
@@ -1532,16 +1585,25 @@ app.post('/api/utils/check-images', async (req, res) => {
 
 async function startServer() {
   // Ensure database exists on disk immediately
-  readDatabase();
+  try {
+    readDatabase();
+  } catch (err) {
+    console.warn('Warning initializing local database at startup:', err);
+  }
 
   const isProd = process.env.NODE_ENV === 'production';
+  const httpServer = http.createServer(app);
+  let viteServer: Awaited<ReturnType<typeof createViteServer>> | null = null;
 
   if (!isProd) {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
+    viteServer = await createViteServer({
+      server: {
+        middlewareMode: true,
+        hmr: process.env.DISABLE_HMR === 'true' ? false : { server: httpServer },
+      },
       appType: 'spa',
     });
-    app.use(vite.middlewares);
+    app.use(viteServer.middlewares);
   } else {
     app.use(express.static(path.resolve(__dirname, 'dist')));
     app.get('*', (_req, res) => {
@@ -1549,9 +1611,23 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
+  httpServer.listen(PORT, '0.0.0.0', () => {
     console.log(`Server running at http://0.0.0.0:${PORT}`);
   });
+
+  const shutdown = async () => {
+    try {
+      if (viteServer) await viteServer.close();
+    } catch {}
+    httpServer.close(() => process.exit(0));
+    setTimeout(() => process.exit(0), 2000).unref();
+  };
+
+  process.once('SIGTERM', shutdown);
+  process.once('SIGINT', shutdown);
 }
 
-startServer();
+startServer().catch((err) => {
+  console.error('Fatal server startup error:', err);
+  process.exit(1);
+});

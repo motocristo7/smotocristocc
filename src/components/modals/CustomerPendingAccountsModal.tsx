@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { useApp } from '../../context/AppContext';
-import { Sale, Customer } from '../../types';
+import { Sale, Customer, isSaleWithCredit } from '../../types';
 import { formatUSD, formatBs, buildWhatsAppSendUrl } from '../../utils/whatsapp';
 import { downloadInvoicePDF } from '../../utils/pdfInvoice';
 import {
@@ -112,7 +112,7 @@ export const CustomerPendingAccountsModal: React.FC<CustomerPendingAccountsModal
 
     return sales
       .filter((sale) => {
-        if (sale.paymentType !== 'CREDITO' && sale.paymentType !== 'APARTADO') return false;
+        if (!isSaleWithCredit(sale)) return false;
         if (sale.isVoided || sale.creditStatus === 'PAGADO' || sale.creditStatus === 'ANULADO') {
           return false;
         }
@@ -204,7 +204,12 @@ export const CustomerPendingAccountsModal: React.FC<CustomerPendingAccountsModal
 
   const buildReportPaymentUrl = (sale: Sale, pendingUSD: number) => {
     const pendingBs = pendingUSD * settings.bcvRate;
-    const modalidad = sale.paymentType === 'APARTADO' ? 'Sistema de Apartado' : 'Crédito';
+    const modalidad =
+      sale.paymentType === 'APARTADO'
+        ? 'Sistema de Apartado'
+        : sale.paymentType === 'MIXTO'
+        ? 'Pago Mixto (Crédito)'
+        : 'Crédito';
     const message = [
       `Hola *${settings.commercialName}*, soy *${displayCustomerName || 'Cliente'}* (Cédula: ${displayCustomerDocument}).`,
       `Deseo reportar un abono/pago para mi cuenta pendiente (${modalidad}):`,
@@ -441,7 +446,12 @@ export const CustomerPendingAccountsModal: React.FC<CustomerPendingAccountsModal
                       const pendingUSD = Math.max(0, sale.total - paidUSD);
                       const pendingBs = pendingUSD * settings.bcvRate;
                       const dueInfo = getDueStatus(sale.creditDueDate);
-                      const modality = sale.paymentType === 'APARTADO' ? 'Sistema de Apartado' : 'Crédito';
+                      const modality =
+                        sale.paymentType === 'APARTADO'
+                          ? 'Sistema de Apartado'
+                          : sale.paymentType === 'MIXTO'
+                          ? 'Pago Mixto (Crédito)'
+                          : 'Crédito';
                       const payments = sale.creditPayments || [];
                       const isExpanded = expandedPaymentsId === sale.id;
 

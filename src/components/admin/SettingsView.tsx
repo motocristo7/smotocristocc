@@ -3,6 +3,7 @@ import { useApp } from '../../context/AppContext';
 import { fetchAdminUserFromFirestore } from '../../services/firestoreSync';
 import { VENEZUELA_LOCATIONS, VENEZUELAN_BANKS } from '../../data/venezuela';
 import { formatUSD, formatBs } from '../../utils/whatsapp';
+import { calculateExchangeGap } from '../../utils/pricing';
 import {
   Settings,
   Building2,
@@ -33,6 +34,8 @@ export const SettingsView: React.FC = () => {
     resetAllData,
     isSyncingBcv,
     syncBcvRate,
+    isSyncingUsdt,
+    syncUsdtRate,
     publicStoreUrl,
     enterPublicStore,
     syncAllToFirebase,
@@ -106,6 +109,23 @@ export const SettingsView: React.FC = () => {
       }));
     }
   };
+
+  const handleSyncWithUsdt = async () => {
+    const res = await syncUsdtRate();
+    if (res.success && res.rate > 0) {
+      setFormData((prev) => ({
+        ...prev,
+        usdtRate: res.rate,
+        usdtSource: res.source,
+        usdtLastUpdated: new Date().toLocaleTimeString('es-VE', {
+          hour: '2-digit',
+          minute: '2-digit',
+        }),
+      }));
+    }
+  };
+
+  const liveGap = calculateExchangeGap(formData.bcvRate, formData.usdtRate);
 
   const [isResetModalOpen, setIsResetModalOpen] = useState(false);
 
@@ -260,6 +280,125 @@ export const SettingsView: React.FC = () => {
             <span>Ejemplo de conversión: $10.00 USD = <strong>{formatBs(10 * formData.bcvRate)}</strong></span>
             <span>$50.00 USD = <strong>{formatBs(50 * formData.bcvRate)}</strong></span>
             <span>$100.00 USD = <strong>{formatBs(100 * formData.bcvRate)}</strong></span>
+          </div>
+        </div>
+
+        {/* Tasa Referencia USDT Binance y Brecha Cambiaria (SOLO USO INTERNO ADMINISTRATIVO) */}
+        <div className="bg-slate-900 text-white rounded-xl p-6 shadow-md border border-amber-500/40 space-y-4">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <div className="flex items-start gap-3">
+              <div className="w-10 h-10 rounded-xl bg-amber-500/20 border border-amber-500/30 flex items-center justify-center text-amber-400 shrink-0 mt-0.5">
+                <TrendingUp className="w-5 h-5" />
+              </div>
+              <div className="space-y-1">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <h3 className="font-bold text-base leading-tight text-white">
+                    Tasa Referencia USDT Binance &amp; Brecha Cambiaria
+                  </h3>
+                  <span className="bg-amber-500/20 text-amber-300 border border-amber-400/40 text-[10px] px-2 py-0.5 rounded-full font-bold uppercase">
+                    Uso Exclusivo Admin
+                  </span>
+                </div>
+                <p className="text-slate-300 text-xs leading-relaxed max-w-xl">
+                  Referencia interna para calcular automáticamente la brecha cambiaria frente al BCV, el{' '}
+                  <strong className="text-amber-300">Costo de Referencia en Divisas</strong> y el{' '}
+                  <strong className="text-emerald-300">% de Utilidad</strong>. Esta tasa nunca se muestra al cliente ni en facturas.
+                </p>
+                <div className="text-[11px] text-slate-400 flex flex-wrap items-center gap-3 pt-1">
+                  <span>Fuente: <strong className="text-slate-200">{settings.usdtSource || 'Referencia USDT Binance'}</strong></span>
+                  {settings.usdtLastUpdated && (
+                    <>
+                      <span>·</span>
+                      <span>Actualizada: <strong className="text-slate-200">{settings.usdtLastUpdated}</strong></span>
+                    </>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 shrink-0">
+              <div className="flex items-center gap-2 bg-slate-950/80 p-2 rounded-xl border border-amber-500/40">
+                <span className="text-xs text-amber-300 font-semibold pl-2">Bs. / USDT:</span>
+                <input
+                  type="number"
+                  step="0.01"
+                  min="0.01"
+                  value={formData.usdtRate ?? liveGap.usdtRate}
+                  onChange={(e) =>
+                    setFormData({ ...formData, usdtRate: parseFloat(e.target.value) || 0 })
+                  }
+                  className="w-24 p-1.5 text-base font-bold font-mono text-amber-100 bg-slate-900 border border-amber-400/60 rounded-lg text-right"
+                />
+              </div>
+
+              <button
+                type="button"
+                onClick={handleSyncWithUsdt}
+                disabled={isSyncingUsdt}
+                className={`inline-flex items-center justify-center gap-2 px-3.5 py-2.5 rounded-xl bg-amber-400 hover:bg-amber-300 text-slate-950 font-bold text-xs transition-all shadow-xs cursor-pointer ${
+                  isSyncingUsdt ? 'opacity-70 cursor-not-allowed' : ''
+                }`}
+                title="Consultar tasa de referencia USDT Binance"
+              >
+                <RefreshCw className={`w-4 h-4 ${isSyncingUsdt ? 'animate-spin' : ''}`} />
+                <span>{isSyncingUsdt ? 'Consultando...' : 'Sincronizar USDT'}</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Panel visual de Brecha Cambiaria */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-3 border-t border-slate-800">
+            <div className="bg-slate-800/70 rounded-xl p-3 border border-slate-700">
+              <span className="text-[10px] uppercase tracking-wider font-bold text-slate-400 block">
+                Brecha Cambiaria (%)
+              </span>
+              <div className="flex items-baseline gap-2 mt-1">
+                <span
+                  className={`text-xl font-black font-mono ${
+                    liveGap.gapPct > 0
+                      ? 'text-amber-400'
+                      : liveGap.gapPct < 0
+                      ? 'text-rose-400'
+                      : 'text-emerald-400'
+                  }`}
+                >
+                  {liveGap.gapPct >= 0 ? '+' : ''}
+                  {liveGap.gapPct.toFixed(2)}%
+                </span>
+                <span className="text-xs font-mono text-slate-400">
+                  (Factor ×{liveGap.gapFactor.toFixed(4)})
+                </span>
+              </div>
+              <span className="text-[10px] text-slate-400 block mt-0.5">
+                ((USDT − BCV) ÷ BCV) × 100
+              </span>
+            </div>
+
+            <div className="bg-slate-800/70 rounded-xl p-3 border border-slate-700">
+              <span className="text-[10px] uppercase tracking-wider font-bold text-slate-400 block">
+                Diferencial por Dólar
+              </span>
+              <div className="text-xl font-black font-mono text-white mt-1">
+                {liveGap.diffBs >= 0 ? '+' : ''}
+                {formatBs(liveGap.diffBs)}
+              </div>
+              <span className="text-[10px] text-slate-400 block mt-0.5">
+                BCV {formatBs(liveGap.bcvRate)} vs USDT {formatBs(liveGap.usdtRate)}
+              </span>
+            </div>
+
+            <div className="bg-slate-800/70 rounded-xl p-3 border border-slate-700">
+              <span className="text-[10px] uppercase tracking-wider font-bold text-slate-400 block">
+                Ajuste Costo BCV → Divisas
+              </span>
+              <div className="text-sm font-bold font-mono text-emerald-300 mt-1">
+                $10 BCV ({formatBs(10 * liveGap.bcvRate)}) ={' '}
+                {formatUSD(liveGap.usdtRate > 0 ? (10 * liveGap.bcvRate) / liveGap.usdtRate : 10)} ref.
+              </div>
+              <span className="text-[10px] text-slate-400 block mt-0.5">
+                Costo Bs ÷ Tasa USDT = ($ BCV ÷ (1 + Brecha%))
+              </span>
+            </div>
           </div>
         </div>
 

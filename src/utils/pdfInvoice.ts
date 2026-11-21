@@ -1,6 +1,6 @@
 import { jsPDF } from 'jspdf';
 import QRCode from 'qrcode';
-import { Sale, BusinessSettings, Product, ServiceOrder, TechnicianPayout, PurchaseOrder } from '../types';
+import { Sale, BusinessSettings, Product, ServiceOrder, TechnicianPayout, PurchaseOrder, isSaleWithCredit } from '../types';
 import { formatUSD, formatBs, getPublicAppOrigin } from './whatsapp';
 
 /**
@@ -78,6 +78,8 @@ export function generateInvoicePDF(
   const isCredit = sale.paymentType === 'CREDITO';
   const isApartado = sale.paymentType === 'APARTADO';
   const isMercadoLibre = sale.paymentType === 'MERCADOLIBRE';
+  const isMixto = sale.paymentType === 'MIXTO' && Array.isArray(sale.paymentSplits) && sale.paymentSplits.length > 0;
+  const isMixtoWithCredit = isMixto && isSaleWithCredit(sale);
   const pendingBalanceUSD = Math.max(0, sale.total - (sale.creditPaidAmount || 0));
   const pendingBalanceBs = pendingBalanceUSD * rate;
 
@@ -210,6 +212,15 @@ export function generateInvoicePDF(
   } else if (isMercadoLibre) {
     doc.setTextColor(161, 98, 7); // yellow-700
     doc.text('MERCADOLIBRE (CANAL ONLINE)', metaRightX, metaY + 4.5, { align: 'right' });
+  } else if (isMixtoWithCredit) {
+    doc.setTextColor(180, 83, 9); // amber-700
+    doc.text(`PAGO MIXTO (CONTADO + CRÉDITO)`, metaRightX, metaY + 4.5, { align: 'right' });
+    doc.setFontSize(7.5);
+    doc.text(`Vence: ${sale.creditDueDate || 'A convenir'}`, metaRightX, metaY + 8.5, { align: 'right' });
+    doc.setFontSize(8);
+  } else if (isMixto) {
+    doc.setTextColor(13, 148, 136); // teal-600
+    doc.text('PAGO MIXTO (PAGADO)', metaRightX, metaY + 4.5, { align: 'right' });
   } else {
     doc.setTextColor(5, 150, 105); // emerald-600
     doc.text('DE CONTADO (PAGADO)', metaRightX, metaY + 4.5, { align: 'right' });
@@ -551,6 +562,96 @@ export function generateInvoicePDF(
     doc.setFontSize(7);
     doc.setTextColor(146, 64, 14);
     doc.text(`Por favor reportar el comprobante de pago al WhatsApp ${settings.whatsapp || settings.phone}`, margin + 4, y + 24.5);
+
+    y += boxHeight + 6;
+  } else if (isMixtoWithCredit && sale.creditStatus !== 'PAGADO' && pendingBalanceUSD > 0.01) {
+    // VENTA CON PAGO MIXTO (CONTADO + CRÉDITO): Mostrar desglose, saldo pendiente y datos bancarios para pagar el resto
+    const splits = sale.paymentSplits || [];
+    const splitsBlockH = splits.length * 4;
+    const boxHeight = 28 + splitsBlockH;
+    ensureSpace(boxHeight + 6);
+    doc.setFillColor(254, 243, 199); // amber-100/50
+    doc.setDrawColor(245, 158, 11); // amber-500
+    doc.setLineWidth(0.4);
+    doc.roundedRect(margin, y, contentWidth, boxHeight, 1.5, 1.5, 'FD');
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(8.2);
+    doc.setTextColor(146, 64, 14); // amber-800
+    doc.text('PAGO MIXTO (CONTADO + CRÉDITO) - DESGLOSE Y DATOS PARA EL SALDO:', margin + 4, y + 5);
+
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7.2);
+    doc.setTextColor(120, 53, 15);
+    let splitY = y + 9.2;
+    splits.forEach((sp, idx) => {
+      const spBs = sp.amountBs || sp.amountUSD * rate;
+      const refPart = sp.reference ? ` · Ref: ${sp.reference}` : '';
+      const label = sp.splitType === 'CREDITO' ? 'A Crédito (Por Cobrar)' : `De Contado - ${sp.paymentMethod}`;
+      doc.text(
+        `${idx + 1}. ${label}: ${formatUSD(sp.amountUSD)} (${formatBs(spBs)})${refPart}`,
+        margin + 4,
+        splitY
+      );
+      splitY += 4;
+    });
+
+    const infoY = splitY + 1.5;
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7.5);
+    doc.setTextColor(120, 53, 15);
+    doc.text(`• Plazo Crédito: ${sale.creditDays || 15} días · Vence: ${sale.creditDueDate || 'A convenir'}`, margin + 4, infoY);
+    doc.text(`• Pagado / Abonado: ${formatUSD(sale.creditPaidAmount || 0)} de ${formatUSD(sale.total)}`, margin + 4, infoY + 4.2);
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(8.5);
+    doc.setTextColor(180, 83, 9);
+    doc.text(`• SALDO PENDIENTE: ${formatUSD(pendingBalanceUSD)} (${formatBs(pendingBalanceBs)} BCV)`, margin + 4, infoY + 9);
+
+    const rightColX = margin + 100;
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7.3);
+    doc.setTextColor(120, 53, 15);
+    doc.text(`• Pago Móvil: ${settings.bankDetails.pagoMovilBank}`, rightColX, infoY);
+    doc.text(`  Tel: ${settings.bankDetails.pagoMovilPhone} | RIF: ${settings.bankDetails.pagoMovilId}`, rightColX, infoY + 4);
+    doc.text(`• Transferencia: ${settings.bankDetails.bankTransferName} (Cta: ${settings.bankDetails.bankTransferAccount})`, rightColX, infoY + 8);
+
+    doc.setFont('helvetica', 'italic');
+    doc.setFontSize(7);
+    doc.setTextColor(146, 64, 14);
+    doc.text(`Por favor reportar el pago del saldo al WhatsApp ${settings.whatsapp || settings.phone}`, margin + 4, infoY + 14.2);
+
+    y += boxHeight + 6;
+  } else if (isMixto) {
+    // VENTA CON PAGO MIXTO (100% PAGADO): Mostrar confirmación de pago completo + desglose
+    const splits = sale.paymentSplits || [];
+    const boxHeight = 11 + splits.length * 4.2;
+    ensureSpace(boxHeight + 6);
+    doc.setFillColor(240, 253, 250); // teal-50
+    doc.setDrawColor(94, 234, 212); // teal-300
+    doc.setLineWidth(0.35);
+    doc.roundedRect(margin, y, contentWidth, boxHeight, 1.5, 1.5, 'FD');
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(8);
+    doc.setTextColor(15, 118, 110); // teal-700
+    doc.text('✓ COMPROBANTE DE COMPRA (PAGO MIXTO) - CANCELADO EN SU TOTALIDAD', margin + 4, y + 4.8);
+
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(7.2);
+    doc.setTextColor(51, 65, 85); // slate-700
+    let splitY = y + 9.2;
+    splits.forEach((sp, idx) => {
+      const spBs = sp.amountBs || sp.amountUSD * rate;
+      const refPart = sp.reference ? ` · Ref: ${sp.reference}` : '';
+      const label = sp.splitType === 'CREDITO' ? 'Parte a Crédito (Liquidada)' : sp.paymentMethod;
+      doc.text(
+        `${idx + 1}. ${label}: ${formatUSD(sp.amountUSD)} (${formatBs(spBs)})${refPart}`,
+        margin + 4,
+        splitY
+      );
+      splitY += 4.2;
+    });
 
     y += boxHeight + 6;
   } else {

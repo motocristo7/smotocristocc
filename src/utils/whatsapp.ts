@@ -9,6 +9,7 @@ import {
   CreditPaymentRecord,
   PurchaseOrder,
   PurchasePaymentRecord,
+  isSaleWithCredit,
 } from '../types';
 
 export function formatUSD(amount: number): string {
@@ -117,6 +118,8 @@ export function buildInvoiceWhatsAppMessage(sale: Sale, settings: BusinessSettin
   const isCredit = sale.paymentType === 'CREDITO';
   const isApartado = sale.paymentType === 'APARTADO';
   const isMercadoLibre = sale.paymentType === 'MERCADOLIBRE';
+  const isMixto = sale.paymentType === 'MIXTO' && Array.isArray(sale.paymentSplits) && sale.paymentSplits.length > 0;
+  const isMixtoWithCredit = isMixto && isSaleWithCredit(sale);
   const pendingBalanceUSD = Math.max(0, sale.total - (sale.creditPaidAmount || 0));
   const pendingBalanceBs = pendingBalanceUSD * rate;
   const businessName = (settings.commercialName || settings.name || 'MotoCristoc').toUpperCase();
@@ -161,10 +164,49 @@ ${(sale.creditPaidAmount || 0) > 0 ? `💵 Abono Inicial: ${formatUSD(sale.credi
 🖼️ QR: ${qrImageLink}
 
 📎 Le adjuntamos su Nota de Crédito en PDF.${storePromoFooter}`;
+  } else if (isMixtoWithCredit && sale.creditStatus !== 'PAGADO' && pendingBalanceUSD > 0.01) {
+    // Pago Mixto con parte De Contado y parte A Crédito pendiente
+    const mixtoLines = (sale.paymentSplits || [])
+      .map((sp) => {
+        const label = sp.splitType === 'CREDITO' ? '⏳ A Crédito' : `✅ Contado (${sp.paymentMethod})`;
+        return `   • ${label}: *${formatUSD(sp.amountUSD)}* (${formatBs(sp.amountBs || sp.amountUSD * rate)})${sp.reference ? ` · Ref: ${sp.reference}` : ''}`;
+      })
+      .join('\n');
+
+    message = `📄 *FACTURA DE COMPRA #${sale.invoiceNumber}* - *${businessName}*
+
+🛒 *Detalle de compra:*
+${itemsText}
+
+💰 *Monto Total:* *${formatUSD(sale.total)}* | *${formatBs(sale.totalBs || sale.total * rate)}*
+📌 Condición: *PAGO MIXTO (CONTADO + CRÉDITO ${sale.creditDays || 15} días)*
+💳 *Desglose de pago:*
+${mixtoLines}
+💵 Pagado / Abonado: *${formatUSD(sale.creditPaidAmount || 0)}*
+⏳ Fecha de Vencimiento: *${sale.creditDueDate || 'A convenir'}*
+⚠️ *Saldo Pendiente por Pagar:* *${formatUSD(pendingBalanceUSD)}* | *${formatBs(pendingBalanceBs)}* (Tasa BCV: ${rate.toFixed(2)})
+
+📲 *Datos para el pago del saldo:*
+🏦 Banco: ${settings.bankDetails.pagoMovilBank || '0134 - Banesco'}
+📱 Pago Móvil: ${settings.bankDetails.pagoMovilPhone || '0412-2242450'}
+🆔 CI/RIF: ${settings.bankDetails.pagoMovilId || 'V-19996141'}
+🖼️ QR: ${qrImageLink}
+
+📎 Le adjuntamos su Factura en PDF.${storePromoFooter}`;
   } else {
-    // Venta de Contado o MercadoLibre: Factura de compra limpia (sin datos de pago porque ya pagó)
+    // Venta de Contado, Pago Mixto (pagado en su totalidad) o MercadoLibre
+    const mixtoLines = isMixto
+      ? (sale.paymentSplits || [])
+          .map(
+            (sp) =>
+              `   • ${sp.splitType === 'CREDITO' ? 'Parte a Crédito (Liquidada)' : sp.paymentMethod}: *${formatUSD(sp.amountUSD)}* (${formatBs(sp.amountBs || sp.amountUSD * rate)})${sp.reference ? ` · Ref: ${sp.reference}` : ''}`
+          )
+          .join('\n')
+      : '';
     const conditionText = isMercadoLibre
       ? `📌 Condición: *MERCADOLIBRE* 📦 (Pagado)`
+      : isMixto
+      ? `📌 Condición: *PAGO MIXTO (PAGADO)* ✅\n💳 *Desglose de pago:*\n${mixtoLines}`
       : `📌 Condición: *DE CONTADO (PAGADO)* ✅\n💳 Método: ${sale.paymentMethod || 'Pago Móvil / Divisas'}`;
 
     message = `📄 *FACTURA DE COMPRA #${sale.invoiceNumber}* - *${businessName}*

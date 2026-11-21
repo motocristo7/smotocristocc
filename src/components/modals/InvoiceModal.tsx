@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useApp } from '../../context/AppContext';
+import { isSaleWithCredit } from '../../types';
 import {
   formatUSD,
   formatBs,
@@ -55,6 +56,12 @@ export const InvoiceModal: React.FC = () => {
 
   const rate = selectedInvoice.bcvRate || settings.bcvRate;
   const totalBs = selectedInvoice.totalBs || selectedInvoice.total * rate;
+  const isMixto =
+    selectedInvoice.paymentType === 'MIXTO' &&
+    Array.isArray(selectedInvoice.paymentSplits) &&
+    selectedInvoice.paymentSplits.length > 0;
+  const isMixtoWithCredit = isMixto && isSaleWithCredit(selectedInvoice);
+  const pendingBalanceUSD = Math.max(0, selectedInvoice.total - (selectedInvoice.creditPaidAmount || 0));
 
   const storedPhoneValid = hasValidWhatsAppPhone(selectedInvoice.customerPhone);
   const effectivePhone = storedPhoneValid ? selectedInvoice.customerPhone : manualPhone.trim();
@@ -225,8 +232,12 @@ export const InvoiceModal: React.FC = () => {
                 <span className="font-semibold text-slate-900 text-xs">
                   Método:{' '}
                   <span className="text-emerald-700">
-                    {selectedInvoice.paymentMethod}
-                    {selectedInvoice.treasuryAccountName
+                    {selectedInvoice.paymentType === 'MIXTO' &&
+                    selectedInvoice.paymentSplits &&
+                    selectedInvoice.paymentSplits.length > 0
+                      ? `Pago Mixto (${selectedInvoice.paymentSplits.length} formas)`
+                      : selectedInvoice.paymentMethod}
+                    {selectedInvoice.paymentType !== 'MIXTO' && selectedInvoice.treasuryAccountName
                       ? ` (${selectedInvoice.treasuryAccountName})`
                       : ''}
                   </span>
@@ -239,6 +250,10 @@ export const InvoiceModal: React.FC = () => {
                       ? 'bg-amber-100 text-amber-850 border border-amber-300'
                       : selectedInvoice.paymentType === 'MERCADOLIBRE'
                       ? 'bg-yellow-200 text-yellow-950 border border-yellow-400'
+                      : isMixtoWithCredit
+                      ? 'bg-amber-100 text-amber-900 border border-amber-300'
+                      : selectedInvoice.paymentType === 'MIXTO'
+                      ? 'bg-teal-100 text-teal-900 border border-teal-300'
                       : 'bg-emerald-100 text-emerald-800 border border-emerald-300'
                   }`}
                 >
@@ -248,6 +263,10 @@ export const InvoiceModal: React.FC = () => {
                     ? `A CRÉDITO (${selectedInvoice.creditDays || 15} DÍAS)`
                     : selectedInvoice.paymentType === 'MERCADOLIBRE'
                     ? 'MERCADOLIBRE'
+                    : isMixtoWithCredit
+                    ? `PAGO MIXTO (CONTADO + CRÉDITO)`
+                    : selectedInvoice.paymentType === 'MIXTO'
+                    ? 'PAGO MIXTO'
                     : 'DE CONTADO'}
                 </span>
               </div>
@@ -385,6 +404,92 @@ export const InvoiceModal: React.FC = () => {
                     </button>
                   )}
                 </div>
+              ) : isMixto ? (
+                <div
+                  className={`mt-1.5 p-2 rounded-lg border text-[11px] space-y-1 ${
+                    isMixtoWithCredit && selectedInvoice.creditStatus !== 'PAGADO'
+                      ? 'bg-amber-50 border-amber-200'
+                      : 'bg-teal-50 border-teal-200'
+                  }`}
+                >
+                  {isMixtoWithCredit ? (
+                    <div className="flex justify-between items-center text-amber-900">
+                      <span className="flex items-center gap-1 font-medium">
+                        <Calendar className="w-3 h-3 text-amber-600" />
+                        Vence: {selectedInvoice.creditDueDate || 'A convenir'}
+                      </span>
+                      <span
+                        className={`font-bold px-1.5 py-0.2 rounded text-[10px] ${
+                          selectedInvoice.creditStatus === 'PAGADO'
+                            ? 'bg-emerald-100 text-emerald-800'
+                            : 'bg-rose-100 text-rose-800'
+                        }`}
+                      >
+                        {selectedInvoice.creditStatus === 'PAGADO' ? 'PAGADO' : 'PENDIENTE'}
+                      </span>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-1 text-teal-800 font-bold">
+                      <CheckCircle2 className="w-3.5 h-3.5 text-teal-600" />
+                      <span>Pagado en modalidad Mixta (Cancelado)</span>
+                    </div>
+                  )}
+                  <div className="space-y-0.5 pt-0.5 border-t border-slate-200/80">
+                    {(selectedInvoice.paymentSplits || []).map((sp, idx) => {
+                      const isCreditLeg = sp.splitType === 'CREDITO';
+                      return (
+                        <div key={sp.id || idx} className="flex justify-between gap-2 text-[10px] text-slate-700">
+                          <span className="truncate font-medium">
+                            {isCreditLeg ? (
+                              <span className="text-amber-800 font-bold">A Crédito</span>
+                            ) : (
+                              <>De Contado · {sp.paymentMethod}</>
+                            )}
+                            {sp.reference ? ` · Ref: ${sp.reference}` : ''}
+                          </span>
+                          <span
+                            className={`font-mono font-bold shrink-0 ${
+                              isCreditLeg ? 'text-amber-900' : 'text-teal-900'
+                            }`}
+                          >
+                            {formatUSD(sp.amountUSD)} ({formatBs(sp.amountBs || sp.amountUSD * rate)})
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  {isMixtoWithCredit && (
+                    <>
+                      <div className="flex justify-between text-slate-600 border-t border-amber-200/80 pt-1">
+                        <span>Pagado / Abonado:</span>
+                        <span className="font-mono font-bold text-slate-800">
+                          {formatUSD(selectedInvoice.creditPaidAmount || 0)}
+                        </span>
+                      </div>
+                      <div className="flex justify-between font-bold text-amber-950">
+                        <span>Saldo pendiente:</span>
+                        <span className="font-mono text-rose-700">{formatUSD(pendingBalanceUSD)}</span>
+                      </div>
+                      {selectedInvoice.creditStatus !== 'PAGADO' && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            updateSaleCreditStatus(selectedInvoice.id, 'PAGADO', selectedInvoice.total);
+                            setSelectedInvoice({
+                              ...selectedInvoice,
+                              creditStatus: 'PAGADO',
+                              creditPaidAmount: selectedInvoice.total,
+                            });
+                          }}
+                          className="w-full mt-1 py-1 px-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded text-[10px] flex items-center justify-center gap-1 transition-colors cursor-pointer"
+                        >
+                          <CheckCircle2 className="w-3 h-3" />
+                          <span>Marcar Crédito como Pagado</span>
+                        </button>
+                      )}
+                    </>
+                  )}
+                </div>
               ) : (
                 <div className="flex items-center gap-1 text-emerald-600 mt-1">
                   <CheckCircle2 className="w-3.5 h-3.5" />
@@ -476,41 +581,101 @@ export const InvoiceModal: React.FC = () => {
             </div>
           </div>
 
-          {/* Datos para el pago: Para ventas a crédito o sistema de apartado con saldo pendiente */}
-          {(selectedInvoice.paymentType === 'CREDITO' || selectedInvoice.paymentType === 'APARTADO') ? (
+          {/* Datos para el pago: Para ventas a crédito, apartado o pago mixto con saldo a crédito pendiente */}
+          {(selectedInvoice.paymentType === 'CREDITO' ||
+            selectedInvoice.paymentType === 'APARTADO' ||
+            (isMixtoWithCredit && selectedInvoice.creditStatus !== 'PAGADO' && pendingBalanceUSD > 0.01)) ? (
             <div
-              className={`mt-4 p-3.5 border rounded-xl flex items-center justify-between gap-4 ${
+              className={`mt-4 p-3.5 border rounded-xl space-y-2.5 ${
                 selectedInvoice.paymentType === 'APARTADO'
                   ? 'bg-indigo-50/80 border-indigo-300'
                   : 'bg-amber-50/80 border-amber-300'
               }`}
             >
-              <div className="text-xs space-y-1">
-                <span
-                  className={`font-bold text-[11px] uppercase tracking-wide block ${
-                    selectedInvoice.paymentType === 'APARTADO' ? 'text-indigo-900' : 'text-amber-900'
-                  }`}
-                >
-                  {selectedInvoice.paymentType === 'APARTADO'
-                    ? 'Datos para Abonos / Liquidación de Apartado (Venezuela)'
-                    : 'Datos para el Pago del Crédito (Venezuela)'}
-                </span>
-                <p><strong className="text-slate-700">Banco:</strong> {settings.bankDetails.pagoMovilBank}</p>
-                <p><strong className="text-slate-700">Pago Móvil:</strong> <span className="font-mono font-bold text-slate-900">{settings.bankDetails.pagoMovilPhone}</span> · <span className="font-mono font-bold text-slate-900">{settings.bankDetails.pagoMovilId}</span></p>
-                <p
-                  className={`text-[11px] font-semibold ${
-                    selectedInvoice.paymentType === 'APARTADO' ? 'text-indigo-900' : 'text-amber-900'
-                  }`}
-                >
-                  {selectedInvoice.paymentType === 'APARTADO' ? 'Saldo para retirar:' : 'Saldo pendiente:'}{' '}
-                  {formatUSD(Math.max(0, selectedInvoice.total - (selectedInvoice.creditPaidAmount || 0)))}
-                </p>
+              {isMixtoWithCredit && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 pb-2 border-b border-amber-200/80">
+                  {(selectedInvoice.paymentSplits || []).map((sp, idx) => {
+                    const isCreditLeg = sp.splitType === 'CREDITO';
+                    return (
+                      <div
+                        key={sp.id || idx}
+                        className={`flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg border text-[11px] ${
+                          isCreditLeg
+                            ? 'bg-amber-100/70 border-amber-300'
+                            : 'bg-white/90 border-teal-200'
+                        }`}
+                      >
+                        <span className="font-semibold text-slate-800 truncate">
+                          {isCreditLeg ? 'A Crédito' : `Contado: ${sp.paymentMethod}`}
+                          {sp.reference ? ` (${sp.reference})` : ''}
+                        </span>
+                        <span
+                          className={`font-mono font-bold shrink-0 ${
+                            isCreditLeg ? 'text-amber-900' : 'text-teal-900'
+                          }`}
+                        >
+                          {formatUSD(sp.amountUSD)}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+              <div className="flex items-center justify-between gap-4">
+                <div className="text-xs space-y-1">
+                  <span
+                    className={`font-bold text-[11px] uppercase tracking-wide block ${
+                      selectedInvoice.paymentType === 'APARTADO' ? 'text-indigo-900' : 'text-amber-900'
+                    }`}
+                  >
+                    {selectedInvoice.paymentType === 'APARTADO'
+                      ? 'Datos para Abonos / Liquidación de Apartado (Venezuela)'
+                      : isMixtoWithCredit
+                        ? 'Datos para el Pago del Saldo a Crédito (Pago Mixto)'
+                        : 'Datos para el Pago del Crédito (Venezuela)'}
+                  </span>
+                  <p><strong className="text-slate-700">Banco:</strong> {settings.bankDetails.pagoMovilBank}</p>
+                  <p><strong className="text-slate-700">Pago Móvil:</strong> <span className="font-mono font-bold text-slate-900">{settings.bankDetails.pagoMovilPhone}</span> · <span className="font-mono font-bold text-slate-900">{settings.bankDetails.pagoMovilId}</span></p>
+                  <p
+                    className={`text-[11px] font-semibold ${
+                      selectedInvoice.paymentType === 'APARTADO' ? 'text-indigo-900' : 'text-amber-900'
+                    }`}
+                  >
+                    {selectedInvoice.paymentType === 'APARTADO' ? 'Saldo para retirar:' : 'Saldo pendiente:'}{' '}
+                    {formatUSD(pendingBalanceUSD)} ({formatBs(pendingBalanceUSD * rate)})
+                  </p>
+                </div>
+                <img
+                  src={settings.bankDetails.pagoMovilQrUrl || '/assets/pagomovil_qr.jpeg'}
+                  alt="QR Pago Móvil"
+                  className="w-16 h-16 object-contain rounded-lg border border-amber-200 shadow-2xs shrink-0 bg-white"
+                />
               </div>
-              <img
-                src={settings.bankDetails.pagoMovilQrUrl || '/assets/pagomovil_qr.jpeg'}
-                alt="QR Pago Móvil"
-                className="w-16 h-16 object-contain rounded-lg border border-amber-200 shadow-2xs shrink-0 bg-white"
-              />
+            </div>
+          ) : isMixto ? (
+            <div className="mt-4 p-3 bg-teal-50/80 border border-teal-200 rounded-xl text-xs space-y-1.5">
+              <span className="font-bold text-teal-900 text-[11px] uppercase tracking-wide block">
+                ✓ Comprobante de Compra (Pago Mixto) - Cancelado en su totalidad
+              </span>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                {(selectedInvoice.paymentSplits || []).map((sp, idx) => (
+                  <div
+                    key={sp.id || idx}
+                    className="flex items-center justify-between gap-2 bg-white/80 px-2.5 py-1.5 rounded-lg border border-teal-200/80 text-[11px]"
+                  >
+                    <span className="font-semibold text-slate-800 truncate">
+                      {sp.splitType === 'CREDITO' ? 'Parte a Crédito (Liquidada)' : sp.paymentMethod}
+                      {sp.reference ? ` (Ref: ${sp.reference})` : ''}
+                    </span>
+                    <span className="font-mono font-bold text-teal-900 shrink-0">
+                      {formatUSD(sp.amountUSD)} · {formatBs(sp.amountBs || sp.amountUSD * rate)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+              <p className="text-slate-600 text-[11px]">
+                ¡Muchas gracias por su compra y preferencia!
+              </p>
             </div>
           ) : (
             <div className="mt-4 p-3 bg-emerald-50/80 border border-emerald-200 rounded-xl text-xs space-y-0.5">

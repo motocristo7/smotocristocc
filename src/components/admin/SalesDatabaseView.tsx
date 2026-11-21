@@ -5,7 +5,10 @@ import {
   PaymentMethod,
   PagoMovilAccountOption,
   SalePaymentType,
+  SalePaymentSplit,
+  SaleSplitCondition,
   SaleCreditStatus,
+  isSaleWithCredit,
 } from '../../types';
 import {
   formatUSD,
@@ -43,6 +46,7 @@ import {
   RotateCcw,
   Edit2,
   BookmarkCheck,
+  Layers,
 } from 'lucide-react';
 
 export const SalesDatabaseView: React.FC = () => {
@@ -95,6 +99,17 @@ export const SalesDatabaseView: React.FC = () => {
     useState<PagoMovilAccountOption>('BANESCO_PERSONAL');
   const [editTreasuryAccountId, setEditTreasuryAccountId] = useState<string>('');
   const [editPaymentTouched, setEditPaymentTouched] = useState<boolean>(false);
+  const [editIsMixto, setEditIsMixto] = useState<boolean>(false);
+  interface EditSplitDraft {
+    id: string;
+    splitType: SaleSplitCondition;
+    paymentMethod: PaymentMethod;
+    pagoMovilAccount: PagoMovilAccountOption;
+    treasuryAccountId: string;
+    amountUSD: string;
+    reference: string;
+  }
+  const [editSplits, setEditSplits] = useState<EditSplitDraft[]>([]);
 
   // Modales de confirmación (reemplazan window.prompt / window.confirm bloqueados en iframes)
   const [voidModalSale, setVoidModalSale] = useState<Sale | null>(null);
@@ -118,7 +133,7 @@ export const SalesDatabaseView: React.FC = () => {
 
   // Helper for overdue calculation
   const isSaleOverdue = (sale: Sale): boolean => {
-    const isDeferred = sale.paymentType === 'CREDITO' || sale.paymentType === 'APARTADO';
+    const isDeferred = isSaleWithCredit(sale);
     if (!isDeferred || sale.creditStatus === 'PAGADO' || !sale.creditDueDate) {
       return false;
     }
@@ -164,13 +179,12 @@ export const SalesDatabaseView: React.FC = () => {
         if (type !== conditionFilter) return false;
       }
 
-      // Credit / Apartado status filter
+      // Credit / Apartado / Mixto-con-Crédito status filter
       if (
         conditionFilter === 'CREDITO' ||
         conditionFilter === 'APARTADO' ||
         !sale.paymentType ||
-        sale.paymentType === 'CREDITO' ||
-        sale.paymentType === 'APARTADO'
+        isSaleWithCredit(sale)
       ) {
         if (creditStatusFilter === 'PENDIENTE' && sale.creditStatus === 'PAGADO') return false;
         if (creditStatusFilter === 'PAGADO' && sale.creditStatus !== 'PAGADO') return false;
@@ -224,13 +238,18 @@ export const SalesDatabaseView: React.FC = () => {
     const mlTotalUSD = mlSales.reduce((sum, s) => sum + s.total, 0);
     const mlCommissionsUSD = mlSales.reduce((sum, s) => sum + (s.mercadolibreCommissionUSD || 0), 0);
 
-    const overdueCount = [...creditSales, ...apartadoSales].filter((s) => isSaleOverdue(s)).length;
+    const mixtoSales = sales.filter((s) => s.paymentType === 'MIXTO');
+    const mixtoTotalUSD = mixtoSales.reduce((sum, s) => sum + s.total, 0);
+
+    const overdueCount = sales.filter((s) => isSaleWithCredit(s) && isSaleOverdue(s)).length;
 
     return {
       totalUSD,
       totalBs: totalUSD * rate,
       contadoCount: contadoSales.length,
       contadoTotalUSD,
+      mixtoCount: mixtoSales.length,
+      mixtoTotalUSD,
       creditCount: creditSales.length,
       creditTotalUSD,
       creditPaidTotalUSD,
@@ -380,6 +399,55 @@ export const SalesDatabaseView: React.FC = () => {
       (existingAccId && treasuryAccounts.some((a) => a.id === existingAccId) && existingAccId) ||
       findMatchingTreasuryAccountId(initialMethod, inferredPmAccount);
 
+    const saleIsMixto =
+      sale.paymentType === 'MIXTO' && Array.isArray(sale.paymentSplits) && sale.paymentSplits.length > 0;
+    const initialSplits: EditSplitDraft[] = saleIsMixto
+      ? (sale.paymentSplits || []).map((sp, i) => {
+          const spPm: PagoMovilAccountOption =
+            sp.pagoMovilAccount ||
+            (/provincial/i.test(sp.treasuryAccountName || '') ? 'PROVINCIAL' : 'BANESCO_PERSONAL');
+          const spAccId =
+            (sp.treasuryAccountId &&
+              treasuryAccounts.some((a) => a.id === sp.treasuryAccountId) &&
+              sp.treasuryAccountId) ||
+            findMatchingTreasuryAccountId(sp.paymentMethod, spPm);
+          return {
+            id: sp.id || `edit-sp-${Date.now()}-${i}`,
+            splitType: sp.splitType || 'CONTADO',
+            paymentMethod: sp.paymentMethod,
+            pagoMovilAccount: spPm,
+            treasuryAccountId: spAccId,
+            amountUSD: String(Math.round((Number(sp.amountUSD) || 0) * 100) / 100),
+            reference: sp.reference || '',
+          };
+        })
+      : [
+          {
+            id: `edit-sp-1-${Date.now()}`,
+            splitType: 'CONTADO',
+            paymentMethod: initialMethod,
+            pagoMovilAccount: inferredPmAccount,
+            treasuryAccountId: matchedAccId,
+            amountUSD: (Math.round((sale.total / 2) * 100) / 100).toFixed(2),
+            reference: '',
+          },
+          {
+            id: `edit-sp-2-${Date.now()}`,
+            splitType: 'CONTADO',
+            paymentMethod:
+              initialMethod === 'Dólares Efectivo (USD)' ? 'Pago Móvil' : 'Dólares Efectivo (USD)',
+            pagoMovilAccount: 'BANESCO_PERSONAL',
+            treasuryAccountId: findMatchingTreasuryAccountId(
+              initialMethod === 'Dólares Efectivo (USD)' ? 'Pago Móvil' : 'Dólares Efectivo (USD)',
+              'BANESCO_PERSONAL'
+            ),
+            amountUSD: (
+              Math.round((sale.total - Math.round((sale.total / 2) * 100) / 100) * 100) / 100
+            ).toFixed(2),
+            reference: '',
+          },
+        ];
+
     setEditSaleModal(sale);
     setEditCustomerId('');
     setEditCustomerName(sale.customerName || '');
@@ -390,6 +458,8 @@ export const SalesDatabaseView: React.FC = () => {
     setEditPaymentMethod(initialMethod);
     setEditPagoMovilAccount(inferredPmAccount);
     setEditTreasuryAccountId(matchedAccId);
+    setEditIsMixto(saleIsMixto);
+    setEditSplits(initialSplits);
     setEditPaymentTouched(false);
   };
 
@@ -416,6 +486,67 @@ export const SalesDatabaseView: React.FC = () => {
       return;
     }
 
+    const saleRate = editSaleModal.bcvRate || rate;
+    let resolvedSplitsPayload: SalePaymentSplit[] | undefined;
+
+    if (editPaymentTouched && editIsMixto) {
+      const parsed: SalePaymentSplit[] = editSplits
+        .map((sp, idx) => {
+          const usd = Math.round((parseFloat(sp.amountUSD) || 0) * 100) / 100;
+          const isCreditLeg = sp.splitType === 'CREDITO';
+          const accObj = !isCreditLeg
+            ? treasuryAccounts.find((a) => a.id === sp.treasuryAccountId)
+            : undefined;
+          return {
+            id: sp.id || `split-${Date.now()}-${idx}`,
+            splitType: isCreditLeg ? ('CREDITO' as SaleSplitCondition) : ('CONTADO' as SaleSplitCondition),
+            paymentMethod: isCreditLeg ? 'Pago Móvil' : sp.paymentMethod,
+            amountUSD: usd,
+            amountBs: Math.round(usd * saleRate * 100) / 100,
+            pagoMovilAccount: !isCreditLeg && sp.paymentMethod === 'Pago Móvil' ? sp.pagoMovilAccount : undefined,
+            treasuryAccountId: !isCreditLeg ? sp.treasuryAccountId || undefined : undefined,
+            treasuryAccountName: isCreditLeg ? 'Cuenta por Cobrar (Crédito)' : accObj?.name,
+            reference: sp.reference.trim() || undefined,
+          };
+        })
+        .filter((sp) => sp.amountUSD > 0);
+
+      if (parsed.length < 2) {
+        showToast('Para Pago Mixto ingresa montos mayores a $0 en al menos 2 partes de pago.');
+        return;
+      }
+
+      const sumUSD = Math.round(parsed.reduce((acc, s) => acc + s.amountUSD, 0) * 100) / 100;
+      const targetUSD = Math.round(editSaleModal.total * 100) / 100;
+      const diffUSD = Math.round((targetUSD - sumUSD) * 100) / 100;
+      if (Math.abs(diffUSD) > 0.02) {
+        showToast(
+          `La suma del Pago Mixto (${formatUSD(sumUSD)}) debe coincidir con el total (${formatUSD(targetUSD)}).`
+        );
+        return;
+      }
+      if (diffUSD !== 0) {
+        const last = parsed.length - 1;
+        const adj = Math.max(0.01, Math.round((parsed[last].amountUSD + diffUSD) * 100) / 100);
+        parsed[last] = { ...parsed[last], amountUSD: adj, amountBs: Math.round(adj * saleRate * 100) / 100 };
+      }
+      resolvedSplitsPayload = parsed;
+    }
+
+    const canChangePaymentType =
+      editSaleModal.paymentType !== 'CREDITO' && editSaleModal.paymentType !== 'APARTADO';
+    const nextPaymentTypeForEdit: SalePaymentType | undefined =
+      editPaymentTouched && canChangePaymentType
+        ? editIsMixto
+          ? 'MIXTO'
+          : editSaleModal.paymentType === 'MIXTO'
+            ? 'CONTADO'
+            : editSaleModal.paymentType || 'CONTADO'
+        : undefined;
+
+    const firstCashEditSplit =
+      resolvedSplitsPayload?.find((sp) => sp.splitType !== 'CREDITO') || resolvedSplitsPayload?.[0];
+
     const updated = updateSale(editSaleModal.id, {
       customerId: editCustomerId || undefined,
       customerName: cleanName,
@@ -424,12 +555,21 @@ export const SalesDatabaseView: React.FC = () => {
       creditDueDate: editCreditDueDate || undefined,
       notes: editNotes.trim() || undefined,
       ...(editPaymentTouched
-        ? {
-            paymentMethod: editPaymentMethod,
-            pagoMovilAccount: editPaymentMethod === 'Pago Móvil' ? editPagoMovilAccount : undefined,
-            treasuryAccountId: editTreasuryAccountId || undefined,
-            syncTreasuryPayment: true,
-          }
+        ? editIsMixto && resolvedSplitsPayload
+          ? {
+              paymentType: nextPaymentTypeForEdit,
+              paymentSplits: resolvedSplitsPayload,
+              paymentMethod: firstCashEditSplit ? firstCashEditSplit.paymentMethod : editPaymentMethod,
+              syncTreasuryPayment: true,
+            }
+          : {
+              paymentType: nextPaymentTypeForEdit,
+              paymentSplits: undefined,
+              paymentMethod: editPaymentMethod,
+              pagoMovilAccount: editPaymentMethod === 'Pago Móvil' ? editPagoMovilAccount : undefined,
+              treasuryAccountId: editTreasuryAccountId || undefined,
+              syncTreasuryPayment: true,
+            }
         : {}),
       reassignCustomer: !editCustomerId,
     });
@@ -439,13 +579,19 @@ export const SalesDatabaseView: React.FC = () => {
     }
 
     if (editPaymentTouched) {
-      const destAccountLabel =
-        updated?.treasuryAccountName ||
-        treasuryAccounts.find((a) => a.id === editTreasuryAccountId)?.name ||
-        getDefaultAccountLabelForMethod(editPaymentMethod, editPagoMovilAccount);
-      showToast(
-        `Factura ${editSaleModal.invoiceNumber} actualizada: ${editPaymentMethod} → ${destAccountLabel} (Tesorería sincronizada)`
-      );
+      if (editIsMixto && resolvedSplitsPayload) {
+        showToast(
+          `Factura ${editSaleModal.invoiceNumber} actualizada a Pago Mixto (${resolvedSplitsPayload.length} formas · Tesorería sincronizada)`
+        );
+      } else {
+        const destAccountLabel =
+          updated?.treasuryAccountName ||
+          treasuryAccounts.find((a) => a.id === editTreasuryAccountId)?.name ||
+          getDefaultAccountLabelForMethod(editPaymentMethod, editPagoMovilAccount);
+        showToast(
+          `Factura ${editSaleModal.invoiceNumber} actualizada: ${editPaymentMethod} → ${destAccountLabel} (Tesorería sincronizada)`
+        );
+      }
     } else {
       showToast(`Factura ${editSaleModal.invoiceNumber} actualizada y asignada a ${cleanName}`);
     }
@@ -525,7 +671,7 @@ export const SalesDatabaseView: React.FC = () => {
     try {
       await reactivateSale(target.id);
       const isPaid =
-        target.paymentType !== 'CREDITO' || (target.creditPaidAmount || 0) >= target.total;
+        !isSaleWithCredit(target) || (target.creditPaidAmount || 0) >= target.total;
       showToast(`Factura ${target.invoiceNumber} reactivada con éxito`);
       if (selectedSaleDetail?.id === target.id) {
         setSelectedSaleDetail((prev) =>
@@ -762,6 +908,19 @@ export const SalesDatabaseView: React.FC = () => {
 
             <button
               type="button"
+              onClick={() => setConditionFilter('MIXTO')}
+              className={`px-3 py-2 rounded-xl font-bold transition-all cursor-pointer whitespace-nowrap flex items-center gap-1.5 ${
+                conditionFilter === 'MIXTO'
+                  ? 'bg-teal-600 text-white shadow-2xs'
+                  : 'bg-slate-100 text-slate-700 hover:bg-slate-200'
+              }`}
+            >
+              <Layers className="w-3.5 h-3.5" />
+              <span>Pago Mixto ({stats.mixtoCount})</span>
+            </button>
+
+            <button
+              type="button"
               onClick={() => setConditionFilter('CREDITO')}
               className={`px-3 py-2 rounded-xl font-bold transition-all cursor-pointer whitespace-nowrap flex items-center gap-1.5 ${
                 conditionFilter === 'CREDITO'
@@ -906,10 +1065,9 @@ export const SalesDatabaseView: React.FC = () => {
               <tbody className="divide-y divide-slate-100">
                 {filteredSales.map((sale) => {
                   const saleType = sale.paymentType || 'CONTADO';
-                  const isCredit = saleType === 'CREDITO';
                   const isApartado = saleType === 'APARTADO';
-                  const isDeferred = isCredit || isApartado;
-                  const isML = saleType === 'MERCADOLIBRE';
+                  const isMixtoWithCredit = saleType === 'MIXTO' && isSaleWithCredit(sale);
+                  const isDeferred = isSaleWithCredit(sale);
                   const isFullyPaid = isDeferred ? (sale.creditStatus === 'PAGADO' || (sale.creditPaidAmount || 0) >= sale.total) : true;
                   const pendingBalanceUSD = isDeferred ? Math.max(0, sale.total - (sale.creditPaidAmount || 0)) : 0;
                   const overdueInfo = isDeferred ? getDaysOverdueOrRemaining(sale) : null;
@@ -996,26 +1154,86 @@ export const SalesDatabaseView: React.FC = () => {
                             <span>MercadoLibre</span>
                           </span>
                         )}
+                        {saleType === 'MIXTO' && (
+                          <div className="space-y-1">
+                            <span
+                              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-bold border ${
+                                isMixtoWithCredit
+                                  ? 'bg-amber-100 text-amber-900 border-amber-300'
+                                  : 'bg-teal-100 text-teal-900 border-teal-300'
+                              }`}
+                            >
+                              <Layers
+                                className={`w-3 h-3 ${isMixtoWithCredit ? 'text-amber-700' : 'text-teal-700'}`}
+                              />
+                              <span>
+                                {isMixtoWithCredit
+                                  ? `Mixto (Contado + Crédito)`
+                                  : `Pago Mixto (${sale.paymentSplits?.length || 2})`}
+                              </span>
+                            </span>
+                            {isMixtoWithCredit && overdueInfo && !isFullyPaid && (
+                              <span
+                                className={`text-[10px] font-semibold block ${
+                                  overdueInfo.isOverdue ? 'text-rose-600 font-bold' : 'text-amber-700'
+                                }`}
+                              >
+                                {overdueInfo.text}
+                              </span>
+                            )}
+                          </div>
+                        )}
 
                         {/* Método de pago y cuenta destino */}
-                        <div className="text-[10px] leading-tight">
-                          <span className="font-semibold text-slate-700 block">
-                            {sale.paymentMethod || 'Sin método'}
-                          </span>
-                          {(sale.treasuryAccountName ||
-                            (sale.paymentMethod === 'Pago Móvil' && sale.pagoMovilAccount) ||
-                            sale.paymentMethod === 'Punto de Venta (Bs)') && (
-                            <span className="text-slate-500 block">
-                              →{' '}
-                              {sale.treasuryAccountName ||
-                                (sale.paymentMethod === 'Pago Móvil'
-                                  ? sale.pagoMovilAccount === 'PROVINCIAL'
-                                    ? 'Provincial (Bs)'
-                                    : 'Banesco Personal (Bs)'
-                                  : 'Banesco SMCC (Bs)')}
+                        {saleType === 'MIXTO' && sale.paymentSplits && sale.paymentSplits.length > 0 ? (
+                          <div className="space-y-0.5 text-[10px] leading-tight">
+                            {sale.paymentSplits.map((sp, idx) => {
+                              const isCreditLeg = sp.splitType === 'CREDITO';
+                              return (
+                                <div key={sp.id || idx} className="text-slate-700">
+                                  <span
+                                    className={`font-semibold ${
+                                      isCreditLeg ? 'text-amber-800' : 'text-slate-700'
+                                    }`}
+                                  >
+                                    {isCreditLeg ? 'A Crédito' : sp.paymentMethod}
+                                  </span>
+                                  <span
+                                    className={`font-mono font-bold ml-1 ${
+                                      isCreditLeg ? 'text-amber-800' : 'text-teal-800'
+                                    }`}
+                                  >
+                                    ({formatUSD(sp.amountUSD)})
+                                  </span>
+                                  {(isCreditLeg || sp.treasuryAccountName) && (
+                                    <span className="text-slate-400 block pl-1">
+                                      → {isCreditLeg ? 'Cuenta por Cobrar' : sp.treasuryAccountName}
+                                    </span>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        ) : (
+                          <div className="text-[10px] leading-tight">
+                            <span className="font-semibold text-slate-700 block">
+                              {sale.paymentMethod || 'Sin método'}
                             </span>
-                          )}
-                        </div>
+                            {(sale.treasuryAccountName ||
+                              (sale.paymentMethod === 'Pago Móvil' && sale.pagoMovilAccount) ||
+                              sale.paymentMethod === 'Punto de Venta (Bs)') && (
+                              <span className="text-slate-500 block">
+                                →{' '}
+                                {sale.treasuryAccountName ||
+                                  (sale.paymentMethod === 'Pago Móvil'
+                                    ? sale.pagoMovilAccount === 'PROVINCIAL'
+                                      ? 'Provincial (Bs)'
+                                      : 'Banesco Personal (Bs)'
+                                    : 'Banesco SMCC (Bs)')}
+                              </span>
+                            )}
+                          </div>
+                        )}
                       </td>
 
                       {/* Repuestos / Servicios */}
@@ -1229,22 +1447,86 @@ export const SalesDatabaseView: React.FC = () => {
                       ? `A Crédito (${selectedSaleDetail.creditDays || 15} días)`
                       : selectedSaleDetail.paymentType === 'MERCADOLIBRE'
                       ? 'MercadoLibre'
+                      : selectedSaleDetail.paymentType === 'MIXTO'
+                      ? isSaleWithCredit(selectedSaleDetail)
+                        ? `Pago Mixto (Contado + Crédito ${selectedSaleDetail.creditDays || 15}d)`
+                        : 'Pago Mixto'
                       : 'De Contado'}
                   </span>
-                  {(selectedSaleDetail.paymentType === 'CREDITO' || selectedSaleDetail.paymentType === 'APARTADO') && (
+                  {isSaleWithCredit(selectedSaleDetail) && (
                     <span className="text-amber-800 font-mono block">
                       {selectedSaleDetail.paymentType === 'APARTADO' ? 'Límite retiro:' : 'Vence:'}{' '}
                       {selectedSaleDetail.creditDueDate || 'Sin definir'}
                     </span>
                   )}
                   <span className="text-slate-500 block">
-                    Método: {selectedSaleDetail.paymentMethod}
-                    {selectedSaleDetail.treasuryAccountName
-                      ? ` · ${selectedSaleDetail.treasuryAccountName}`
-                      : ''}
+                    {selectedSaleDetail.paymentType === 'MIXTO' &&
+                    selectedSaleDetail.paymentSplits &&
+                    selectedSaleDetail.paymentSplits.length > 0
+                      ? `${selectedSaleDetail.paymentSplits.length} partes combinadas`
+                      : `Método: ${selectedSaleDetail.paymentMethod}${
+                          selectedSaleDetail.treasuryAccountName
+                            ? ` · ${selectedSaleDetail.treasuryAccountName}`
+                            : ''
+                        }`}
                   </span>
                 </div>
               </div>
+
+              {/* Desglose de Pago Mixto en modal de detalle */}
+              {selectedSaleDetail.paymentType === 'MIXTO' &&
+                selectedSaleDetail.paymentSplits &&
+                selectedSaleDetail.paymentSplits.length > 0 && (
+                  <div className="p-3 bg-teal-50/90 border border-teal-200 rounded-xl space-y-2">
+                    <span className="font-bold text-teal-950 text-[11px] uppercase tracking-wider flex items-center gap-1.5">
+                      <Layers className="w-3.5 h-3.5 text-teal-700" />
+                      Desglose de Pago Mixto ({selectedSaleDetail.paymentSplits.length} partes)
+                    </span>
+                    <div className="space-y-1.5">
+                      {selectedSaleDetail.paymentSplits.map((sp, idx) => {
+                        const isCreditLeg = sp.splitType === 'CREDITO';
+                        return (
+                          <div
+                            key={sp.id || idx}
+                            className={`p-2 rounded-lg border flex items-center justify-between gap-2 ${
+                              isCreditLeg
+                                ? 'bg-amber-50 border-amber-300'
+                                : 'bg-white border-teal-200/80'
+                            }`}
+                          >
+                            <div>
+                              <span
+                                className={`font-bold block ${
+                                  isCreditLeg ? 'text-amber-950' : 'text-slate-900'
+                                }`}
+                              >
+                                {idx + 1}. {isCreditLeg ? 'A Crédito' : `De Contado · ${sp.paymentMethod}`}
+                              </span>
+                              <span className="text-[10px] text-slate-500 block">
+                                {isCreditLeg
+                                  ? 'Destino: Cuenta por Cobrar (Crédito)'
+                                  : `Cuenta Tesorería: ${sp.treasuryAccountName || 'Automática'}`}
+                                {sp.reference ? ` · Ref: ${sp.reference}` : ''}
+                              </span>
+                            </div>
+                            <div className="text-right font-mono shrink-0">
+                              <span
+                                className={`font-bold block ${
+                                  isCreditLeg ? 'text-amber-900' : 'text-teal-900'
+                                }`}
+                              >
+                                {formatUSD(sp.amountUSD)}
+                              </span>
+                              <span className="text-[10px] text-slate-500 block">
+                                {formatBs(sp.amountBs || sp.amountUSD * (selectedSaleDetail.bcvRate || rate))}
+                              </span>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
 
               {/* Ítems comprados */}
               <div>
@@ -1289,7 +1571,7 @@ export const SalesDatabaseView: React.FC = () => {
                   <span>{formatBs(selectedSaleDetail.total * (selectedSaleDetail.bcvRate || rate))}</span>
                 </div>
 
-                {(selectedSaleDetail.paymentType === 'CREDITO' || selectedSaleDetail.paymentType === 'APARTADO') && (
+                {isSaleWithCredit(selectedSaleDetail) && (
                   <div className="pt-2 border-t border-slate-800 text-xs flex justify-between text-amber-300">
                     <span>
                       {selectedSaleDetail.paymentType === 'APARTADO'
@@ -1601,184 +1883,527 @@ export const SalesDatabaseView: React.FC = () => {
                   )}
                 </div>
 
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1.5">
-                    Método / Tipo de Venta *
-                  </label>
-                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
-                    {(
-                      [
-                        { id: 'Pago Móvil', label: 'Pago Móvil' },
-                        { id: 'Punto de Venta (Bs)', label: 'Punto de Venta (Bs)' },
-                        { id: 'Dólares Efectivo (USD)', label: 'Efectivo USD ($)' },
-                        { id: 'Transferencia Bancaria Bs', label: 'Transferencia Bs' },
-                        { id: 'Binance Pay (USDT)', label: 'Binance (USDT)' },
-                      ] as const
-                    ).map((opt) => (
-                      <button
-                        key={opt.id}
-                        type="button"
-                        onClick={() => handleEditPaymentMethodChange(opt.id)}
-                        className={`px-2.5 py-2 rounded-lg border text-[11px] font-bold transition-all cursor-pointer text-left ${
-                          editPaymentMethod === opt.id
-                            ? 'bg-slate-900 border-slate-900 text-white'
-                            : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-100'
-                        }`}
-                      >
-                        {opt.label}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                {editPaymentMethod === 'Pago Móvil' && (
-                  <div className="p-2.5 rounded-xl bg-blue-50/80 border border-blue-200 space-y-2">
-                    <label className="block text-[11px] font-bold text-blue-950">
-                      ¿A qué cuenta cayó el Pago Móvil?
-                    </label>
-                    <div className="grid grid-cols-2 gap-2">
-                      <button
-                        type="button"
-                        onClick={() => handleEditPagoMovilAccountChange('BANESCO_PERSONAL')}
-                        className={`px-2.5 py-2 rounded-lg border text-xs font-bold transition-all cursor-pointer ${
-                          editPagoMovilAccount === 'BANESCO_PERSONAL'
-                            ? 'bg-slate-900 border-slate-900 text-white'
-                            : 'bg-white border-blue-200 text-slate-700 hover:bg-blue-100/60'
-                        }`}
-                      >
-                        Banesco Personal
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleEditPagoMovilAccountChange('PROVINCIAL')}
-                        className={`px-2.5 py-2 rounded-lg border text-xs font-bold transition-all cursor-pointer ${
-                          editPagoMovilAccount === 'PROVINCIAL'
-                            ? 'bg-slate-900 border-slate-900 text-white'
-                            : 'bg-white border-blue-200 text-slate-700 hover:bg-blue-100/60'
-                        }`}
-                      >
-                        Provincial
-                      </button>
-                    </div>
+                {/* Selector Pago Único vs Pago Mixto (para ventas que no son Crédito/Apartado) */}
+                {editSaleModal.paymentType !== 'CREDITO' && editSaleModal.paymentType !== 'APARTADO' && (
+                  <div className="grid grid-cols-2 gap-1.5 bg-slate-200/70 p-1 rounded-xl">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditIsMixto(false);
+                        setEditPaymentTouched(true);
+                      }}
+                      className={`py-1.5 px-2.5 rounded-lg text-[11px] font-bold transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
+                        !editIsMixto
+                          ? 'bg-slate-900 text-white shadow-2xs'
+                          : 'text-slate-700 hover:bg-white/70'
+                      }`}
+                    >
+                      <CreditCard className="w-3.5 h-3.5" />
+                      <span>Pago Único</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditIsMixto(true);
+                        setEditPaymentTouched(true);
+                      }}
+                      className={`py-1.5 px-2.5 rounded-lg text-[11px] font-bold transition-all cursor-pointer flex items-center justify-center gap-1.5 ${
+                        editIsMixto
+                          ? 'bg-teal-600 text-white shadow-2xs'
+                          : 'text-slate-700 hover:bg-white/70'
+                      }`}
+                    >
+                      <Layers className="w-3.5 h-3.5" />
+                      <span>Pago Mixto (2+ formas)</span>
+                    </button>
                   </div>
                 )}
 
-                <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">
-                    Cuenta de Tesorería donde cayó el pago *
-                  </label>
-                  <select
-                    value={editTreasuryAccountId}
-                    onChange={(e) => {
-                      const accId = e.target.value;
-                      setEditTreasuryAccountId(accId);
-                      setEditPaymentTouched(true);
-                      const picked = treasuryAccounts.find((a) => a.id === accId);
-                      if (editPaymentMethod === 'Pago Móvil' && picked) {
-                        if (picked.id === 'acc-provincial' || /provincial/i.test(picked.name)) {
-                          setEditPagoMovilAccount('PROVINCIAL');
-                        } else if (
-                          picked.id === 'acc-banesco-personal' ||
-                          /banesco\s*personal/i.test(picked.name)
-                        ) {
-                          setEditPagoMovilAccount('BANESCO_PERSONAL');
-                        }
-                      }
-                    }}
-                    className="w-full p-2.5 rounded-xl border border-slate-300 bg-white font-semibold text-slate-900"
-                  >
-                    <option value="">
-                      Automática ({getDefaultAccountLabelForMethod(editPaymentMethod, editPagoMovilAccount)})
-                    </option>
-                    {treasuryAccounts.map((acc) => (
-                      <option key={acc.id} value={acc.id}>
-                        {acc.name} ·{' '}
-                        {acc.currency === 'BS'
-                          ? formatBs(acc.nativeBalance)
-                          : formatUSD(acc.nativeBalance)}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+                {editIsMixto ? (
+                  (() => {
+                    const editAssignedUSD =
+                      Math.round(
+                        editSplits.reduce((sum, s) => sum + (parseFloat(s.amountUSD) || 0), 0) * 100
+                      ) / 100;
+                    const editRemainingUSD =
+                      Math.round((editSaleModal.total - editAssignedUSD) * 100) / 100;
+                    const editSaleRate = editSaleModal.bcvRate || rate;
 
-                {/* Aviso en tiempo real del ajuste automático en Tesorería y Finanzas */}
-                {(() => {
-                  const isVoided = Boolean(
-                    editSaleModal.isVoided || editSaleModal.creditStatus === 'ANULADO'
-                  );
-                  const linkedMov =
-                    (editSaleModal.treasuryMovementId
-                      ? treasuryMovements.find((m) => m.id === editSaleModal.treasuryMovementId)
-                      : undefined) ||
-                    treasuryMovements.find(
-                      (m) =>
-                        m.saleId === editSaleModal.id &&
-                        m.type === 'INGRESO' &&
-                        m.category !== 'Cobro Cuentas por Cobrar'
-                    );
-                  const chosenAcc = treasuryAccounts.find((a) => a.id === editTreasuryAccountId);
-                  const newAccName =
-                    chosenAcc?.name ||
-                    getDefaultAccountLabelForMethod(editPaymentMethod, editPagoMovilAccount);
-                  const oldAccName =
-                    linkedMov?.accountName || editSaleModal.treasuryAccountName || '';
-                  const isDeferred =
-                    editSaleModal.paymentType === 'CREDITO' ||
-                    editSaleModal.paymentType === 'APARTADO';
-                  const subsequentSum = (editSaleModal.creditPayments || []).reduce(
-                    (s, p) => s + (Number(p.amountUSD) || 0),
-                    0
-                  );
-                  const movUSD = linkedMov
-                    ? Number(linkedMov.amountUSD) || 0
-                    : isDeferred
-                      ? Math.max(0, (editSaleModal.creditPaidAmount || 0) - subsequentSum)
-                      : editSaleModal.total;
-
-                  if (isVoided) {
                     return (
-                      <div className="px-3 py-2 rounded-lg bg-slate-100 border border-slate-200 text-[11px] text-slate-600">
-                        Factura anulada: se actualizarán los datos informativos sin alterar los saldos de Tesorería.
+                      <div className="space-y-2.5">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className="text-[11px] font-bold text-teal-900">
+                            Desglose de Pago Mixto (Total: {formatUSD(editSaleModal.total)})
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditSplits((prev) => [
+                                ...prev,
+                                {
+                                  id: `edit-sp-${Date.now()}-${prev.length + 1}`,
+                                  splitType: 'CONTADO',
+                                  paymentMethod: 'Punto de Venta (Bs)',
+                                  pagoMovilAccount: 'BANESCO_PERSONAL',
+                                  treasuryAccountId: findMatchingTreasuryAccountId(
+                                    'Punto de Venta (Bs)',
+                                    'BANESCO_PERSONAL'
+                                  ),
+                                  amountUSD: '',
+                                  reference: '',
+                                },
+                              ]);
+                              setEditPaymentTouched(true);
+                            }}
+                            className="px-2 py-1 text-[10px] font-bold rounded-lg bg-teal-600 hover:bg-teal-700 text-white flex items-center gap-1 cursor-pointer"
+                          >
+                            <Plus className="w-3 h-3" />
+                            <span>Agregar pago</span>
+                          </button>
+                        </div>
+
+                        {editSplits.map((sp, idx) => {
+                          const isCreditLeg = sp.splitType === 'CREDITO';
+                          return (
+                            <div
+                              key={sp.id}
+                              className={`p-2.5 rounded-xl border space-y-2 ${
+                                isCreditLeg
+                                  ? 'bg-amber-50/70 border-amber-300'
+                                  : 'bg-white border-teal-200'
+                              }`}
+                            >
+                              <div className="flex items-center justify-between gap-2">
+                                <span
+                                  className={`text-[10px] font-extrabold uppercase ${
+                                    isCreditLeg ? 'text-amber-900' : 'text-teal-800'
+                                  }`}
+                                >
+                                  Parte #{idx + 1} · {isCreditLeg ? 'A Crédito' : 'De Contado'}
+                                </span>
+                                <div className="flex items-center gap-1.5">
+                                  {Math.abs(editRemainingUSD) > 0.01 && (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        const others = editSplits
+                                          .filter((x) => x.id !== sp.id)
+                                          .reduce((sum, x) => sum + (parseFloat(x.amountUSD) || 0), 0);
+                                        const rem = Math.max(
+                                          0,
+                                          Math.round((editSaleModal.total - others) * 100) / 100
+                                        );
+                                        setEditSplits((prev) =>
+                                          prev.map((x) =>
+                                            x.id === sp.id ? { ...x, amountUSD: rem.toFixed(2) } : x
+                                          )
+                                        );
+                                        setEditPaymentTouched(true);
+                                      }}
+                                      className="px-1.5 py-0.5 text-[10px] font-bold rounded bg-teal-50 text-teal-800 border border-teal-200 hover:bg-teal-100 cursor-pointer"
+                                    >
+                                      Completar restante
+                                    </button>
+                                  )}
+                                  {editSplits.length > 2 && (
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        setEditSplits((prev) => prev.filter((x) => x.id !== sp.id));
+                                        setEditPaymentTouched(true);
+                                      }}
+                                      className="p-0.5 text-rose-500 hover:text-rose-700 cursor-pointer"
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5" />
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+
+                              {/* Selector por parte: De Contado vs A Crédito */}
+                              <div className="grid grid-cols-2 gap-1.5">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setEditSplits((prev) =>
+                                      prev.map((x) =>
+                                        x.id === sp.id
+                                          ? { ...x, splitType: 'CONTADO' as SaleSplitCondition }
+                                          : x
+                                      )
+                                    );
+                                    setEditPaymentTouched(true);
+                                  }}
+                                  className={`py-1 px-2 rounded-md border text-[10px] font-bold cursor-pointer transition-colors ${
+                                    !isCreditLeg
+                                      ? 'bg-emerald-600 border-emerald-600 text-white'
+                                      : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+                                  }`}
+                                >
+                                  De Contado
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setEditSplits((prev) =>
+                                      prev.map((x) =>
+                                        x.id === sp.id
+                                          ? { ...x, splitType: 'CREDITO' as SaleSplitCondition }
+                                          : x
+                                      )
+                                    );
+                                    setEditPaymentTouched(true);
+                                  }}
+                                  className={`py-1 px-2 rounded-md border text-[10px] font-bold cursor-pointer transition-colors ${
+                                    isCreditLeg
+                                      ? 'bg-amber-600 border-amber-600 text-white'
+                                      : 'bg-white border-slate-200 text-amber-800 hover:bg-amber-50'
+                                  }`}
+                                >
+                                  A Crédito
+                                </button>
+                              </div>
+
+                              <div className="grid grid-cols-2 gap-2">
+                                {isCreditLeg ? (
+                                  <div className="flex items-center px-2.5 py-2 rounded-lg bg-amber-100/80 border border-amber-200 text-[10px] font-semibold text-amber-950">
+                                    Cuenta por Cobrar (no ingresa hoy a Tesorería)
+                                  </div>
+                                ) : (
+                                  <div>
+                                    <label className="block text-[10px] font-semibold text-slate-600 mb-0.5">
+                                      Método de Pago
+                                    </label>
+                                    <select
+                                      value={sp.paymentMethod}
+                                      onChange={(e) => {
+                                        const nextM = e.target.value as PaymentMethod;
+                                        const matched = findMatchingTreasuryAccountId(
+                                          nextM,
+                                          sp.pagoMovilAccount
+                                        );
+                                        setEditSplits((prev) =>
+                                          prev.map((x) =>
+                                            x.id === sp.id
+                                              ? { ...x, paymentMethod: nextM, treasuryAccountId: matched }
+                                              : x
+                                          )
+                                        );
+                                        setEditPaymentTouched(true);
+                                      }}
+                                      className="w-full p-2 rounded-lg border border-slate-300 bg-slate-50 font-semibold text-slate-900"
+                                    >
+                                      <option value="Pago Móvil">Pago Móvil</option>
+                                      <option value="Punto de Venta (Bs)">Punto de Venta (Bs)</option>
+                                      <option value="Dólares Efectivo (USD)">Dólares Efectivo (USD)</option>
+                                      <option value="Transferencia Bancaria Bs">Transferencia Bs</option>
+                                      <option value="Binance Pay (USDT)">Binance Pay (USDT)</option>
+                                    </select>
+                                  </div>
+                                )}
+
+                                <div>
+                                  <label className="block text-[10px] font-semibold text-slate-600 mb-0.5">
+                                    Monto ($ USD) · {formatBs((parseFloat(sp.amountUSD) || 0) * editSaleRate)}
+                                  </label>
+                                  <input
+                                    type="number"
+                                    step="any"
+                                    min="0"
+                                    value={sp.amountUSD}
+                                    onChange={(e) => {
+                                      const val = e.target.value;
+                                      const num = parseFloat(val);
+                                      const validNum = !Number.isNaN(num) && num >= 0 ? num : 0;
+                                      setEditSplits((prev) => {
+                                        const next = prev.map((x) =>
+                                          x.id === sp.id ? { ...x, amountUSD: val } : x
+                                        );
+                                        if (next.length === 2 && next[0].id === sp.id) {
+                                          const rem = Math.max(
+                                            0,
+                                            Math.round((editSaleModal.total - validNum) * 100) / 100
+                                          );
+                                          next[1] = {
+                                            ...next[1],
+                                            amountUSD: val === '' ? '' : rem.toFixed(2),
+                                          };
+                                        }
+                                        return next;
+                                      });
+                                      setEditPaymentTouched(true);
+                                    }}
+                                    placeholder="0.00"
+                                    className={`w-full p-2 rounded-lg border bg-white font-mono font-bold text-slate-900 ${
+                                      isCreditLeg ? 'border-amber-400' : 'border-teal-300'
+                                    }`}
+                                  />
+                                </div>
+                              </div>
+
+                              {!isCreditLeg && (
+                                <div>
+                                  <label className="block text-[10px] font-semibold text-slate-600 mb-0.5">
+                                    Cuenta de Tesorería destino
+                                  </label>
+                                  <select
+                                    value={sp.treasuryAccountId}
+                                    onChange={(e) => {
+                                      const accId = e.target.value;
+                                      const picked = treasuryAccounts.find((a) => a.id === accId);
+                                      let nextPm = sp.pagoMovilAccount;
+                                      if (sp.paymentMethod === 'Pago Móvil' && picked) {
+                                        if (
+                                          picked.id === 'acc-provincial' ||
+                                          /provincial/i.test(picked.name)
+                                        ) {
+                                          nextPm = 'PROVINCIAL';
+                                        } else if (
+                                          picked.id === 'acc-banesco-personal' ||
+                                          /banesco\s*personal/i.test(picked.name)
+                                        ) {
+                                          nextPm = 'BANESCO_PERSONAL';
+                                        }
+                                      }
+                                      setEditSplits((prev) =>
+                                        prev.map((x) =>
+                                          x.id === sp.id
+                                            ? { ...x, treasuryAccountId: accId, pagoMovilAccount: nextPm }
+                                            : x
+                                        )
+                                      );
+                                      setEditPaymentTouched(true);
+                                    }}
+                                    className="w-full p-2 rounded-lg border border-slate-300 bg-white font-medium text-slate-900"
+                                  >
+                                    <option value="">
+                                      Automática ({getDefaultAccountLabelForMethod(sp.paymentMethod, sp.pagoMovilAccount)})
+                                    </option>
+                                    {treasuryAccounts.map((acc) => (
+                                      <option key={acc.id} value={acc.id}>
+                                        {acc.name}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+
+                        <div
+                          className={`px-3 py-2 rounded-lg border text-[11px] flex items-center justify-between font-bold ${
+                            Math.abs(editRemainingUSD) <= 0.01
+                              ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
+                              : 'bg-amber-50 border-amber-200 text-amber-900'
+                          }`}
+                        >
+                          <span>
+                            Asignado: {formatUSD(editAssignedUSD)} / {formatUSD(editSaleModal.total)}
+                          </span>
+                          <span>
+                            {Math.abs(editRemainingUSD) <= 0.01
+                              ? '✓ Cuadrado · Tesorería y CxC se sincronizarán'
+                              : editRemainingUSD > 0
+                                ? `Faltan ${formatUSD(editRemainingUSD)}`
+                                : `Excede por ${formatUSD(Math.abs(editRemainingUSD))}`}
+                          </span>
+                        </div>
                       </div>
                     );
-                  }
-
-                  if (linkedMov && oldAccName && oldAccName !== newAccName) {
-                    return (
-                      <div className="px-3 py-2 rounded-lg bg-emerald-50 border border-emerald-200 text-[11px] text-emerald-900">
-                        <strong>Ajuste automático en Tesorería:</strong> se descontarán{' '}
-                        <strong className="font-mono">{formatUSD(movUSD)}</strong> de{' '}
-                        <strong>{oldAccName}</strong> y se acreditarán en{' '}
-                        <strong>{newAccName}</strong>, actualizando el movimiento y la liquidez.
+                  })()
+                ) : (
+                  <>
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-700 mb-1.5">
+                        Método / Tipo de Venta *
+                      </label>
+                      <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
+                        {(
+                          [
+                            { id: 'Pago Móvil', label: 'Pago Móvil' },
+                            { id: 'Punto de Venta (Bs)', label: 'Punto de Venta (Bs)' },
+                            { id: 'Dólares Efectivo (USD)', label: 'Efectivo USD ($)' },
+                            { id: 'Transferencia Bancaria Bs', label: 'Transferencia Bs' },
+                            { id: 'Binance Pay (USDT)', label: 'Binance (USDT)' },
+                          ] as const
+                        ).map((opt) => (
+                          <button
+                            key={opt.id}
+                            type="button"
+                            onClick={() => handleEditPaymentMethodChange(opt.id)}
+                            className={`px-2.5 py-2 rounded-lg border text-[11px] font-bold transition-all cursor-pointer text-left ${
+                              editPaymentMethod === opt.id
+                                ? 'bg-slate-900 border-slate-900 text-white'
+                                : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-100'
+                            }`}
+                          >
+                            {opt.label}
+                          </button>
+                        ))}
                       </div>
-                    );
-                  }
-
-                  if (linkedMov) {
-                    return (
-                      <div className="px-3 py-2 rounded-lg bg-blue-50/70 border border-blue-200 text-[11px] text-blue-900">
-                        Se actualizará el método de pago en la factura y en el ingreso registrado en{' '}
-                        <strong>{newAccName}</strong> en Tesorería.
-                      </div>
-                    );
-                  }
-
-                  if (movUSD > 0) {
-                    return (
-                      <div className="px-3 py-2 rounded-lg bg-emerald-50 border border-emerald-200 text-[11px] text-emerald-900">
-                        <strong>Sincronización con Tesorería:</strong> esta venta no tenía ingreso vinculado aún; al cambiar el pago se registrarán{' '}
-                        <strong className="font-mono">{formatUSD(movUSD)}</strong> en{' '}
-                        <strong>{newAccName}</strong>.
-                      </div>
-                    );
-                  }
-
-                  return (
-                    <div className="px-3 py-2 rounded-lg bg-slate-100 border border-slate-200 text-[11px] text-slate-600">
-                      Se guardará el método y cuenta preferida ({newAccName}). Al registrar abonos se acreditarán en Tesorería.
                     </div>
-                  );
-                })()}
+
+                    {editPaymentMethod === 'Pago Móvil' && (
+                      <div className="p-2.5 rounded-xl bg-blue-50/80 border border-blue-200 space-y-2">
+                        <label className="block text-[11px] font-bold text-blue-950">
+                          ¿A qué cuenta cayó el Pago Móvil?
+                        </label>
+                        <div className="grid grid-cols-2 gap-2">
+                          <button
+                            type="button"
+                            onClick={() => handleEditPagoMovilAccountChange('BANESCO_PERSONAL')}
+                            className={`px-2.5 py-2 rounded-lg border text-xs font-bold transition-all cursor-pointer ${
+                              editPagoMovilAccount === 'BANESCO_PERSONAL'
+                                ? 'bg-slate-900 border-slate-900 text-white'
+                                : 'bg-white border-blue-200 text-slate-700 hover:bg-blue-100/60'
+                            }`}
+                          >
+                            Banesco Personal
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleEditPagoMovilAccountChange('PROVINCIAL')}
+                            className={`px-2.5 py-2 rounded-lg border text-xs font-bold transition-all cursor-pointer ${
+                              editPagoMovilAccount === 'PROVINCIAL'
+                                ? 'bg-slate-900 border-slate-900 text-white'
+                                : 'bg-white border-blue-200 text-slate-700 hover:bg-blue-100/60'
+                            }`}
+                          >
+                            Provincial
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-700 mb-1">
+                        Cuenta de Tesorería donde cayó el pago *
+                      </label>
+                      <select
+                        value={editTreasuryAccountId}
+                        onChange={(e) => {
+                          const accId = e.target.value;
+                          setEditTreasuryAccountId(accId);
+                          setEditPaymentTouched(true);
+                          const picked = treasuryAccounts.find((a) => a.id === accId);
+                          if (editPaymentMethod === 'Pago Móvil' && picked) {
+                            if (picked.id === 'acc-provincial' || /provincial/i.test(picked.name)) {
+                              setEditPagoMovilAccount('PROVINCIAL');
+                            } else if (
+                              picked.id === 'acc-banesco-personal' ||
+                              /banesco\s*personal/i.test(picked.name)
+                            ) {
+                              setEditPagoMovilAccount('BANESCO_PERSONAL');
+                            }
+                          }
+                        }}
+                        className="w-full p-2.5 rounded-xl border border-slate-300 bg-white font-semibold text-slate-900"
+                      >
+                        <option value="">
+                          Automática ({getDefaultAccountLabelForMethod(editPaymentMethod, editPagoMovilAccount)})
+                        </option>
+                        {treasuryAccounts.map((acc) => (
+                          <option key={acc.id} value={acc.id}>
+                            {acc.name} ·{' '}
+                            {acc.currency === 'BS'
+                              ? formatBs(acc.nativeBalance)
+                              : formatUSD(acc.nativeBalance)}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    {/* Aviso en tiempo real del ajuste automático en Tesorería y Finanzas */}
+                    {(() => {
+                      const isVoided = Boolean(
+                        editSaleModal.isVoided || editSaleModal.creditStatus === 'ANULADO'
+                      );
+                      const linkedMov =
+                        (editSaleModal.treasuryMovementId
+                          ? treasuryMovements.find((m) => m.id === editSaleModal.treasuryMovementId)
+                          : undefined) ||
+                        treasuryMovements.find(
+                          (m) =>
+                            m.saleId === editSaleModal.id &&
+                            m.type === 'INGRESO' &&
+                            m.category !== 'Cobro Cuentas por Cobrar'
+                        );
+                      const chosenAcc = treasuryAccounts.find((a) => a.id === editTreasuryAccountId);
+                      const newAccName =
+                        chosenAcc?.name ||
+                        getDefaultAccountLabelForMethod(editPaymentMethod, editPagoMovilAccount);
+                      const oldAccName =
+                        linkedMov?.accountName || editSaleModal.treasuryAccountName || '';
+                      const isDeferred =
+                        editSaleModal.paymentType === 'CREDITO' ||
+                        editSaleModal.paymentType === 'APARTADO';
+                      const subsequentSum = (editSaleModal.creditPayments || []).reduce(
+                        (s, p) => s + (Number(p.amountUSD) || 0),
+                        0
+                      );
+                      const movUSD = linkedMov
+                        ? Number(linkedMov.amountUSD) || 0
+                        : isDeferred
+                          ? Math.max(0, (editSaleModal.creditPaidAmount || 0) - subsequentSum)
+                          : editSaleModal.total;
+
+                      if (isVoided) {
+                        return (
+                          <div className="px-3 py-2 rounded-lg bg-slate-100 border border-slate-200 text-[11px] text-slate-600">
+                            Factura anulada: se actualizarán los datos informativos sin alterar los saldos de Tesorería.
+                          </div>
+                        );
+                      }
+
+                      if (editSaleModal.paymentType === 'MIXTO') {
+                        return (
+                          <div className="px-3 py-2 rounded-lg bg-emerald-50 border border-emerald-200 text-[11px] text-emerald-900">
+                            <strong>Cambio de Pago Mixto a Pago Único:</strong> se revertirán los ingresos divididos anteriores y se acreditará el total de{' '}
+                            <strong className="font-mono">{formatUSD(editSaleModal.total)}</strong> en{' '}
+                            <strong>{newAccName}</strong>.
+                          </div>
+                        );
+                      }
+
+                      if (linkedMov && oldAccName && oldAccName !== newAccName) {
+                        return (
+                          <div className="px-3 py-2 rounded-lg bg-emerald-50 border border-emerald-200 text-[11px] text-emerald-900">
+                            <strong>Ajuste automático en Tesorería:</strong> se descontarán{' '}
+                            <strong className="font-mono">{formatUSD(movUSD)}</strong> de{' '}
+                            <strong>{oldAccName}</strong> y se acreditarán en{' '}
+                            <strong>{newAccName}</strong>, actualizando el movimiento y la liquidez.
+                          </div>
+                        );
+                      }
+
+                      if (linkedMov) {
+                        return (
+                          <div className="px-3 py-2 rounded-lg bg-blue-50/70 border border-blue-200 text-[11px] text-blue-900">
+                            Se actualizará el método de pago en la factura y en el ingreso registrado en{' '}
+                            <strong>{newAccName}</strong> en Tesorería.
+                          </div>
+                        );
+                      }
+
+                      if (movUSD > 0) {
+                        return (
+                          <div className="px-3 py-2 rounded-lg bg-emerald-50 border border-emerald-200 text-[11px] text-emerald-900">
+                            <strong>Sincronización con Tesorería:</strong> esta venta no tenía ingreso vinculado aún; al cambiar el pago se registrarán{' '}
+                            <strong className="font-mono">{formatUSD(movUSD)}</strong> en{' '}
+                            <strong>{newAccName}</strong>.
+                          </div>
+                        );
+                      }
+
+                      return (
+                        <div className="px-3 py-2 rounded-lg bg-slate-100 border border-slate-200 text-[11px] text-slate-600">
+                          Se guardará el método y cuenta preferida ({newAccName}). Al registrar abonos se acreditarán en Tesorería.
+                        </div>
+                      );
+                    })()}
+                  </>
+                )}
               </div>
 
               {/* Sección 2: Datos del Cliente y Factura */}
@@ -1869,7 +2494,9 @@ export const SalesDatabaseView: React.FC = () => {
                 </div>
 
                 <div className="grid grid-cols-2 gap-3">
-                  {(editSaleModal.paymentType === 'CREDITO' || editSaleModal.paymentType === 'APARTADO') && (
+                  {(editSaleModal.paymentType === 'CREDITO' ||
+                    editSaleModal.paymentType === 'APARTADO' ||
+                    (editIsMixto && editSplits.some((s) => s.splitType === 'CREDITO'))) && (
                     <div>
                       <label className="block text-xs font-semibold text-slate-700 mb-1">
                         {editSaleModal.paymentType === 'APARTADO' ? 'Fecha Límite de Retiro' : 'Fecha de Vencimiento'}
@@ -1884,7 +2511,9 @@ export const SalesDatabaseView: React.FC = () => {
                   )}
                   <div
                     className={
-                      editSaleModal.paymentType === 'CREDITO' || editSaleModal.paymentType === 'APARTADO'
+                      editSaleModal.paymentType === 'CREDITO' ||
+                      editSaleModal.paymentType === 'APARTADO' ||
+                      (editIsMixto && editSplits.some((s) => s.splitType === 'CREDITO'))
                         ? ''
                         : 'col-span-2'
                     }

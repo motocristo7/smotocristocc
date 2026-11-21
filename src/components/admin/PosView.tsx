@@ -46,6 +46,7 @@ import {
   MapPin,
   BookmarkCheck,
   Layers,
+  ArrowLeftRight,
 } from 'lucide-react';
 
 export interface PosCartItem {
@@ -153,9 +154,16 @@ export const PosView: React.FC = () => {
   const [creditPaidAmount, setCreditPaidAmount] = useState<number | ''>('');
 
   // Estado de Desglose para Pago Mixto (2 o más formas de pago simultáneas, Contado y/o Crédito)
+  type MixtoCurrencyMode = 'BS' | 'USD';
+  const isBsPaymentMethod = (method: PaymentMethod): boolean =>
+    method === 'Pago Móvil' ||
+    method === 'Punto de Venta (Bs)' ||
+    method === 'Transferencia Bancaria Bs';
+
   interface MixtoSplitDraft {
     id: string;
     splitType: SaleSplitCondition;
+    currencyMode: MixtoCurrencyMode;
     paymentMethod: PaymentMethod;
     pagoMovilAccount: PagoMovilAccountOption;
     amountUSD: string;
@@ -166,6 +174,7 @@ export const PosView: React.FC = () => {
     {
       id: `mix-1-${Date.now()}`,
       splitType: 'CONTADO',
+      currencyMode: 'BS',
       paymentMethod: 'Pago Móvil',
       pagoMovilAccount: 'BANESCO_PERSONAL',
       amountUSD: '',
@@ -175,6 +184,7 @@ export const PosView: React.FC = () => {
     {
       id: `mix-2-${Date.now()}`,
       splitType: 'CONTADO',
+      currencyMode: 'USD',
       paymentMethod: 'Dólares Efectivo (USD)',
       pagoMovilAccount: 'BANESCO_PERSONAL',
       amountUSD: '',
@@ -742,6 +752,52 @@ export const PosView: React.FC = () => {
       ) / 100
     );
   }, [paymentType, mixtoSplits]);
+  const mixtoCashBsUSD = useMemo(() => {
+    if (paymentType !== 'MIXTO') return 0;
+    return (
+      Math.round(
+        mixtoSplits
+          .filter(
+            (sp) =>
+              sp.splitType !== 'CREDITO' &&
+              (sp.currencyMode ? sp.currencyMode === 'BS' : isBsPaymentMethod(sp.paymentMethod))
+          )
+          .reduce((sum, sp) => sum + (parseFloat(sp.amountUSD) || 0), 0) * 100
+      ) / 100
+    );
+  }, [paymentType, mixtoSplits]);
+  const mixtoCashBsTotalBs = useMemo(() => {
+    if (paymentType !== 'MIXTO') return 0;
+    return (
+      Math.round(
+        mixtoSplits
+          .filter(
+            (sp) =>
+              sp.splitType !== 'CREDITO' &&
+              (sp.currencyMode ? sp.currencyMode === 'BS' : isBsPaymentMethod(sp.paymentMethod))
+          )
+          .reduce((sum, sp) => {
+            const bsVal = parseFloat(sp.amountBs);
+            if (!Number.isNaN(bsVal) && bsVal > 0) return sum + bsVal;
+            return sum + (parseFloat(sp.amountUSD) || 0) * rate;
+          }, 0) * 100
+      ) / 100
+    );
+  }, [paymentType, mixtoSplits, rate]);
+  const mixtoCashDivisasUSD = useMemo(() => {
+    if (paymentType !== 'MIXTO') return 0;
+    return (
+      Math.round(
+        mixtoSplits
+          .filter(
+            (sp) =>
+              sp.splitType !== 'CREDITO' &&
+              !(sp.currencyMode ? sp.currencyMode === 'BS' : isBsPaymentMethod(sp.paymentMethod))
+          )
+          .reduce((sum, sp) => sum + (parseFloat(sp.amountUSD) || 0), 0) * 100
+      ) / 100
+    );
+  }, [paymentType, mixtoSplits]);
 
   const handleSelectCreditDays = (days: number) => {
     setCreditDays(days);
@@ -774,12 +830,28 @@ export const PosView: React.FC = () => {
     let mixtoCashUSD = 0;
 
     if (isMixto) {
-      const parsedLegs: SalePaymentSplit[] = mixtoSplits
+      const parsedDrafts = mixtoSplits
         .map((sp, idx) => {
-          const usd = Math.round((parseFloat(sp.amountUSD) || 0) * 100) / 100;
-          const bs = Math.round(usd * rate * 100) / 100;
           const isCreditLeg = sp.splitType === 'CREDITO';
-          return {
+          const isBsLeg = sp.currencyMode
+            ? sp.currencyMode === 'BS'
+            : isBsPaymentMethod(sp.paymentMethod);
+          const rawBs = parseFloat(sp.amountBs);
+          const rawUsd = parseFloat(sp.amountUSD);
+          const hasExplicitBs = !Number.isNaN(rawBs) && rawBs > 0;
+          const hasExplicitUsd = !Number.isNaN(rawUsd) && rawUsd > 0;
+
+          // Preservar el monto EXACTO en Bs cuando se ingresó en Bs (sin recalcular desde el USD redondeado)
+          const bs = hasExplicitBs
+            ? Math.round(rawBs * 100) / 100
+            : Math.round((hasExplicitUsd ? rawUsd : 0) * rate * 100) / 100;
+          const usd = hasExplicitUsd
+            ? Math.round(rawUsd * 100) / 100
+            : rate > 0
+              ? Math.round((bs / rate) * 100) / 100
+              : 0;
+
+          const leg: SalePaymentSplit = {
             id: sp.id || `split-${Date.now()}-${idx}`,
             splitType: isCreditLeg ? ('CREDITO' as SaleSplitCondition) : ('CONTADO' as SaleSplitCondition),
             paymentMethod: isCreditLeg ? 'Pago Móvil' : sp.paymentMethod,
@@ -788,8 +860,11 @@ export const PosView: React.FC = () => {
             pagoMovilAccount: !isCreditLeg && sp.paymentMethod === 'Pago Móvil' ? sp.pagoMovilAccount : undefined,
             reference: sp.reference.trim() || undefined,
           };
+          return { leg, isBsLeg, hasExplicitBs };
         })
-        .filter((leg) => leg.amountUSD > 0);
+        .filter((entry) => entry.leg.amountUSD > 0 || entry.leg.amountBs > 0);
+
+      const parsedLegs: SalePaymentSplit[] = parsedDrafts.map((entry) => entry.leg);
 
       if (parsedLegs.length < 2) {
         const msg = 'Para Pago Mixto debes ingresar montos mayores a $0 en al menos 2 partes de pago.';
@@ -812,14 +887,23 @@ export const PosView: React.FC = () => {
         return;
       }
 
-      // Ajuste fino de 1-2 centavos por redondeo en la última cuota para exactitud contable
+      // Ajuste fino de 1-2 centavos por redondeo en USD sin alterar un monto exacto ingresado en Bs
       if (diffUSD !== 0 && parsedLegs.length > 0) {
-        const lastIdx = parsedLegs.length - 1;
-        const adjustedUSD = Math.max(0.01, Math.round((parsedLegs[lastIdx].amountUSD + diffUSD) * 100) / 100);
-        parsedLegs[lastIdx] = {
-          ...parsedLegs[lastIdx],
+        let adjustIdx = parsedLegs.length - 1;
+        for (let i = parsedDrafts.length - 1; i >= 0; i -= 1) {
+          if (!parsedDrafts[i].isBsLeg) {
+            adjustIdx = i;
+            break;
+          }
+        }
+        const adjustedUSD = Math.max(0.01, Math.round((parsedLegs[adjustIdx].amountUSD + diffUSD) * 100) / 100);
+        const keepExactBs = parsedDrafts[adjustIdx].isBsLeg && parsedDrafts[adjustIdx].hasExplicitBs;
+        parsedLegs[adjustIdx] = {
+          ...parsedLegs[adjustIdx],
           amountUSD: adjustedUSD,
-          amountBs: Math.round(adjustedUSD * rate * 100) / 100,
+          amountBs: keepExactBs
+            ? parsedLegs[adjustIdx].amountBs
+            : Math.round(adjustedUSD * rate * 100) / 100,
         };
       }
 
@@ -1987,10 +2071,16 @@ export const PosView: React.FC = () => {
                     );
                     if (updated.length === 2 && updated[0].id === legId && totalUSD > 0) {
                       const rem = Math.max(0, Math.round((totalUSD - equivUSD) * 100) / 100);
+                      const secondIsBs = updated[1].currencyMode
+                        ? updated[1].currencyMode === 'BS'
+                        : isBsPaymentMethod(updated[1].paymentMethod);
+                      const remBs = secondIsBs
+                        ? Math.max(0, Math.round((totalUSD * rate - validBs) * 100) / 100)
+                        : Math.round(rem * rate * 100) / 100;
                       updated[1] = {
                         ...updated[1],
                         amountUSD: cleanVal === '' ? '' : rem.toFixed(2),
-                        amountBs: cleanVal === '' ? '' : (rem * rate).toFixed(2),
+                        amountBs: cleanVal === '' ? '' : remBs.toFixed(2),
                       };
                     }
                     return updated;
@@ -2039,10 +2129,15 @@ export const PosView: React.FC = () => {
                 return (
                   <div className="p-3 bg-teal-50/90 border border-teal-300 rounded-xl space-y-2.5">
                     <div className="flex items-center justify-between gap-2 flex-wrap">
-                      <span className="text-xs font-bold text-teal-950 flex items-center gap-1.5">
-                        <Layers className="w-3.5 h-3.5 text-teal-700" />
-                        Desglose de Pago Mixto
-                      </span>
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span className="text-xs font-bold text-teal-950 flex items-center gap-1.5">
+                          <Layers className="w-3.5 h-3.5 text-teal-700" />
+                          Desglose de Pago Mixto
+                        </span>
+                        <span className="px-1.5 py-0.5 rounded bg-white border border-teal-300 text-[10px] font-mono font-bold text-teal-900">
+                          Tasa BCV: {formatBs(rate)}
+                        </span>
+                      </div>
                       <div className="flex items-center gap-1.5">
                         <button
                           type="button"
@@ -2061,6 +2156,7 @@ export const PosView: React.FC = () => {
                               {
                                 id: `mix-${Date.now()}-${prev.length + 1}`,
                                 splitType: 'CONTADO',
+                                currencyMode: 'BS',
                                 paymentMethod: 'Punto de Venta (Bs)',
                                 pagoMovilAccount: 'BANESCO_PERSONAL',
                                 amountUSD: '',
@@ -2086,13 +2182,14 @@ export const PosView: React.FC = () => {
                             prev.map((leg) => ({ ...leg, splitType: 'CONTADO' as SaleSplitCondition }))
                           )
                         }
-                        className={`py-1.5 px-2 rounded-md text-[11px] font-bold transition-colors cursor-pointer ${
+                        className={`py-1.5 px-2 rounded-md text-[11px] font-bold transition-colors cursor-pointer flex items-center justify-center gap-1 ${
                           !hasMixtoCreditSplit
-                            ? 'bg-teal-700 text-white shadow-2xs'
+                            ? 'bg-emerald-700 text-white shadow-2xs'
                             : 'text-teal-900 hover:bg-white/70'
                         }`}
                       >
-                        Todo de Contado
+                        <CheckCircle2 className="w-3.5 h-3.5" />
+                        <span>Todo de Contado</span>
                       </button>
                       <button
                         type="button"
@@ -2108,53 +2205,108 @@ export const PosView: React.FC = () => {
                             }));
                           })
                         }
-                        className={`py-1.5 px-2 rounded-md text-[11px] font-bold transition-colors cursor-pointer ${
+                        className={`py-1.5 px-2 rounded-md text-[11px] font-bold transition-colors cursor-pointer flex items-center justify-center gap-1 ${
                           hasMixtoCreditSplit
                             ? 'bg-amber-600 text-white shadow-2xs'
                             : 'text-amber-900 hover:bg-amber-100/80'
                         }`}
                       >
-                        Contado + Crédito
+                        <Clock className="w-3.5 h-3.5" />
+                        <span>Contado + Crédito</span>
                       </button>
                     </div>
 
-                    <p className="text-[10px] text-teal-900 leading-snug">
-                      Selecciona en cada parte si se paga <strong>De Contado</strong> (ingresa hoy a Tesorería) o <strong>A Crédito</strong> (queda como saldo pendiente en Cuentas por Cobrar).
-                    </p>
-
-                    <div className="space-y-2">
+                    <div className="space-y-2.5">
                       {mixtoSplits.map((leg, idx) => {
                         const isCreditLeg = leg.splitType === 'CREDITO';
+                        const isBsLeg = leg.currencyMode
+                          ? leg.currencyMode === 'BS'
+                          : isBsPaymentMethod(leg.paymentMethod);
+                        const numUSD = parseFloat(leg.amountUSD) || 0;
+                        const parsedBs = parseFloat(leg.amountBs);
+                        const numBs = !Number.isNaN(parsedBs) && parsedBs > 0 ? parsedBs : numUSD * rate;
                         const destLabel = isCreditLeg
                           ? 'Cuenta por Cobrar (A Crédito)'
                           : leg.paymentMethod === 'Pago Móvil'
                             ? leg.pagoMovilAccount === 'PROVINCIAL'
-                              ? 'Provincial (Bs)'
-                              : 'Banesco Personal (Bs)'
+                              ? 'Provincial (Bs.)'
+                              : 'Banesco Personal (Bs.)'
                             : leg.paymentMethod === 'Dólares Efectivo (USD)'
                               ? 'Caja Efectivo USD ($)'
                               : leg.paymentMethod === 'Binance Pay (USDT)'
                                 ? 'Billetera USDT (Binance)'
-                                : 'Banesco SMCC (Bs)';
+                                : 'Banesco SMCC (Bs.)';
+
+                        const handleSelectCurrencyMode = (nextMode: MixtoCurrencyMode) => {
+                          setMixtoSplits((prev) =>
+                            prev.map((item) => {
+                              if (item.id !== leg.id) return item;
+                              let nextMethod = item.paymentMethod;
+                              if (nextMode === 'BS' && !isBsPaymentMethod(item.paymentMethod)) {
+                                nextMethod = 'Pago Móvil';
+                              } else if (nextMode === 'USD' && isBsPaymentMethod(item.paymentMethod)) {
+                                nextMethod = 'Dólares Efectivo (USD)';
+                              }
+                              return {
+                                ...item,
+                                currencyMode: nextMode,
+                                paymentMethod: nextMethod,
+                              };
+                            })
+                          );
+                        };
 
                         return (
                           <div
                             key={leg.id}
-                            className={`p-2.5 rounded-lg border space-y-2 shadow-2xs transition-colors ${
+                            className={`p-2.5 rounded-lg border border-l-4 space-y-2 shadow-2xs transition-colors ${
                               isCreditLeg
-                                ? 'bg-amber-50/70 border-amber-300'
-                                : 'bg-white border-teal-200'
+                                ? 'bg-amber-50/80 border-amber-300 border-l-amber-500'
+                                : 'bg-white border-teal-200 border-l-emerald-500'
                             }`}
                           >
-                            <div className="flex items-center justify-between gap-2">
-                              <span
-                                className={`text-[10px] font-extrabold uppercase tracking-wider ${
-                                  isCreditLeg ? 'text-amber-900' : 'text-teal-800'
-                                }`}
-                              >
-                                Parte #{idx + 1} · → {destLabel}
-                              </span>
-                              <div className="flex items-center gap-1.5">
+                            {/* Encabezado visual con badges claros: #Parte + Condición + Moneda */}
+                            <div className="flex items-start justify-between gap-2">
+                              <div className="space-y-1 min-w-0">
+                                <div className="flex items-center gap-1.5 flex-wrap">
+                                  <span className="text-[10px] font-black text-slate-700 bg-slate-100 border border-slate-200 px-1.5 py-0.5 rounded">
+                                    Parte #{idx + 1}
+                                  </span>
+                                  <span
+                                    className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-extrabold uppercase tracking-wide ${
+                                      isCreditLeg
+                                        ? 'bg-amber-600 text-white'
+                                        : 'bg-emerald-600 text-white'
+                                    }`}
+                                  >
+                                    {isCreditLeg ? (
+                                      <>
+                                        <Clock className="w-2.5 h-2.5" />
+                                        A CRÉDITO
+                                      </>
+                                    ) : (
+                                      <>
+                                        <CheckCircle2 className="w-2.5 h-2.5" />
+                                        DE CONTADO
+                                      </>
+                                    )}
+                                  </span>
+                                  <span
+                                    className={`inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[10px] font-extrabold border ${
+                                      isBsLeg
+                                        ? 'bg-sky-100 text-sky-900 border-sky-300'
+                                        : 'bg-emerald-50 text-emerald-900 border-emerald-300'
+                                    }`}
+                                  >
+                                    {isBsLeg ? 'Bs. BOLÍVARES' : '$ DIVISAS'}
+                                  </span>
+                                </div>
+                                <div className="text-[10px] text-slate-600 font-medium truncate">
+                                  Destino: <strong className="text-slate-800">{destLabel}</strong>
+                                </div>
+                              </div>
+
+                              <div className="flex items-center gap-1 shrink-0">
                                 {totalUSD > 0 && !isExact && (
                                   <button
                                     type="button"
@@ -2183,51 +2335,92 @@ export const PosView: React.FC = () => {
                               </div>
                             </div>
 
-                            {/* Selector por parte: De Contado vs A Crédito */}
-                            <div className="grid grid-cols-2 gap-1.5">
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  setMixtoSplits((prev) =>
-                                    prev.map((item) =>
-                                      item.id === leg.id
-                                        ? { ...item, splitType: 'CONTADO' as SaleSplitCondition }
-                                        : item
-                                    )
-                                  )
-                                }
-                                className={`py-1 px-2 rounded-md border text-[10px] font-bold cursor-pointer transition-colors ${
-                                  !isCreditLeg
-                                    ? 'bg-emerald-600 border-emerald-600 text-white'
-                                    : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
-                                }`}
-                              >
-                                De Contado
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  setMixtoSplits((prev) =>
-                                    prev.map((item) =>
-                                      item.id === leg.id
-                                        ? { ...item, splitType: 'CREDITO' as SaleSplitCondition }
-                                        : item
-                                    )
-                                  )
-                                }
-                                className={`py-1 px-2 rounded-md border text-[10px] font-bold cursor-pointer transition-colors ${
-                                  isCreditLeg
-                                    ? 'bg-amber-600 border-amber-600 text-white'
-                                    : 'bg-white border-slate-200 text-amber-800 hover:bg-amber-50'
-                                }`}
-                              >
-                                A Crédito
-                              </button>
+                            {/* Controles claros: 1) Condición (Contado vs Crédito) y 2) Moneda (Bolívares vs Divisas) */}
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
+                              <div>
+                                <span className="block text-[9px] font-bold text-slate-500 uppercase mb-0.5">
+                                  1. Condición del pago
+                                </span>
+                                <div className="grid grid-cols-2 gap-1">
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setMixtoSplits((prev) =>
+                                        prev.map((item) =>
+                                          item.id === leg.id
+                                            ? { ...item, splitType: 'CONTADO' as SaleSplitCondition }
+                                            : item
+                                        )
+                                      )
+                                    }
+                                    className={`py-1 px-1.5 rounded-md border text-[10px] font-bold cursor-pointer transition-colors flex items-center justify-center gap-1 ${
+                                      !isCreditLeg
+                                        ? 'bg-emerald-600 border-emerald-600 text-white shadow-2xs'
+                                        : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+                                    }`}
+                                  >
+                                    <CheckCircle2 className="w-3 h-3 shrink-0" />
+                                    <span>Contado</span>
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setMixtoSplits((prev) =>
+                                        prev.map((item) =>
+                                          item.id === leg.id
+                                            ? { ...item, splitType: 'CREDITO' as SaleSplitCondition }
+                                            : item
+                                        )
+                                      )
+                                    }
+                                    className={`py-1 px-1.5 rounded-md border text-[10px] font-bold cursor-pointer transition-colors flex items-center justify-center gap-1 ${
+                                      isCreditLeg
+                                        ? 'bg-amber-600 border-amber-600 text-white shadow-2xs'
+                                        : 'bg-white border-slate-200 text-amber-800 hover:bg-amber-50'
+                                    }`}
+                                  >
+                                    <Clock className="w-3 h-3 shrink-0" />
+                                    <span>Crédito</span>
+                                  </button>
+                                </div>
+                              </div>
+
+                              <div>
+                                <span className="block text-[9px] font-bold text-slate-500 uppercase mb-0.5">
+                                  2. {isCreditLeg ? 'Moneda de referencia' : 'Se paga en'}
+                                </span>
+                                <div className="grid grid-cols-2 gap-1">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleSelectCurrencyMode('BS')}
+                                    className={`py-1 px-1.5 rounded-md border text-[10px] font-bold cursor-pointer transition-colors flex items-center justify-center gap-1 ${
+                                      isBsLeg
+                                        ? 'bg-sky-600 border-sky-600 text-white shadow-2xs'
+                                        : 'bg-white border-slate-200 text-sky-900 hover:bg-sky-50'
+                                    }`}
+                                  >
+                                    <Banknote className="w-3 h-3 shrink-0" />
+                                    <span>Bs.</span>
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => handleSelectCurrencyMode('USD')}
+                                    className={`py-1 px-1.5 rounded-md border text-[10px] font-bold cursor-pointer transition-colors flex items-center justify-center gap-1 ${
+                                      !isBsLeg
+                                        ? 'bg-emerald-700 border-emerald-700 text-white shadow-2xs'
+                                        : 'bg-white border-slate-200 text-emerald-900 hover:bg-emerald-50'
+                                    }`}
+                                  >
+                                    <DollarSign className="w-3 h-3 shrink-0" />
+                                    <span>Divisas</span>
+                                  </button>
+                                </div>
+                              </div>
                             </div>
 
                             <div className="grid grid-cols-1 gap-1.5">
                               {isCreditLeg ? (
-                                <div className="px-2 py-1.5 rounded-md bg-amber-100/70 border border-amber-200 text-[10px] text-amber-950 font-medium">
+                                <div className="px-2 py-1.5 rounded-md bg-amber-100/80 border border-amber-200 text-[10px] text-amber-950 font-medium">
                                   Quedará registrado como <strong>saldo pendiente a crédito</strong> del cliente (no ingresa hoy a caja/bancos).
                                 </div>
                               ) : (
@@ -2236,22 +2429,38 @@ export const PosView: React.FC = () => {
                                     value={leg.paymentMethod}
                                     onChange={(e) => {
                                       const nextM = e.target.value as PaymentMethod;
+                                      const nextCurrency: MixtoCurrencyMode = isBsPaymentMethod(nextM)
+                                        ? 'BS'
+                                        : 'USD';
                                       setMixtoSplits((prev) =>
                                         prev.map((item) =>
-                                          item.id === leg.id ? { ...item, paymentMethod: nextM } : item
+                                          item.id === leg.id
+                                            ? { ...item, paymentMethod: nextM, currencyMode: nextCurrency }
+                                            : item
                                         )
                                       );
                                     }}
-                                    className="w-full p-1.5 border border-slate-200 rounded-lg text-xs bg-slate-50 font-semibold text-slate-800"
+                                    className={`w-full p-1.5 border rounded-lg text-xs font-semibold text-slate-800 ${
+                                      isBsLeg
+                                        ? 'border-sky-200 bg-sky-50/60'
+                                        : 'border-emerald-200 bg-emerald-50/60'
+                                    }`}
                                   >
-                                    <option value="Pago Móvil">Pago Móvil</option>
-                                    <option value="Punto de Venta (Bs)">Punto de Venta (Bs)</option>
-                                    <option value="Dólares Efectivo (USD)">Dólares Efectivo (USD)</option>
-                                    <option value="Transferencia Bancaria Bs">Transferencia Bancaria Bs</option>
-                                    <option value="Binance Pay (USDT)">Binance Pay (USDT)</option>
+                                    {isBsLeg ? (
+                                      <>
+                                        <option value="Pago Móvil">Pago Móvil (Bs.)</option>
+                                        <option value="Punto de Venta (Bs)">Punto de Venta (Bs.)</option>
+                                        <option value="Transferencia Bancaria Bs">Transferencia Bancaria (Bs.)</option>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <option value="Dólares Efectivo (USD)">Dólares Efectivo ($ USD)</option>
+                                        <option value="Binance Pay (USDT)">Binance Pay (USDT)</option>
+                                      </>
+                                    )}
                                   </select>
 
-                                  {leg.paymentMethod === 'Pago Móvil' && (
+                                  {isBsLeg && leg.paymentMethod === 'Pago Móvil' && (
                                     <div className="grid grid-cols-2 gap-1.5">
                                       <button
                                         type="button"
@@ -2267,7 +2476,7 @@ export const PosView: React.FC = () => {
                                         className={`py-1 px-2 rounded-md border text-[10px] font-bold cursor-pointer transition-colors ${
                                           leg.pagoMovilAccount === 'BANESCO_PERSONAL'
                                             ? 'bg-slate-900 border-slate-900 text-white'
-                                            : 'bg-blue-50/70 border-blue-200 text-slate-700 hover:bg-blue-100'
+                                            : 'bg-sky-50/70 border-sky-200 text-slate-700 hover:bg-sky-100'
                                         }`}
                                       >
                                         Banesco Personal
@@ -2286,7 +2495,7 @@ export const PosView: React.FC = () => {
                                         className={`py-1 px-2 rounded-md border text-[10px] font-bold cursor-pointer transition-colors ${
                                           leg.pagoMovilAccount === 'PROVINCIAL'
                                             ? 'bg-slate-900 border-slate-900 text-white'
-                                            : 'bg-blue-50/70 border-blue-200 text-slate-700 hover:bg-blue-100'
+                                            : 'bg-sky-50/70 border-sky-200 text-slate-700 hover:bg-sky-100'
                                         }`}
                                       >
                                         Provincial
@@ -2296,38 +2505,111 @@ export const PosView: React.FC = () => {
                                 </>
                               )}
 
+                              {/* Monto Principal en la moneda seleccionada + Equivalente BCV en vivo */}
                               <div className="grid grid-cols-2 gap-1.5">
-                                <div>
-                                  <label className="block text-[9px] font-bold text-slate-500 uppercase mb-0.5">
-                                    {isCreditLeg ? 'Monto a Crédito ($ USD)' : 'Monto ($ USD)'}
-                                  </label>
-                                  <input
-                                    type="number"
-                                    step="any"
-                                    min="0"
-                                    value={leg.amountUSD}
-                                    onChange={(e) => updateMixtoLegUSD(leg.id, e.target.value)}
-                                    placeholder="0.00"
-                                    className={`w-full p-1.5 border rounded-lg text-xs font-mono font-bold text-slate-900 bg-white ${
-                                      isCreditLeg ? 'border-amber-400' : 'border-teal-300'
-                                    }`}
-                                  />
-                                </div>
-                                <div>
-                                  <label className="block text-[9px] font-bold text-slate-500 uppercase mb-0.5">
-                                    Equiv. Bs (BCV)
-                                  </label>
-                                  <input
-                                    type="number"
-                                    step="any"
-                                    min="0"
-                                    value={leg.amountBs}
-                                    onChange={(e) => updateMixtoLegBs(leg.id, e.target.value)}
-                                    placeholder="0.00"
-                                    className="w-full p-1.5 border border-slate-200 rounded-lg text-xs font-mono text-slate-700 bg-slate-50"
-                                  />
-                                </div>
+                                {isBsLeg ? (
+                                  <>
+                                    <div>
+                                      <label className="block text-[9px] font-extrabold text-sky-800 uppercase mb-0.5">
+                                        {isCreditLeg ? 'Crédito en Bs.' : 'Paga en Bs.'}
+                                      </label>
+                                      <input
+                                        type="number"
+                                        step="any"
+                                        min="0"
+                                        value={leg.amountBs}
+                                        onChange={(e) => updateMixtoLegBs(leg.id, e.target.value)}
+                                        placeholder="0.00"
+                                        className={`w-full p-1.5 border-2 rounded-lg text-xs font-mono font-extrabold text-sky-950 bg-sky-50/40 focus:outline-none focus:ring-2 focus:ring-sky-400/50 ${
+                                          isCreditLeg ? 'border-amber-400' : 'border-sky-400'
+                                        }`}
+                                      />
+                                    </div>
+                                    <div>
+                                      <label className="block text-[9px] font-bold text-slate-500 uppercase mb-0.5">
+                                        Equiv. $ USD (BCV)
+                                      </label>
+                                      <input
+                                        type="number"
+                                        step="any"
+                                        min="0"
+                                        value={leg.amountUSD}
+                                        onChange={(e) => updateMixtoLegUSD(leg.id, e.target.value)}
+                                        placeholder="0.00"
+                                        className="w-full p-1.5 border border-slate-200 rounded-lg text-xs font-mono font-semibold text-slate-700 bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-teal-400/40"
+                                      />
+                                    </div>
+                                  </>
+                                ) : (
+                                  <>
+                                    <div>
+                                      <label className="block text-[9px] font-extrabold text-emerald-800 uppercase mb-0.5">
+                                        {isCreditLeg ? 'Crédito en $ USD' : 'Paga en Divisas ($)'}
+                                      </label>
+                                      <input
+                                        type="number"
+                                        step="any"
+                                        min="0"
+                                        value={leg.amountUSD}
+                                        onChange={(e) => updateMixtoLegUSD(leg.id, e.target.value)}
+                                        placeholder="0.00"
+                                        className={`w-full p-1.5 border-2 rounded-lg text-xs font-mono font-extrabold text-slate-950 focus:outline-none focus:ring-2 ${
+                                          isCreditLeg
+                                            ? 'border-amber-400 bg-amber-50/40 focus:ring-amber-400/50'
+                                            : 'border-emerald-400 bg-emerald-50/40 focus:ring-emerald-400/50'
+                                        }`}
+                                      />
+                                    </div>
+                                    <div>
+                                      <label className="block text-[9px] font-bold text-slate-500 uppercase mb-0.5">
+                                        Equiv. Bs. (BCV)
+                                      </label>
+                                      <input
+                                        type="number"
+                                        step="any"
+                                        min="0"
+                                        value={leg.amountBs}
+                                        onChange={(e) => updateMixtoLegBs(leg.id, e.target.value)}
+                                        placeholder="0.00"
+                                        className="w-full p-1.5 border border-slate-200 rounded-lg text-xs font-mono font-semibold text-slate-700 bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-teal-400/40"
+                                      />
+                                    </div>
+                                  </>
+                                )}
                               </div>
+
+                              {/* Franja resumen de equivalencia BCV en vivo por cada parte */}
+                              {(numUSD > 0 || numBs > 0) && (
+                                <div
+                                  className={`px-2 py-1.5 rounded-md border flex items-center justify-between gap-2 text-[10px] ${
+                                    isCreditLeg
+                                      ? 'bg-amber-100/70 border-amber-300 text-amber-950'
+                                      : isBsLeg
+                                        ? 'bg-sky-50 border-sky-200 text-sky-950'
+                                        : 'bg-emerald-50 border-emerald-200 text-emerald-950'
+                                  }`}
+                                >
+                                  <span className="font-bold flex items-center gap-1 min-w-0">
+                                    <ArrowLeftRight className="w-3 h-3 shrink-0 opacity-75" />
+                                    {isBsLeg ? (
+                                      <span className="truncate">
+                                        {isCreditLeg ? 'Crédito:' : 'Paga:'}{' '}
+                                        <span className="font-mono font-extrabold">{formatBs(numBs)}</span>
+                                      </span>
+                                    ) : (
+                                      <span className="truncate">
+                                        {isCreditLeg ? 'Crédito:' : 'Paga:'}{' '}
+                                        <span className="font-mono font-extrabold">{formatUSD(numUSD)}</span>
+                                      </span>
+                                    )}
+                                  </span>
+                                  <span className="font-mono font-bold shrink-0">
+                                    {isBsLeg
+                                      ? `⇄ ${formatUSD(numUSD)} BCV`
+                                      : `⇄ ${formatBs(numBs)} BCV`}
+                                  </span>
+                                </div>
+                              )}
 
                               <input
                                 type="text"
@@ -2392,46 +2674,97 @@ export const PosView: React.FC = () => {
                             className="p-1 border border-amber-300 rounded-md text-xs bg-white text-slate-800 font-mono"
                           />
                         </div>
-                        <div className="pt-1.5 border-t border-amber-200/90 text-[11px] space-y-0.5">
-                          <div className="flex justify-between text-emerald-800 font-semibold">
-                            <span>Cobrado hoy (Contado):</span>
-                            <span className="font-mono">{formatUSD(mixtoCashTotalUSD)}</span>
-                          </div>
-                          <div className="flex justify-between text-amber-950 font-bold">
-                            <span>Queda a Crédito (Por cobrar):</span>
-                            <span className="font-mono">
-                              {formatUSD(mixtoCreditTotalUSD)} ({formatBs(mixtoCreditTotalUSD * rate)})
-                            </span>
-                          </div>
-                        </div>
                       </div>
                     )}
 
-                    {/* Barra de cuadre en tiempo real */}
-                    <div className="pt-2 border-t border-teal-200/90 text-[11px] space-y-1">
-                      <div className="flex items-center justify-between text-teal-950">
-                        <span>Asignado en Pago Mixto:</span>
-                        <span className="font-mono font-bold">
-                          {formatUSD(assignedUSD)} ({formatBs(assignedUSD * rate)})
-                        </span>
-                      </div>
-                      <div className="flex items-center justify-between font-bold">
-                        <span>Estado de cuadre:</span>
-                        {isExact ? (
-                          <span className="text-emerald-700 bg-emerald-100 border border-emerald-300 px-2 py-0.5 rounded font-mono text-[10px]">
-                            ✓ Cuadrado exacto ({formatUSD(totalUSD)})
+                    {/* Resumen desglosado por Condición (Contado vs Crédito) y Moneda (Bs. vs Divisas) */}
+                    <div className="p-2.5 bg-white/90 border border-teal-200 rounded-lg text-[11px] space-y-1.5">
+                      <div className="space-y-1">
+                        <div className="flex items-center justify-between text-emerald-900 font-bold">
+                          <span className="flex items-center gap-1">
+                            <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+                            De Contado (Hoy):
                           </span>
-                        ) : remainingUSD > 0.01 ? (
-                          <span className="text-amber-900 bg-amber-100 border border-amber-300 px-2 py-0.5 rounded font-mono text-[10px]">
-                            Faltan {formatUSD(remainingUSD)} ({formatBs(remainingUSD * rate)})
+                          <span className="font-mono text-right">
+                            {formatUSD(mixtoCashTotalUSD)}{' '}
+                            <span className="text-[10px] font-semibold text-slate-500">
+                              ({formatBs(mixtoCashTotalUSD * rate)})
+                            </span>
                           </span>
-                        ) : remainingUSD < -0.01 ? (
-                          <span className="text-rose-800 bg-rose-100 border border-rose-300 px-2 py-0.5 rounded font-mono text-[10px]">
-                            Excede por {formatUSD(Math.abs(remainingUSD))}
-                          </span>
-                        ) : (
-                          <span className="text-slate-500 text-[10px]">Agrega productos para cuadrar</span>
+                        </div>
+
+                        {(mixtoCashBsUSD > 0 || mixtoCashDivisasUSD > 0) && (
+                          <div className="pl-4 space-y-0.5 text-[10px]">
+                            {mixtoCashBsUSD > 0 && (
+                              <div className="flex items-center justify-between text-sky-900">
+                                <span className="font-semibold">• En Bolívares (Bs.):</span>
+                                <span className="font-mono font-bold">
+                                  {formatBs(mixtoCashBsTotalBs)}{' '}
+                                  <span className="text-slate-500 font-normal">
+                                    (Equiv. {formatUSD(mixtoCashBsUSD)} BCV)
+                                  </span>
+                                </span>
+                              </div>
+                            )}
+                            {mixtoCashDivisasUSD > 0 && (
+                              <div className="flex items-center justify-between text-emerald-900">
+                                <span className="font-semibold">• En Divisas ($ USD):</span>
+                                <span className="font-mono font-bold">
+                                  {formatUSD(mixtoCashDivisasUSD)}{' '}
+                                  <span className="text-slate-500 font-normal">
+                                    (Equiv. {formatBs(mixtoCashDivisasUSD * rate)} BCV)
+                                  </span>
+                                </span>
+                              </div>
+                            )}
+                          </div>
                         )}
+
+                        {hasMixtoCreditSplit && (
+                          <div className="flex items-center justify-between text-amber-900 font-bold pt-1 border-t border-amber-100">
+                            <span className="flex items-center gap-1">
+                              <Clock className="w-3.5 h-3.5 text-amber-600" />
+                              A Crédito ({creditDays}D):
+                            </span>
+                            <span className="font-mono text-right">
+                              {formatUSD(mixtoCreditTotalUSD)}{' '}
+                              <span className="text-[10px] font-semibold text-amber-700">
+                                ({formatBs(mixtoCreditTotalUSD * rate)})
+                              </span>
+                            </span>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Barra de cuadre en tiempo real */}
+                      <div className="pt-1.5 border-t border-teal-200/90 space-y-1">
+                        <div className="flex items-center justify-between text-teal-950">
+                          <span className="font-semibold">Total asignado:</span>
+                          <span className="font-mono font-bold">
+                            {formatUSD(assignedUSD)}{' '}
+                            <span className="text-[10px] font-normal text-slate-600">
+                              ({formatBs(assignedUSD * rate)})
+                            </span>
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between font-bold gap-2">
+                          <span>Estado de cuadre:</span>
+                          {isExact ? (
+                            <span className="text-emerald-800 bg-emerald-100 border border-emerald-300 px-2 py-0.5 rounded font-mono text-[10px]">
+                              ✓ Cuadrado exacto ({formatUSD(totalUSD)})
+                            </span>
+                          ) : remainingUSD > 0.01 ? (
+                            <span className="text-amber-950 bg-amber-100 border border-amber-300 px-2 py-0.5 rounded font-mono text-[10px]">
+                              Faltan {formatUSD(remainingUSD)} ({formatBs(remainingUSD * rate)})
+                            </span>
+                          ) : remainingUSD < -0.01 ? (
+                            <span className="text-rose-800 bg-rose-100 border border-rose-300 px-2 py-0.5 rounded font-mono text-[10px]">
+                              Excede por {formatUSD(Math.abs(remainingUSD))} ({formatBs(Math.abs(remainingUSD) * rate)})
+                            </span>
+                          ) : (
+                            <span className="text-slate-500 text-[10px]">Agrega productos para cuadrar</span>
+                          )}
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -2966,48 +3299,118 @@ export const PosView: React.FC = () => {
                   </div>
                 )}
                 {paymentType === 'MIXTO' && (
-                  <div className="pt-2 border-t border-slate-800/80 space-y-1 text-[11px]">
-                    <span className="text-teal-300 font-bold block">Resumen de Pago Mixto:</span>
-                    {mixtoSplits.map((sp, i) => {
-                      const amt = parseFloat(sp.amountUSD) || 0;
-                      const isCreditLeg = sp.splitType === 'CREDITO';
-                      return (
-                        <div key={sp.id || i} className="flex justify-between text-slate-300">
-                          <span className="truncate pr-2">
-                            {i + 1}.{' '}
-                            {isCreditLeg ? (
-                              <span className="text-amber-300 font-semibold">A Crédito (Por Cobrar)</span>
-                            ) : (
-                              <>
-                                {sp.paymentMethod}
-                                {sp.paymentMethod === 'Pago Móvil'
-                                  ? ` (${sp.pagoMovilAccount === 'PROVINCIAL' ? 'Provincial' : 'Banesco'})`
-                                  : ''}
-                              </>
-                            )}
-                          </span>
-                          <span
-                            className={`font-mono font-bold shrink-0 ${
-                              isCreditLeg ? 'text-amber-300' : 'text-teal-300'
-                            }`}
+                  <div className="pt-2 border-t border-slate-800/80 space-y-1.5 text-[11px]">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-teal-300 font-bold">Resumen de Pago Mixto:</span>
+                      <span className="text-[10px] font-mono text-slate-400">
+                        BCV: {formatBs(rate)}
+                      </span>
+                    </div>
+                    <div className="space-y-1.5">
+                      {mixtoSplits.map((sp, i) => {
+                        const amtUSD = parseFloat(sp.amountUSD) || 0;
+                        const parsedBs = parseFloat(sp.amountBs);
+                        const amtBs = !Number.isNaN(parsedBs) && parsedBs > 0 ? parsedBs : amtUSD * rate;
+                        const isCreditLeg = sp.splitType === 'CREDITO';
+                        const isBsLeg = sp.currencyMode
+                          ? sp.currencyMode === 'BS'
+                          : isBsPaymentMethod(sp.paymentMethod);
+
+                        return (
+                          <div
+                            key={sp.id || i}
+                            className="flex items-start justify-between gap-2 text-slate-200 bg-slate-800/60 px-2 py-1.5 rounded-lg border border-slate-700/60"
                           >
-                            {formatUSD(amt)}
+                            <div className="min-w-0 space-y-0.5">
+                              <div className="flex items-center gap-1 flex-wrap">
+                                <span
+                                  className={`px-1 py-0.5 rounded text-[9px] font-extrabold uppercase ${
+                                    isCreditLeg
+                                      ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
+                                      : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                                  }`}
+                                >
+                                  {isCreditLeg ? 'CRÉDITO' : 'CONTADO'}
+                                </span>
+                                <span
+                                  className={`px-1 py-0.5 rounded text-[9px] font-extrabold ${
+                                    isBsLeg
+                                      ? 'bg-sky-500/20 text-sky-300 border border-sky-500/40'
+                                      : 'bg-teal-500/20 text-teal-200 border border-teal-500/40'
+                                  }`}
+                                >
+                                  {isBsLeg ? 'Bs.' : '$ Divisas'}
+                                </span>
+                              </div>
+                              <div className="text-[10px] text-slate-300 truncate">
+                                {i + 1}.{' '}
+                                {isCreditLeg ? (
+                                  <span className="text-amber-200 font-semibold">Cuenta por Cobrar</span>
+                                ) : (
+                                  <>
+                                    {sp.paymentMethod}
+                                    {sp.paymentMethod === 'Pago Móvil'
+                                      ? ` (${sp.pagoMovilAccount === 'PROVINCIAL' ? 'Provincial' : 'Banesco'})`
+                                      : ''}
+                                  </>
+                                )}
+                              </div>
+                            </div>
+                            <div className="text-right shrink-0">
+                              <div
+                                className={`font-mono font-bold text-[11px] ${
+                                  isCreditLeg
+                                    ? 'text-amber-300'
+                                    : isBsLeg
+                                      ? 'text-sky-300'
+                                      : 'text-emerald-300'
+                                }`}
+                              >
+                                {isBsLeg ? formatBs(amtBs) : formatUSD(amtUSD)}
+                              </div>
+                              <div className="font-mono text-[9px] text-slate-400">
+                                {isBsLeg
+                                  ? `≈ ${formatUSD(amtUSD)} BCV`
+                                  : `≈ ${formatBs(amtBs)} BCV`}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    <div className="pt-1.5 mt-1 border-t border-slate-800 space-y-1 text-[10px]">
+                      <div className="flex justify-between text-emerald-300 font-semibold">
+                        <span>Cobrado hoy (Contado):</span>
+                        <span className="font-mono font-bold">
+                          {formatUSD(mixtoCashTotalUSD)} ({formatBs(mixtoCashTotalUSD * rate)})
+                        </span>
+                      </div>
+                      {mixtoCashBsUSD > 0 && (
+                        <div className="flex justify-between text-sky-300 pl-2">
+                          <span>• En Bolívares:</span>
+                          <span className="font-mono">
+                            {formatBs(mixtoCashBsTotalBs)} (≈ {formatUSD(mixtoCashBsUSD)})
                           </span>
                         </div>
-                      );
-                    })}
-                    {hasMixtoCreditSplit && (
-                      <div className="pt-1.5 mt-1 border-t border-slate-800 space-y-0.5">
-                        <div className="flex justify-between text-emerald-300">
-                          <span>Cobrado hoy (Contado):</span>
-                          <span className="font-mono font-bold">{formatUSD(mixtoCashTotalUSD)}</span>
+                      )}
+                      {mixtoCashDivisasUSD > 0 && (
+                        <div className="flex justify-between text-teal-200 pl-2">
+                          <span>• En Divisas:</span>
+                          <span className="font-mono">
+                            {formatUSD(mixtoCashDivisasUSD)} (≈ {formatBs(mixtoCashDivisasUSD * rate)})
+                          </span>
                         </div>
-                        <div className="flex justify-between text-amber-300 font-semibold">
+                      )}
+                      {hasMixtoCreditSplit && (
+                        <div className="flex justify-between text-amber-300 font-semibold pt-0.5">
                           <span>Saldo a Crédito ({creditDays}D):</span>
-                          <span className="font-mono font-bold">{formatUSD(mixtoCreditTotalUSD)}</span>
+                          <span className="font-mono font-bold">
+                            {formatUSD(mixtoCreditTotalUSD)} ({formatBs(mixtoCreditTotalUSD * rate)})
+                          </span>
                         </div>
-                      </div>
-                    )}
+                      )}
+                    </div>
                   </div>
                 )}
               </div>

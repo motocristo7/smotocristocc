@@ -586,10 +586,18 @@ export function generateInvoicePDF(
     let splitY = y + 9.2;
     splits.forEach((sp, idx) => {
       const spBs = sp.amountBs || sp.amountUSD * rate;
+      const isBsMethod =
+        sp.splitType !== 'CREDITO' &&
+        (sp.paymentMethod === 'Pago Móvil' ||
+          sp.paymentMethod === 'Punto de Venta (Bs)' ||
+          sp.paymentMethod === 'Transferencia Bancaria Bs');
       const refPart = sp.reference ? ` · Ref: ${sp.reference}` : '';
       const label = sp.splitType === 'CREDITO' ? 'A Crédito (Por Cobrar)' : `De Contado - ${sp.paymentMethod}`;
+      const amountLabel = isBsMethod
+        ? `${formatBs(spBs)} (Equiv. ${formatUSD(sp.amountUSD)} BCV)`
+        : `${formatUSD(sp.amountUSD)} (${formatBs(spBs)})`;
       doc.text(
-        `${idx + 1}. ${label}: ${formatUSD(sp.amountUSD)} (${formatBs(spBs)})${refPart}`,
+        `${idx + 1}. ${label}: ${amountLabel}${refPart}`,
         margin + 4,
         splitY
       );
@@ -643,10 +651,18 @@ export function generateInvoicePDF(
     let splitY = y + 9.2;
     splits.forEach((sp, idx) => {
       const spBs = sp.amountBs || sp.amountUSD * rate;
+      const isBsMethod =
+        sp.splitType !== 'CREDITO' &&
+        (sp.paymentMethod === 'Pago Móvil' ||
+          sp.paymentMethod === 'Punto de Venta (Bs)' ||
+          sp.paymentMethod === 'Transferencia Bancaria Bs');
       const refPart = sp.reference ? ` · Ref: ${sp.reference}` : '';
       const label = sp.splitType === 'CREDITO' ? 'Parte a Crédito (Liquidada)' : sp.paymentMethod;
+      const amountLabel = isBsMethod
+        ? `${formatBs(spBs)} (Equiv. ${formatUSD(sp.amountUSD)} BCV)`
+        : `${formatUSD(sp.amountUSD)} (${formatBs(spBs)})`;
       doc.text(
-        `${idx + 1}. ${label}: ${formatUSD(sp.amountUSD)} (${formatBs(spBs)})${refPart}`,
+        `${idx + 1}. ${label}: ${amountLabel}${refPart}`,
         margin + 4,
         splitY
       );

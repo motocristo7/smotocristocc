@@ -437,6 +437,12 @@ export const InvoiceModal: React.FC = () => {
                   <div className="space-y-0.5 pt-0.5 border-t border-slate-200/80">
                     {(selectedInvoice.paymentSplits || []).map((sp, idx) => {
                       const isCreditLeg = sp.splitType === 'CREDITO';
+                      const isBsMethod =
+                        !isCreditLeg &&
+                        (sp.paymentMethod === 'Pago Móvil' ||
+                          sp.paymentMethod === 'Punto de Venta (Bs)' ||
+                          sp.paymentMethod === 'Transferencia Bancaria Bs');
+                      const exactBs = sp.amountBs || sp.amountUSD * rate;
                       return (
                         <div key={sp.id || idx} className="flex justify-between gap-2 text-[10px] text-slate-700">
                           <span className="truncate font-medium">
@@ -452,7 +458,9 @@ export const InvoiceModal: React.FC = () => {
                               isCreditLeg ? 'text-amber-900' : 'text-teal-900'
                             }`}
                           >
-                            {formatUSD(sp.amountUSD)} ({formatBs(sp.amountBs || sp.amountUSD * rate)})
+                            {isBsMethod
+                              ? `${formatBs(exactBs)} (Equiv. ${formatUSD(sp.amountUSD)} BCV)`
+                              : `${formatUSD(sp.amountUSD)} (${formatBs(exactBs)})`}
                           </span>
                         </div>
                       );
@@ -596,6 +604,12 @@ export const InvoiceModal: React.FC = () => {
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 pb-2 border-b border-amber-200/80">
                   {(selectedInvoice.paymentSplits || []).map((sp, idx) => {
                     const isCreditLeg = sp.splitType === 'CREDITO';
+                    const isBsMethod =
+                      !isCreditLeg &&
+                      (sp.paymentMethod === 'Pago Móvil' ||
+                        sp.paymentMethod === 'Punto de Venta (Bs)' ||
+                        sp.paymentMethod === 'Transferencia Bancaria Bs');
+                    const exactBs = sp.amountBs || sp.amountUSD * rate;
                     return (
                       <div
                         key={sp.id || idx}
@@ -614,7 +628,9 @@ export const InvoiceModal: React.FC = () => {
                             isCreditLeg ? 'text-amber-900' : 'text-teal-900'
                           }`}
                         >
-                          {formatUSD(sp.amountUSD)}
+                          {isBsMethod
+                            ? `${formatBs(exactBs)} · ${formatUSD(sp.amountUSD)} BCV`
+                            : `${formatUSD(sp.amountUSD)} · ${formatBs(exactBs)}`}
                         </span>
                       </div>
                     );
@@ -658,20 +674,30 @@ export const InvoiceModal: React.FC = () => {
                 ✓ Comprobante de Compra (Pago Mixto) - Cancelado en su totalidad
               </span>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5">
-                {(selectedInvoice.paymentSplits || []).map((sp, idx) => (
-                  <div
-                    key={sp.id || idx}
-                    className="flex items-center justify-between gap-2 bg-white/80 px-2.5 py-1.5 rounded-lg border border-teal-200/80 text-[11px]"
-                  >
-                    <span className="font-semibold text-slate-800 truncate">
-                      {sp.splitType === 'CREDITO' ? 'Parte a Crédito (Liquidada)' : sp.paymentMethod}
-                      {sp.reference ? ` (Ref: ${sp.reference})` : ''}
-                    </span>
-                    <span className="font-mono font-bold text-teal-900 shrink-0">
-                      {formatUSD(sp.amountUSD)} · {formatBs(sp.amountBs || sp.amountUSD * rate)}
-                    </span>
-                  </div>
-                ))}
+                {(selectedInvoice.paymentSplits || []).map((sp, idx) => {
+                  const isBsMethod =
+                    sp.splitType !== 'CREDITO' &&
+                    (sp.paymentMethod === 'Pago Móvil' ||
+                      sp.paymentMethod === 'Punto de Venta (Bs)' ||
+                      sp.paymentMethod === 'Transferencia Bancaria Bs');
+                  const exactBs = sp.amountBs || sp.amountUSD * rate;
+                  return (
+                    <div
+                      key={sp.id || idx}
+                      className="flex items-center justify-between gap-2 bg-white/80 px-2.5 py-1.5 rounded-lg border border-teal-200/80 text-[11px]"
+                    >
+                      <span className="font-semibold text-slate-800 truncate">
+                        {sp.splitType === 'CREDITO' ? 'Parte a Crédito (Liquidada)' : sp.paymentMethod}
+                        {sp.reference ? ` (Ref: ${sp.reference})` : ''}
+                      </span>
+                      <span className="font-mono font-bold text-teal-900 shrink-0">
+                        {isBsMethod
+                          ? `${formatBs(exactBs)} · Equiv. ${formatUSD(sp.amountUSD)} BCV`
+                          : `${formatUSD(sp.amountUSD)} · ${formatBs(exactBs)}`}
+                      </span>
+                    </div>
+                  );
+                })}
               </div>
               <p className="text-slate-600 text-[11px]">
                 ¡Muchas gracias por su compra y preferencia!

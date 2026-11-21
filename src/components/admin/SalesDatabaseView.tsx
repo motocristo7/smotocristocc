@@ -1485,6 +1485,12 @@ export const SalesDatabaseView: React.FC = () => {
                     <div className="space-y-1.5">
                       {selectedSaleDetail.paymentSplits.map((sp, idx) => {
                         const isCreditLeg = sp.splitType === 'CREDITO';
+                        const isBsMethod =
+                          !isCreditLeg &&
+                          (sp.paymentMethod === 'Pago Móvil' ||
+                            sp.paymentMethod === 'Punto de Venta (Bs)' ||
+                            sp.paymentMethod === 'Transferencia Bancaria Bs');
+                        const exactBs = sp.amountBs || sp.amountUSD * (selectedSaleDetail.bcvRate || rate);
                         return (
                           <div
                             key={sp.id || idx}
@@ -1512,13 +1518,15 @@ export const SalesDatabaseView: React.FC = () => {
                             <div className="text-right font-mono shrink-0">
                               <span
                                 className={`font-bold block ${
-                                  isCreditLeg ? 'text-amber-900' : 'text-teal-900'
+                                  isCreditLeg ? 'text-amber-900' : isBsMethod ? 'text-sky-900' : 'text-teal-900'
                                 }`}
                               >
-                                {formatUSD(sp.amountUSD)}
+                                {isBsMethod ? formatBs(exactBs) : formatUSD(sp.amountUSD)}
                               </span>
                               <span className="text-[10px] text-slate-500 block">
-                                {formatBs(sp.amountBs || sp.amountUSD * (selectedSaleDetail.bcvRate || rate))}
+                                {isBsMethod
+                                  ? `Equiv. ${formatUSD(sp.amountUSD)} BCV`
+                                  : formatBs(exactBs)}
                               </span>
                             </div>
                           </div>

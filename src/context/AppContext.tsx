@@ -4471,7 +4471,11 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       for (let i = 0; i < rawSplits.length; i += 1) {
         const leg = rawSplits[i];
         const legUSD = Math.round((Number(leg.amountUSD) || 0) * 100) / 100;
-        const legBs = Math.round(legUSD * rate * 100) / 100;
+        const explicitLegBs = Number(leg.amountBs);
+        const legBs =
+          !Number.isNaN(explicitLegBs) && explicitLegBs > 0
+            ? Math.round(explicitLegBs * 100) / 100
+            : Math.round(legUSD * rate * 100) / 100;
         const splitType = leg.splitType === 'CREDITO' ? 'CREDITO' : 'CONTADO';
 
         if (splitType === 'CREDITO') {
@@ -4499,6 +4503,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
             invoiceNumber: invoiceNum,
             customerName: customer.name || saleData.customerName,
             amountUSD: legUSD,
+            amountBs: legBs,
             bcvRate: rate,
             paymentMethod: leg.paymentMethod,
             pagoMovilAccount: legPmAccount,
@@ -4790,7 +4795,11 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
           for (let i = 0; i < validIncomingSplits.length; i += 1) {
             const leg = validIncomingSplits[i];
             const legUSD = Math.round((Number(leg.amountUSD) || 0) * 100) / 100;
-            const legBs = Math.round(legUSD * nextRate * 100) / 100;
+            const explicitLegBs = Number(leg.amountBs);
+            const legBs =
+              !Number.isNaN(explicitLegBs) && explicitLegBs > 0
+                ? Math.round(explicitLegBs * 100) / 100
+                : Math.round(legUSD * nextRate * 100) / 100;
             const splitType = leg.splitType === 'CREDITO' ? 'CREDITO' : 'CONTADO';
 
             if (splitType === 'CREDITO') {
@@ -4831,6 +4840,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
                 invoiceNumber: existing.invoiceNumber,
                 customerName: nextName || existing.customerName,
                 amountUSD: legUSD,
+                amountBs: legBs,
                 bcvRate: nextRate,
                 paymentMethod: leg.paymentMethod,
                 pagoMovilAccount: legPmAccount,
@@ -4895,6 +4905,11 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
           // Voided sale: update split metadata without altering Treasury balances
           nextPaymentSplits = validIncomingSplits.map((leg, i) => {
             const legUSD = Math.round((Number(leg.amountUSD) || 0) * 100) / 100;
+            const explicitLegBs = Number(leg.amountBs);
+            const legBs =
+              !Number.isNaN(explicitLegBs) && explicitLegBs > 0
+                ? Math.round(explicitLegBs * 100) / 100
+                : Math.round(legUSD * nextRate * 100) / 100;
             const splitType = leg.splitType === 'CREDITO' ? 'CREDITO' : 'CONTADO';
             const legAcc =
               splitType !== 'CREDITO' && leg.treasuryAccountId
@@ -4905,7 +4920,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
               id: leg.id || `split-${Date.now()}-${i}`,
               splitType,
               amountUSD: legUSD,
-              amountBs: Math.round(legUSD * nextRate * 100) / 100,
+              amountBs: legBs,
               treasuryAccountName:
                 splitType === 'CREDITO'
                   ? 'Cuenta por Cobrar (Crédito)'
@@ -8668,6 +8683,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     invoiceNumber: string;
     customerName: string;
     amountUSD: number;
+    amountBs?: number;
     bcvRate: number;
     paymentMethod: PaymentMethod | string;
     pagoMovilAccount?: PagoMovilAccountOption;
@@ -8681,7 +8697,11 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     if (cleanUSD <= 0) return null;
 
     const safeRate = params.bcvRate > 0 ? params.bcvRate : settingsRef.current.bcvRate || 1;
-    const cleanBs = Math.round(cleanUSD * safeRate * 100) / 100;
+    const explicitBs = Number(params.amountBs);
+    const cleanBs =
+      !Number.isNaN(explicitBs) && explicitBs > 0
+        ? Math.round(explicitBs * 100) / 100
+        : Math.round(cleanUSD * safeRate * 100) / 100;
 
     const explicitAcc = params.explicitAccountId
       ? treasuryAccountsRef.current.find((a) => a.id === params.explicitAccountId)

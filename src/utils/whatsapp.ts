@@ -169,7 +169,16 @@ ${(sale.creditPaidAmount || 0) > 0 ? `💵 Abono Inicial: ${formatUSD(sale.credi
     const mixtoLines = (sale.paymentSplits || [])
       .map((sp) => {
         const label = sp.splitType === 'CREDITO' ? '⏳ A Crédito' : `✅ Contado (${sp.paymentMethod})`;
-        return `   • ${label}: *${formatUSD(sp.amountUSD)}* (${formatBs(sp.amountBs || sp.amountUSD * rate)})${sp.reference ? ` · Ref: ${sp.reference}` : ''}`;
+        const spBs = sp.amountBs || sp.amountUSD * rate;
+        const isBsMethod =
+          sp.splitType !== 'CREDITO' &&
+          (sp.paymentMethod === 'Pago Móvil' ||
+            sp.paymentMethod === 'Punto de Venta (Bs)' ||
+            sp.paymentMethod === 'Transferencia Bancaria Bs');
+        const amountText = isBsMethod
+          ? `*${formatBs(spBs)}* (Equiv. ${formatUSD(sp.amountUSD)} BCV)`
+          : `*${formatUSD(sp.amountUSD)}* (${formatBs(spBs)})`;
+        return `   • ${label}: ${amountText}${sp.reference ? ` · Ref: ${sp.reference}` : ''}`;
       })
       .join('\n');
 
@@ -197,10 +206,18 @@ ${mixtoLines}
     // Venta de Contado, Pago Mixto (pagado en su totalidad) o MercadoLibre
     const mixtoLines = isMixto
       ? (sale.paymentSplits || [])
-          .map(
-            (sp) =>
-              `   • ${sp.splitType === 'CREDITO' ? 'Parte a Crédito (Liquidada)' : sp.paymentMethod}: *${formatUSD(sp.amountUSD)}* (${formatBs(sp.amountBs || sp.amountUSD * rate)})${sp.reference ? ` · Ref: ${sp.reference}` : ''}`
-          )
+          .map((sp) => {
+            const spBs = sp.amountBs || sp.amountUSD * rate;
+            const isBsMethod =
+              sp.splitType !== 'CREDITO' &&
+              (sp.paymentMethod === 'Pago Móvil' ||
+                sp.paymentMethod === 'Punto de Venta (Bs)' ||
+                sp.paymentMethod === 'Transferencia Bancaria Bs');
+            const amountText = isBsMethod
+              ? `*${formatBs(spBs)}* (Equiv. ${formatUSD(sp.amountUSD)} BCV)`
+              : `*${formatUSD(sp.amountUSD)}* (${formatBs(spBs)})`;
+            return `   • ${sp.splitType === 'CREDITO' ? 'Parte a Crédito (Liquidada)' : sp.paymentMethod}: ${amountText}${sp.reference ? ` · Ref: ${sp.reference}` : ''}`;
+          })
           .join('\n')
       : '';
     const conditionText = isMercadoLibre

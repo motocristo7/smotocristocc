@@ -1,10 +1,9 @@
 import React, { useState, useMemo } from 'react';
 import { useApp } from '../../context/AppContext';
-import { Product, ProductCategory, ProductCostOrigin } from '../../types';
+import { Product, ProductCategory } from '../../types';
 import { formatUSD, formatBs } from '../../utils/whatsapp';
 import {
   calculateProductPricing,
-  calculateReferenceCostUSD,
   suggestPriceFromTargetProfit,
   ProfitCalcMode,
   round2,
@@ -33,7 +32,6 @@ import {
   Loader2,
   Link2,
   Lock,
-  Info,
   Calculator,
   TrendingUp,
 } from 'lucide-react';
@@ -87,19 +85,16 @@ export const InventoryView: React.FC = () => {
     showToast(`✓ Carga completada: ${result.added} repuestos nuevos creados, ${result.updated} actualizados.`);
   };
 
-  // Form State (soporta costo por origen BCV o Divisas/USDT + doble precio de venta)
+  // Form State (un solo costo en Divisas + dos precios de venta: $ BCV Tienda y $ Ref. Divisas Solo Admin)
   const initialFormState = {
     sku: '',
     barcode: '',
     name: '',
     category: 'Frenos' as ProductCategory,
     description: '',
-    costCurrencyOrigin: 'DIVISAS' as ProductCostOrigin,
-    costPrice: 0,
-    costPriceBs: 0,
-    salePrice: 0, // Comercial USD-BCV (precio_venta_bs_bcv / tasa_bcv)
-    salePriceRefUSD: 0, // SOLO ADMIN: Precio de venta de referencia en divisas
-    salePriceBsBcv: 0, // Comercial en Bs a tasa BCV
+    costPrice: 0, // Costo único en divisas ($ USD)
+    salePrice: 0, // Precio de Venta en Dólares a Tasa BCV (visible en Tienda Online y Facturas)
+    salePriceRefUSD: 0, // SOLO ADMIN: Precio de Venta de Referencia en Divisas
     targetProfitPct: 30,
     stock: 10,
     minStock: 2,
@@ -212,6 +207,8 @@ export const InventoryView: React.FC = () => {
 
   const handleStartEdit = (product: Product) => {
     const pricing = calculateProductPricing(product, rate, usdtRate);
+    const normalizedDivisasCost =
+      pricing.referenceCostUSD > 0 ? pricing.referenceCostUSD : product.costPrice;
     setEditingProduct(product);
     setImagePreviewError(false);
     setUploadError(null);
@@ -227,12 +224,9 @@ export const InventoryView: React.FC = () => {
       name: product.name,
       category: product.category,
       description: product.description,
-      costCurrencyOrigin: pricing.costOrigin,
-      costPrice: pricing.costOrigin === 'BS_BCV' ? pricing.costUsdAtBcv : product.costPrice,
-      costPriceBs: pricing.costBs,
+      costPrice: normalizedDivisasCost,
       salePrice: product.salePrice,
       salePriceRefUSD: pricing.salePriceRefUSD,
-      salePriceBsBcv: pricing.salePriceBsBcv,
       targetProfitPct: product.targetProfitPct ?? 30,
       stock: product.stock,
       minStock: product.minStock,
@@ -245,71 +239,34 @@ export const InventoryView: React.FC = () => {
 
   // Cálculo en tiempo real dentro del formulario Crear / Editar repuesto
   const formPricing = useMemo(() => {
-    const costCalc = calculateReferenceCostUSD({
-      origin: formData.costCurrencyOrigin,
-      costUSD: formData.costPrice,
-      costBs: formData.costCurrencyOrigin === 'BS_BCV' ? formData.costPriceBs : undefined,
-      bcvRate: rate,
-      usdtRate,
-    });
+    const costUSD = Math.max(0, Number(formData.costPrice) || 0);
+    const saleUsdBcv = Math.max(0, Number(formData.salePrice) || 0);
+    const saleBsBcv = round2(saleUsdBcv * rate);
     const analysis = calculateProductPricing(
       {
-        costPrice: costCalc.costOrigin === 'BS_BCV' ? costCalc.costUsdAtBcv : costCalc.referenceCostUSD,
-        costCurrencyOrigin: formData.costCurrencyOrigin,
-        costPriceBs: costCalc.costBs,
-        referenceCostUSD: costCalc.referenceCostUSD,
-        salePrice: formData.salePrice,
+        costPrice: costUSD,
+        costCurrencyOrigin: 'DIVISAS',
+        costPriceBs: round2(costUSD * usdtRate),
+        referenceCostUSD: costUSD,
+        salePrice: saleUsdBcv,
         salePriceRefUSD: formData.salePriceRefUSD,
-        salePriceBsBcv: formData.salePriceBsBcv,
+        salePriceBsBcv: saleBsBcv,
       },
       rate,
       usdtRate
     );
-    return { costCalc, analysis };
-  }, [
-    formData.costCurrencyOrigin,
-    formData.costPrice,
-    formData.costPriceBs,
-    formData.salePrice,
-    formData.salePriceRefUSD,
-    formData.salePriceBsBcv,
-    rate,
-    usdtRate,
-  ]);
-
-  const handleCostOriginChange = (nextOrigin: ProductCostOrigin) => {
-    setFormData((prev) => {
-      if (nextOrigin === prev.costCurrencyOrigin) return prev;
-      if (nextOrigin === 'BS_BCV') {
-        const bsVal = prev.costPriceBs > 0 ? prev.costPriceBs : round2((prev.costPrice || 0) * rate);
-        return {
-          ...prev,
-          costCurrencyOrigin: 'BS_BCV',
-          costPriceBs: bsVal,
-          costPrice: rate > 0 ? round2(bsVal / rate) : prev.costPrice,
-        };
-      }
-      const refUsd =
-        prev.costPriceBs > 0 && usdtRate > 0 ? round2(prev.costPriceBs / usdtRate) : prev.costPrice;
-      return {
-        ...prev,
-        costCurrencyOrigin: 'DIVISAS',
-        costPrice: refUsd,
-        costPriceBs: round2(refUsd * usdtRate),
-      };
-    });
-  };
+    return { costUSD, saleBsBcv, analysis };
+  }, [formData.costPrice, formData.salePrice, formData.salePriceRefUSD, rate, usdtRate]);
 
   const handleSalePriceRefUsdChange = (raw: string) => {
     const val = Math.max(0, parseFloat(raw) || 0);
     setFormData((prev) => {
       if (syncBsWithGap) {
         const nextBs = round2(val * usdtRate);
-        const nextUsdBcv = rate > 0 ? round4(nextBs / rate) : val;
+        const nextUsdBcv = rate > 0 ? round2(nextBs / rate) : val;
         return {
           ...prev,
           salePriceRefUSD: val,
-          salePriceBsBcv: nextBs,
           salePrice: nextUsdBcv,
         };
       }
@@ -320,18 +277,6 @@ export const InventoryView: React.FC = () => {
     });
   };
 
-  const handleSalePriceBsBcvChange = (raw: string) => {
-    const bsVal = Math.max(0, parseFloat(raw) || 0);
-    const nextUsdBcv = rate > 0 ? round4(bsVal / rate) : 0;
-    const nextRefUsd = usdtRate > 0 ? round2(bsVal / usdtRate) : nextUsdBcv;
-    setFormData((prev) => ({
-      ...prev,
-      salePriceBsBcv: bsVal,
-      salePrice: nextUsdBcv,
-      ...(syncBsWithGap ? { salePriceRefUSD: nextRefUsd } : {}),
-    }));
-  };
-
   const handleSalePriceUsdBcvChange = (raw: string) => {
     const usdBcv = Math.max(0, parseFloat(raw) || 0);
     const nextBs = round2(usdBcv * rate);
@@ -339,7 +284,6 @@ export const InventoryView: React.FC = () => {
     setFormData((prev) => ({
       ...prev,
       salePrice: usdBcv,
-      salePriceBsBcv: nextBs,
       ...(syncBsWithGap ? { salePriceRefUSD: nextRefUsd } : {}),
     }));
   };
@@ -348,7 +292,7 @@ export const InventoryView: React.FC = () => {
     const pct = parseFloat(targetProfitInput);
     if (isNaN(pct) || pct < 0) return;
     const suggested = suggestPriceFromTargetProfit({
-      referenceCostUSD: formPricing.costCalc.referenceCostUSD,
+      referenceCostUSD: formPricing.costUSD,
       targetPct: pct,
       mode: targetProfitMode,
       bcvRate: rate,
@@ -357,7 +301,6 @@ export const InventoryView: React.FC = () => {
     setFormData((prev) => ({
       ...prev,
       salePriceRefUSD: suggested.salePriceRefUSD,
-      salePriceBsBcv: suggested.salePriceBsBcv,
       salePrice: suggested.salePriceUsdBcv,
       targetProfitPct: pct,
     }));
@@ -485,13 +428,8 @@ export const InventoryView: React.FC = () => {
     const sanitizedBarcode = formData.barcode.trim() || undefined;
     const sanitizedLocation = formData.warehouseLocation.trim() || undefined;
 
-    const costCalc = formPricing.costCalc;
-    const finalSalePriceUsdBcv =
-      formData.salePrice > 0
-        ? round4(formData.salePrice)
-        : rate > 0 && formData.salePriceBsBcv > 0
-        ? round4(formData.salePriceBsBcv / rate)
-        : 0;
+    const finalCostDivisas = round2(Math.max(0, Number(formData.costPrice) || 0));
+    const finalSalePriceUsdBcv = round4(Math.max(0, Number(formData.salePrice) || 0));
     const finalSalePriceBsBcv = round2(finalSalePriceUsdBcv * rate);
     const finalSalePriceRefUSD =
       formData.salePriceRefUSD > 0
@@ -506,11 +444,10 @@ export const InventoryView: React.FC = () => {
       name: trimmedName,
       category: categoryToSave,
       description: formData.description,
-      costPrice:
-        costCalc.costOrigin === 'BS_BCV' ? costCalc.costUsdAtBcv : costCalc.referenceCostUSD,
-      costCurrencyOrigin: formData.costCurrencyOrigin,
-      costPriceBs: costCalc.costBs,
-      referenceCostUSD: costCalc.referenceCostUSD,
+      costPrice: finalCostDivisas,
+      costCurrencyOrigin: 'DIVISAS',
+      costPriceBs: round2(finalCostDivisas * usdtRate),
+      referenceCostUSD: finalCostDivisas,
       salePrice: finalSalePriceUsdBcv,
       salePriceRefUSD: finalSalePriceRefUSD,
       salePriceBsBcv: finalSalePriceBsBcv,
@@ -637,12 +574,12 @@ export const InventoryView: React.FC = () => {
         </div>
       </div>
 
-      {/* KPI Stats & Brecha Cambiaria (Admin Only) */}
+      {/* KPI Stats & Brecha Cambiaria BCV vs Binance (Admin Only) */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <div className="bg-slate-900 text-white p-4 rounded-xl border border-amber-500/40 shadow-2xs">
           <div className="flex items-center justify-between">
             <span className="text-[10px] uppercase font-bold text-amber-300 tracking-wider">
-              Tasas &amp; Brecha (Admin)
+              Brecha BCV vs Binance
             </span>
             <TrendingUp className="w-3.5 h-3.5 text-amber-400" />
           </div>
@@ -656,7 +593,7 @@ export const InventoryView: React.FC = () => {
             </span>
           </div>
           <p className="text-[11px] font-mono text-slate-300 mt-1">
-            BCV {formatBs(rate)} · USDT {formatBs(usdtRate)}
+            BCV {formatBs(rate)} · Binance {formatBs(usdtRate)}
           </p>
         </div>
 
@@ -673,21 +610,25 @@ export const InventoryView: React.FC = () => {
           </p>
         </div>
 
-        <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-2xs">
-          <span className="text-[10px] uppercase font-bold text-slate-500 tracking-wider">
-            Valorización Venta (Bs BCV)
+        <div className="bg-white p-4 rounded-xl border border-emerald-200 shadow-2xs">
+          <span className="text-[10px] uppercase font-bold text-emerald-700 tracking-wider">
+            Valorización Venta (BCV · Tienda)
           </span>
-          <p className="text-xl font-bold font-mono text-slate-900 mt-1">
-            {formatBs(inventoryMetrics.totalSaleBcvUSD * rate)}
+          <p className="text-xl font-black font-mono text-emerald-800 mt-1">
+            {formatUSD(inventoryMetrics.totalSaleBcvUSD)}{' '}
+            <span className="text-[11px] font-bold text-emerald-600">BCV</span>
           </p>
-          <p className="text-[11px] font-semibold text-amber-700 font-mono mt-0.5">
-            Ref. Divisas (Admin): {formatUSD(inventoryMetrics.totalSaleRefUSD)}
+          <p className="text-[11px] font-mono text-slate-500 mt-0.5">
+            {formatBs(inventoryMetrics.totalSaleBcvUSD * rate)} ·{' '}
+            <span className="text-amber-700 font-semibold">
+              Ref. Admin: {formatUSD(inventoryMetrics.totalSaleRefUSD)}
+            </span>
           </p>
         </div>
 
         <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-2xs">
           <span className="text-[10px] uppercase font-bold text-slate-500 tracking-wider">
-            Costo Ref. &amp; Salud de Margen
+            Costo Total (Divisas) &amp; Margen
           </span>
           <p className="text-xl font-bold font-mono text-slate-900 mt-1">
             {formatUSD(inventoryMetrics.totalRefCostUSD)}
@@ -857,12 +798,16 @@ export const InventoryView: React.FC = () => {
                 <th className="py-3 px-3">Categoría &amp; Marca</th>
                 <th className="py-3 px-3">Ubicación</th>
                 <th className="py-3 px-3 text-right">
-                  <span className="block">Costo &amp; Ref. Divisas</span>
-                  <span className="text-[9px] text-amber-700 font-bold">Ajuste Brecha</span>
+                  <span className="block">Costo (Divisas)</span>
+                  <span className="text-[9px] text-slate-400 font-semibold">$ USD</span>
                 </th>
-                <th className="py-3 px-3 text-right">
-                  <span className="block">P. Venta Dual</span>
-                  <span className="text-[9px] text-amber-700 font-bold">Ref. Divisas (Admin) / Bs BCV</span>
+                <th className="py-3 px-3 text-right bg-emerald-50/70">
+                  <span className="block text-emerald-900 font-extrabold">
+                    Precio Venta BCV (Tienda)
+                  </span>
+                  <span className="text-[9px] text-emerald-700 font-bold">
+                    Visible en Tienda · + Ref. Admin
+                  </span>
                 </th>
                 <th className="py-3 px-3 text-right">
                   <span className="block">% Utilidad</span>
@@ -1024,57 +969,54 @@ export const InventoryView: React.FC = () => {
                         )}
                       </td>
 
-                      {/* Costo Registrado + Costo Ref. Divisas (Ajustado por brecha BCV/USDT) */}
+                      {/* Costo Único en Divisas ($ USD) */}
                       <td className="py-3 px-3 text-right align-top whitespace-nowrap">
-                        <div className="inline-flex items-center justify-end gap-1">
-                          <span
-                            className={`text-[9px] font-bold px-1.5 py-0.5 rounded uppercase ${
-                              pricing.costOrigin === 'BS_BCV'
-                                ? 'bg-blue-100 text-blue-800'
-                                : 'bg-slate-200 text-slate-700'
-                            }`}
-                          >
-                            {pricing.costOrigin === 'BS_BCV' ? 'BCV' : 'Div'}
-                          </span>
-                          <span className="font-mono text-[11px] text-slate-600 tabular-nums">
-                            {pricing.costOrigin === 'BS_BCV'
-                              ? formatBs(pricing.costBs)
-                              : formatUSD(product.costPrice)}
-                          </span>
-                        </div>
-                        <div
-                          className="font-mono font-bold text-slate-900 text-xs mt-0.5 tabular-nums"
-                          title="Costo de referencia en divisas ajustado por brecha BCV/USDT: (Costo Bs ÷ Tasa BCV) ÷ (1 + Brecha%) = Costo Bs ÷ Tasa USDT"
+                        <span
+                          className="font-mono font-bold text-slate-700 text-xs tabular-nums block mt-1"
+                          title="Costo único del repuesto en divisas ($ USD)"
                         >
-                          Ref: {formatUSD(pricing.referenceCostUSD)}
-                        </div>
+                          {formatUSD(pricing.referenceCostUSD)}
+                        </span>
+                        <span className="text-[9px] font-semibold text-slate-400 uppercase block">
+                          Divisas
+                        </span>
                       </td>
 
-                      {/* Precios de Venta Duales: Ref. Divisas (Solo Admin) vs Bs a BCV (Comercial) */}
-                      <td className="py-3 px-3 text-right align-top whitespace-nowrap">
-                        <div
-                          className="inline-flex items-center justify-end gap-1 bg-amber-50 border border-amber-200/80 px-1.5 py-0.5 rounded"
-                          title="Precio de Venta de Referencia en Divisas — USO EXCLUSIVO ADMIN (nunca visible en tienda ni facturas)"
-                        >
-                          <Lock className="w-2.5 h-2.5 text-amber-700 shrink-0" />
-                          <span className="font-mono font-bold text-amber-950 text-xs tabular-nums">
-                            {formatUSD(pricing.salePriceRefUSD)}
-                          </span>
-                        </div>
-                        <span className="font-mono text-[11px] font-bold text-emerald-700 block mt-1 tabular-nums">
-                          {formatBs(pricing.salePriceBsBcv)}
-                        </span>
-                        <span className="font-mono text-[10px] text-slate-400 block tabular-nums">
-                          {formatUSD(pricing.salePriceUsdBcv)} BCV
-                        </span>
-                        {pricing.isBsLaggingRef && (
-                          <span
-                            className="inline-block text-[9px] font-bold text-amber-800 bg-amber-100 px-1.5 py-0.5 rounded mt-0.5"
-                            title={`El precio en Bs BCV equivale hoy a ${formatUSD(pricing.realRevenueDivisasUSD)} USDT, menor que tu ref. ${formatUSD(pricing.salePriceRefUSD)}`}
+                      {/* Precio de Venta BCV (PRINCIPAL — Tienda Online) + Ref. Divisas (Solo Admin) */}
+                      <td className="py-3 px-3 text-right align-top whitespace-nowrap bg-emerald-50/25">
+                        <div className="inline-flex flex-col items-end">
+                          <div
+                            className="inline-flex items-baseline gap-1.5 bg-emerald-50 border border-emerald-300 px-2.5 py-1 rounded-lg shadow-2xs"
+                            title="Precio de Venta en Dólares a Tasa BCV — Precio principal visible en tu Tienda Online y Facturas"
                           >
-                            Bs rezagado ({formatUSD(pricing.realRevenueDivisasUSD)})
+                            <span className="font-mono font-black text-emerald-800 text-base leading-none tabular-nums">
+                              {formatUSD(pricing.salePriceUsdBcv)}
+                            </span>
+                            <span className="text-[9px] font-extrabold uppercase tracking-wider text-emerald-800 bg-emerald-200/80 px-1 py-0.5 rounded">
+                              BCV
+                            </span>
+                          </div>
+                          <span className="font-mono text-[11px] font-semibold text-slate-600 mt-1 tabular-nums">
+                            {formatBs(pricing.salePriceBsBcv)}
                           </span>
-                        )}
+                          <div
+                            className="inline-flex items-center gap-1 mt-1 text-[10px] text-amber-800 font-mono tabular-nums"
+                            title="Precio de Venta de Referencia en Divisas — USO EXCLUSIVO PANEL ADMIN (nunca visible en tienda ni facturas)"
+                          >
+                            <Lock className="w-2.5 h-2.5 text-amber-600 shrink-0" />
+                            <span className="font-semibold">
+                              Ref. Divisas: {formatUSD(pricing.salePriceRefUSD)}
+                            </span>
+                          </div>
+                          {pricing.isBsLaggingRef && (
+                            <span
+                              className="inline-block text-[9px] font-bold text-amber-800 bg-amber-100 px-1.5 py-0.5 rounded mt-0.5"
+                              title={`A tasa Binance actual (${formatBs(usdtRate)}), tu precio BCV equivale a ${formatUSD(pricing.realRevenueDivisasUSD)} en divisas`}
+                            >
+                              Equiv. Binance: {formatUSD(pricing.realRevenueDivisasUSD)}
+                            </span>
+                          )}
+                        </div>
                       </td>
 
                       {/* % Utilidad (SOLO ADMIN) */}
@@ -1390,157 +1332,107 @@ export const InventoryView: React.FC = () => {
                 </div>
               </div>
 
-              {/* BLOQUE FINANCIERO: COSTO (BCV / DIVISAS), PRECIOS DUALES Y UTILIDAD (SOLO ADMIN) */}
+              {/* BLOQUE FINANCIERO SIMPLIFICADO: 1 COSTO EN DIVISAS + 2 PRECIOS DE VENTA ($ BCV TIENDA Y REF. DIVISAS ADMIN) */}
               <div className="rounded-xl border border-slate-200 bg-slate-50/80 p-4 space-y-4">
                 <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-slate-200">
                   <div className="flex items-center gap-2">
                     <Calculator className="w-4 h-4 text-amber-600" />
                     <span className="font-bold text-slate-900 text-xs">
-                      Estructura de Costos, Brecha BCV/USDT y Precios Duales
+                      Costo en Divisas y Precios de Venta
                     </span>
                   </div>
-                  <span className="font-mono text-[10px] font-bold bg-slate-900 text-amber-300 px-2 py-0.5 rounded">
-                    BCV {formatBs(rate)} · USDT {formatBs(usdtRate)} · Brecha{' '}
+                  <span className="font-mono text-[10px] font-bold bg-slate-900 text-amber-300 px-2.5 py-1 rounded">
+                    BCV {formatBs(rate)} · Binance {formatBs(usdtRate)} · Brecha{' '}
                     {exchangeGap.gapPct >= 0 ? '+' : ''}
                     {exchangeGap.gapPct.toFixed(2)}%
                   </span>
                 </div>
 
-                {/* 1. Origen del Costo & Costo de Referencia en Divisas */}
-                <div className="space-y-2.5">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <label className="font-bold text-slate-700">1. Origen del Costo Registrado</label>
-                    <div className="inline-flex rounded-lg border border-slate-300 bg-white p-0.5">
-                      <button
-                        type="button"
-                        onClick={() => handleCostOriginChange('DIVISAS')}
-                        className={`px-2.5 py-1 rounded-md text-[11px] font-bold transition-colors cursor-pointer ${
-                          formData.costCurrencyOrigin === 'DIVISAS'
-                            ? 'bg-slate-900 text-amber-400'
-                            : 'text-slate-600 hover:bg-slate-100'
-                        }`}
-                      >
-                        Divisas / USDT ($)
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleCostOriginChange('BS_BCV')}
-                        className={`px-2.5 py-1 rounded-md text-[11px] font-bold transition-colors cursor-pointer ${
-                          formData.costCurrencyOrigin === 'BS_BCV'
-                            ? 'bg-blue-700 text-white'
-                            : 'text-slate-600 hover:bg-slate-100'
-                        }`}
-                      >
-                        Tasa BCV (Bs)
-                      </button>
+                {/* 1 Costo (Divisas) + 2 Precios de Venta ($ BCV Principal Tienda + $ Ref. Divisas Solo Admin) */}
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  {/* Costo Único en Divisas */}
+                  <div className="bg-white border border-slate-300 rounded-xl p-3 flex flex-col justify-between">
+                    <label className="flex items-center justify-between font-bold text-slate-700 mb-1.5">
+                      <span>Costo en Divisas ($) *</span>
+                      <span className="text-[9px] uppercase bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded font-bold">
+                        Único
+                      </span>
+                    </label>
+                    <input
+                      type="number"
+                      step="any"
+                      min="0"
+                      value={formData.costPrice}
+                      onChange={(e) => {
+                        const usdVal = Math.max(0, Number(e.target.value) || 0);
+                        setFormData({
+                          ...formData,
+                          costPrice: usdVal,
+                        });
+                      }}
+                      className="w-full p-2.5 rounded-lg border border-slate-300 bg-slate-50 focus:bg-white font-mono font-bold text-slate-900 text-sm"
+                    />
+                    <span className="text-[10px] text-slate-500 block mt-1.5">
+                      Costo base en dólares / divisas
+                    </span>
+                  </div>
+
+                  {/* Precio de Venta 1 (PRINCIPAL): Dólar a Tasa BCV (Tienda Online) */}
+                  <div className="bg-emerald-50 border-2 border-emerald-400 rounded-xl p-3 shadow-2xs flex flex-col justify-between">
+                    <label className="flex items-center justify-between font-extrabold text-emerald-950 mb-1.5">
+                      <span>Precio Venta BCV ($) *</span>
+                      <span className="text-[9px] uppercase bg-emerald-600 text-white px-1.5 py-0.5 rounded font-extrabold">
+                        Tienda Online
+                      </span>
+                    </label>
+                    <input
+                      type="number"
+                      step="any"
+                      min="0"
+                      required
+                      value={formData.salePrice}
+                      onChange={(e) => handleSalePriceUsdBcvChange(e.target.value)}
+                      className="w-full p-2.5 rounded-lg border border-emerald-400 bg-white font-mono font-black text-emerald-900 text-base"
+                    />
+                    <div className="flex items-center justify-between gap-1 text-[10px] font-mono text-emerald-800 font-semibold mt-1.5">
+                      <span>= {formatBs(formPricing.saleBsBcv)}</span>
+                      <span className="text-emerald-700/80">
+                        Binance: {formatUSD(formPricing.analysis.realRevenueDivisasUSD)}
+                      </span>
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                    {formData.costCurrencyOrigin === 'BS_BCV' ? (
-                      <>
-                        <div>
-                          <label className="block font-semibold text-blue-900 mb-1">
-                            Costo en Bs (Tasa BCV) *
-                          </label>
-                          <input
-                            type="number"
-                            step="any"
-                            min="0"
-                            value={formData.costPriceBs}
-                            onChange={(e) => {
-                              const bsVal = Math.max(0, Number(e.target.value) || 0);
-                              setFormData({
-                                ...formData,
-                                costPriceBs: bsVal,
-                                costPrice: rate > 0 ? round2(bsVal / rate) : 0,
-                              });
-                            }}
-                            className="w-full p-2 rounded-lg border border-blue-300 bg-white font-mono font-bold text-blue-950"
-                          />
-                          <span className="text-[10px] text-slate-500 font-mono block mt-0.5">
-                            Nominal BCV: {formatUSD(formPricing.costCalc.costUsdAtBcv)}
-                          </span>
-                        </div>
-
-                        <div>
-                          <label className="block font-semibold text-slate-700 mb-1">
-                            O ingresar en $ BCV
-                          </label>
-                          <input
-                            type="number"
-                            step="any"
-                            min="0"
-                            value={formData.costPrice}
-                            onChange={(e) => {
-                              const usdBcv = Math.max(0, Number(e.target.value) || 0);
-                              setFormData({
-                                ...formData,
-                                costPrice: usdBcv,
-                                costPriceBs: round2(usdBcv * rate),
-                              });
-                            }}
-                            className="w-full p-2 rounded-lg border border-slate-200 bg-white font-mono"
-                          />
-                          <span className="text-[10px] text-slate-500 font-mono block mt-0.5">
-                            × {formatBs(rate)} = {formatBs(formData.costPriceBs)}
-                          </span>
-                        </div>
-                      </>
-                    ) : (
-                      <div className="sm:col-span-2">
-                        <label className="block font-semibold text-slate-700 mb-1">
-                          Costo Base en Divisas / USDT ($)
-                        </label>
-                        <input
-                          type="number"
-                          step="any"
-                          min="0"
-                          value={formData.costPrice}
-                          onChange={(e) => {
-                            const usdVal = Math.max(0, Number(e.target.value) || 0);
-                            setFormData({
-                              ...formData,
-                              costPrice: usdVal,
-                              costPriceBs: round2(usdVal * usdtRate),
-                            });
-                          }}
-                          className="w-full p-2 rounded-lg border border-slate-300 bg-white font-mono font-bold text-slate-900"
-                        />
-                        <span className="text-[10px] text-slate-500 font-mono block mt-0.5">
-                          Equiv. Bs (USDT): {formatBs(formPricing.costCalc.costBs)} · Equiv. Bs (BCV):{' '}
-                          {formatBs(formPricing.costCalc.costBsAtBcv)}
-                        </span>
-                      </div>
-                    )}
-
-                    {/* Costo de Referencia en Divisas calculado */}
-                    <div
-                      className="rounded-lg bg-amber-50 border border-amber-300 p-2.5 flex flex-col justify-center"
-                      title="Costo de referencia en divisas ajustado por brecha BCV/USDT: (Costo Bs / Tasa BCV) ÷ (1 + Brecha%) = Costo Bs ÷ Tasa USDT"
-                    >
-                      <span className="text-[10px] font-bold text-amber-900 flex items-center gap-1">
-                        <Info className="w-3 h-3 shrink-0" />
-                        <span>Costo Ref. Divisas (Brecha)</span>
+                  {/* Precio de Venta 2 (SOLO ADMIN): Referencia en Divisas */}
+                  <div className="bg-amber-50/70 border border-amber-300 rounded-xl p-3 flex flex-col justify-between">
+                    <label className="flex items-center justify-between font-bold text-amber-950 mb-1.5">
+                      <span className="inline-flex items-center gap-1">
+                        <Lock className="w-3 h-3 text-amber-700" />
+                        <span>Ref. Divisas ($)</span>
                       </span>
-                      <span className="text-base font-black font-mono text-amber-950 mt-0.5">
-                        {formatUSD(formPricing.costCalc.referenceCostUSD)}
+                      <span className="text-[9px] uppercase bg-amber-200 text-amber-950 px-1.5 py-0.5 rounded font-extrabold">
+                        Solo Admin
                       </span>
-                      <span className="text-[9px] text-amber-800 leading-tight mt-0.5">
-                        {formData.costCurrencyOrigin === 'BS_BCV'
-                          ? `Costo Bs ÷ USDT (${formatBs(usdtRate)})`
-                          : 'Costo directo en divisas'}
-                      </span>
-                    </div>
+                    </label>
+                    <input
+                      type="number"
+                      step="any"
+                      min="0"
+                      value={formData.salePriceRefUSD}
+                      onChange={(e) => handleSalePriceRefUsdChange(e.target.value)}
+                      className="w-full p-2.5 rounded-lg border border-amber-400 bg-white font-mono font-bold text-amber-950 text-sm"
+                    />
+                    <span className="text-[10px] text-amber-800 block mt-1.5">
+                      Solo visible en panel administrativo
+                    </span>
                   </div>
                 </div>
 
-                {/* 2. Calculadora rápida por % de Utilidad Objetivo (Solo Admin) */}
+                {/* Calculadora rápida por % de Utilidad Objetivo + Sincronización con brecha */}
                 <div className="bg-white rounded-lg border border-slate-200 p-3 flex flex-wrap items-end justify-between gap-2.5">
                   <div className="flex flex-wrap items-end gap-2">
                     <div>
                       <label className="block text-[10px] font-bold text-slate-600 mb-1">
-                        Sugerir Precio por % Utilidad Objetivo
+                        Sugerir Precios por % Utilidad
                       </label>
                       <div className="inline-flex rounded-lg border border-slate-200 bg-slate-50 p-0.5">
                         <button
@@ -1582,7 +1474,7 @@ export const InventoryView: React.FC = () => {
                     <button
                       type="button"
                       onClick={handleApplyTargetProfitSuggestion}
-                      disabled={formPricing.costCalc.referenceCostUSD <= 0}
+                      disabled={formPricing.costUSD <= 0}
                       className="px-3 py-1.5 bg-amber-500 hover:bg-amber-400 disabled:opacity-40 text-slate-950 font-bold text-[11px] rounded-lg cursor-pointer transition-colors"
                     >
                       Calcular y Aplicar
@@ -1596,76 +1488,14 @@ export const InventoryView: React.FC = () => {
                       onChange={(e) => setSyncBsWithGap(e.target.checked)}
                       className="rounded border-slate-300 text-amber-600 focus:ring-amber-500"
                     />
-                    <span>Sincronizar Bs BCV ↔ Divisas con brecha</span>
+                    <span>
+                      Sincronizar $ BCV ↔ Ref. Divisas con brecha ({exchangeGap.gapPct >= 0 ? '+' : ''}
+                      {exchangeGap.gapPct.toFixed(1)}%)
+                    </span>
                   </label>
                 </div>
 
-                {/* 3. Dos Precios de Venta (Ref. Divisas Solo Admin vs Bs BCV Comercial) */}
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                  <div className="bg-amber-50/70 border border-amber-300 rounded-xl p-2.5">
-                    <label className="flex items-center justify-between font-bold text-amber-950 mb-1">
-                      <span className="inline-flex items-center gap-1">
-                        <Lock className="w-3 h-3 text-amber-700" />
-                        <span>P. Venta Ref. Divisas ($)</span>
-                      </span>
-                      <span className="text-[9px] uppercase bg-amber-200 text-amber-950 px-1.5 py-0.5 rounded font-extrabold">
-                        Solo Admin
-                      </span>
-                    </label>
-                    <input
-                      type="number"
-                      step="any"
-                      min="0"
-                      value={formData.salePriceRefUSD}
-                      onChange={(e) => handleSalePriceRefUsdChange(e.target.value)}
-                      className="w-full p-2 rounded-lg border border-amber-400 bg-white font-mono font-bold text-amber-950"
-                    />
-                    <span className="text-[10px] text-amber-800 block mt-1">
-                      Nunca visible en tienda ni facturas
-                    </span>
-                  </div>
-
-                  <div className="bg-emerald-50/70 border border-emerald-300 rounded-xl p-2.5">
-                    <label className="flex items-center justify-between font-bold text-emerald-950 mb-1">
-                      <span>P. Venta Bs (Tasa BCV) *</span>
-                      <span className="text-[9px] uppercase bg-emerald-200 text-emerald-950 px-1.5 py-0.5 rounded font-extrabold">
-                        Tienda / Factura
-                      </span>
-                    </label>
-                    <input
-                      type="number"
-                      step="any"
-                      min="0"
-                      required
-                      value={formData.salePriceBsBcv}
-                      onChange={(e) => handleSalePriceBsBcvChange(e.target.value)}
-                      className="w-full p-2 rounded-lg border border-emerald-400 bg-white font-mono font-bold text-emerald-950"
-                    />
-                    <span className="text-[10px] text-emerald-800 font-mono block mt-1">
-                      Divisas reales (USDT): {formatUSD(formPricing.analysis.realRevenueDivisasUSD)}
-                    </span>
-                  </div>
-
-                  <div className="bg-white border border-slate-200 rounded-xl p-2.5">
-                    <label className="block font-semibold text-slate-700 mb-1">
-                      Equiv. Comercial ($ BCV) *
-                    </label>
-                    <input
-                      type="number"
-                      step="any"
-                      min="0"
-                      required
-                      value={formData.salePrice}
-                      onChange={(e) => handleSalePriceUsdBcvChange(e.target.value)}
-                      className="w-full p-2 rounded-lg border border-slate-300 bg-slate-50 font-mono font-bold text-slate-900"
-                    />
-                    <span className="text-[10px] text-slate-500 font-mono block mt-1">
-                      × {formatBs(rate)} = {formatBs(formData.salePrice * rate)}
-                    </span>
-                  </div>
-                </div>
-
-                {/* 4. Indicador en Tiempo Real de % de Utilidad (Solo Admin) */}
+                {/* Indicador en Tiempo Real de % de Utilidad (Solo Admin) */}
                 <div
                   className={`rounded-xl p-3 border flex flex-wrap items-center justify-between gap-3 ${
                     formPricing.analysis.status === 'healthy'

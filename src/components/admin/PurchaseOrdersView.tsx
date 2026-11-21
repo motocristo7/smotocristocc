@@ -7,7 +7,6 @@ import {
   PurchasePaymentRecord,
   PurchasePaymentCurrency,
   PurchaseOrderCurrencyCondition,
-  ProductCostOrigin,
 } from '../../types';
 import {
   formatUSD,
@@ -17,7 +16,6 @@ import {
 } from '../../utils/whatsapp';
 import {
   calculateProductPricing,
-  calculateReferenceCostUSD,
   suggestPriceFromTargetProfit,
   round2,
   round4,
@@ -67,7 +65,6 @@ import {
   ChevronDown,
   ChevronUp,
   Lock,
-  Info,
   Calculator,
 } from 'lucide-react';
 
@@ -202,12 +199,9 @@ export const PurchaseOrdersView: React.FC = () => {
   const [customPartCompatibility, setCustomPartCompatibility] = useState('');
   const [customPartLocation, setCustomPartLocation] = useState('');
   const [customPartQty, setCustomPartQty] = useState('1');
-  const [customPartCostOrigin, setCustomPartCostOrigin] = useState<ProductCostOrigin>('DIVISAS');
   const [customPartCost, setCustomPartCost] = useState('');
-  const [customPartCostBs, setCustomPartCostBs] = useState('');
   const [customPartSalePrice, setCustomPartSalePrice] = useState('');
   const [customPartSalePriceRefUSD, setCustomPartSalePriceRefUSD] = useState('');
-  const [customPartSalePriceBs, setCustomPartSalePriceBs] = useState('');
   const [customPartTargetPct, setCustomPartTargetPct] = useState('30');
   const [customPartMinStock, setCustomPartMinStock] = useState('2');
   const [customPartDescription, setCustomPartDescription] = useState('');
@@ -687,7 +681,8 @@ export const PurchaseOrdersView: React.FC = () => {
         });
       }
       const pricing = calculateProductPricing(prod, bcvRate, usdtRate);
-      const unitCost = Number(prod.costPrice) || 0;
+      const unitCost =
+        pricing.referenceCostUSD > 0 ? pricing.referenceCostUSD : Number(prod.costPrice) || 0;
       return [
         ...prev,
         {
@@ -704,9 +699,9 @@ export const PurchaseOrdersView: React.FC = () => {
           imageUrl: prod.imageUrl || '',
           quantity: 1,
           unitCostUSD: unitCost,
-          costCurrencyOrigin: pricing.costOrigin,
-          costPriceBs: pricing.costBs,
-          referenceCostUSD: pricing.referenceCostUSD,
+          costCurrencyOrigin: 'DIVISAS',
+          costPriceBs: round2(unitCost * usdtRate),
+          referenceCostUSD: unitCost,
           salePriceUSD: Number(prod.salePrice) || 0,
           salePriceRefUSD: pricing.salePriceRefUSD,
           salePriceBsBcv: pricing.salePriceBsBcv,
@@ -729,12 +724,9 @@ export const PurchaseOrdersView: React.FC = () => {
     setCustomPartCompatibility('');
     setCustomPartLocation('');
     setCustomPartQty('1');
-    setCustomPartCostOrigin(ordCurrencyCondition === 'BS_BCV' ? 'BS_BCV' : 'DIVISAS');
     setCustomPartCost('');
-    setCustomPartCostBs('');
     setCustomPartSalePrice('');
     setCustomPartSalePriceRefUSD('');
-    setCustomPartSalePriceBs('');
     setCustomPartTargetPct('30');
     setCustomPartMinStock('2');
     setCustomPartDescription('');
@@ -765,26 +757,17 @@ export const PurchaseOrdersView: React.FC = () => {
 
   const customPartPricing = useMemo(() => {
     const activeBcv = parseFloat(ordBcvRate) > 0 ? parseFloat(ordBcvRate) : bcvRate;
-    const costNum = Math.max(0, parseFloat(customPartCost) || 0);
-    const costBsNum = Math.max(0, parseFloat(customPartCostBs) || 0);
-    const costCalc = calculateReferenceCostUSD({
-      origin: customPartCostOrigin,
-      costUSD: costNum,
-      costBs: customPartCostOrigin === 'BS_BCV' && costBsNum > 0 ? costBsNum : undefined,
-      bcvRate: activeBcv,
-      usdtRate,
-    });
+    const costUSD = Math.max(0, parseFloat(customPartCost) || 0);
     const saleUsdBcv = Math.max(0, parseFloat(customPartSalePrice) || 0);
     const saleRefUsd = Math.max(0, parseFloat(customPartSalePriceRefUSD) || 0);
-    const saleBsBcv =
-      Math.max(0, parseFloat(customPartSalePriceBs) || 0) || round2(saleUsdBcv * activeBcv);
+    const saleBsBcv = round2(saleUsdBcv * activeBcv);
 
     const analysis = calculateProductPricing(
       {
-        costPrice: costCalc.costOrigin === 'BS_BCV' ? costCalc.costUsdAtBcv : costCalc.referenceCostUSD,
-        costCurrencyOrigin: customPartCostOrigin,
-        costPriceBs: costCalc.costBs,
-        referenceCostUSD: costCalc.referenceCostUSD,
+        costPrice: costUSD,
+        costCurrencyOrigin: 'DIVISAS',
+        costPriceBs: round2(costUSD * usdtRate),
+        referenceCostUSD: costUSD,
         salePrice: saleUsdBcv,
         salePriceRefUSD: saleRefUsd > 0 ? saleRefUsd : undefined,
         salePriceBsBcv: saleBsBcv,
@@ -792,31 +775,20 @@ export const PurchaseOrdersView: React.FC = () => {
       activeBcv,
       usdtRate
     );
-    return { activeBcv, costCalc, analysis };
-  }, [
-    ordBcvRate,
-    bcvRate,
-    usdtRate,
-    customPartCostOrigin,
-    customPartCost,
-    customPartCostBs,
-    customPartSalePrice,
-    customPartSalePriceRefUSD,
-    customPartSalePriceBs,
-  ]);
+    return { activeBcv, costUSD, saleBsBcv, analysis };
+  }, [ordBcvRate, bcvRate, usdtRate, customPartCost, customPartSalePrice, customPartSalePriceRefUSD]);
 
   const handleApplyCustomPartTargetProfit = () => {
     const pct = parseFloat(customPartTargetPct);
-    if (isNaN(pct) || pct < 0 || customPartPricing.costCalc.referenceCostUSD <= 0) return;
+    if (isNaN(pct) || pct < 0 || customPartPricing.costUSD <= 0) return;
     const suggested = suggestPriceFromTargetProfit({
-      referenceCostUSD: customPartPricing.costCalc.referenceCostUSD,
+      referenceCostUSD: customPartPricing.costUSD,
       targetPct: pct,
       mode: 'margin',
       bcvRate: customPartPricing.activeBcv,
       usdtRate,
     });
     setCustomPartSalePriceRefUSD(suggested.salePriceRefUSD.toFixed(2));
-    setCustomPartSalePriceBs(suggested.salePriceBsBcv.toFixed(2));
     setCustomPartSalePrice(suggested.salePriceUsdBcv.toFixed(2));
   };
 
@@ -829,12 +801,10 @@ export const PurchaseOrdersView: React.FC = () => {
     }
     const qty = Math.max(1, parseInt(customPartQty, 10) || 1);
     const activeBcv = customPartPricing.activeBcv;
-    const costCalc = customPartPricing.costCalc;
-    const cost =
-      customPartCostOrigin === 'BS_BCV' ? costCalc.costUsdAtBcv : costCalc.referenceCostUSD;
+    const cost = round2(customPartPricing.costUSD);
     const salePrice = parseFloat(customPartSalePrice);
     if (isNaN(salePrice) || salePrice <= 0) {
-      setCustomPartError('Ingresa el Precio de Venta (Bs BCV o $ BCV) para registrarlo en el inventario.');
+      setCustomPartError('Ingresa el Precio de Venta $ BCV (Tienda Online) para registrarlo en el inventario.');
       return;
     }
 
@@ -872,10 +842,10 @@ export const PurchaseOrdersView: React.FC = () => {
         warehouseLocation: customPartLocation.trim() || undefined,
         imageUrl: normalizeImageUrl(customPartImageUrl) || undefined,
         quantity: qty,
-        unitCostUSD: round2(cost),
-        costCurrencyOrigin: customPartCostOrigin,
-        costPriceBs: costCalc.costBs,
-        referenceCostUSD: costCalc.referenceCostUSD,
+        unitCostUSD: cost,
+        costCurrencyOrigin: 'DIVISAS',
+        costPriceBs: round2(cost * usdtRate),
+        referenceCostUSD: cost,
         salePriceUSD: round4(salePrice),
         salePriceRefUSD: finalSaleRefUsd,
         salePriceBsBcv: saleBsBcv,
@@ -893,11 +863,8 @@ export const PurchaseOrdersView: React.FC = () => {
     field:
       | 'quantity'
       | 'unitCostUSD'
-      | 'costCurrencyOrigin'
-      | 'costPriceBs'
       | 'salePriceUSD'
       | 'salePriceRefUSD'
-      | 'salePriceBsBcv'
       | 'name'
       | 'sku'
       | 'barcode'
@@ -913,60 +880,18 @@ export const PurchaseOrdersView: React.FC = () => {
     setOrdItems((prev) =>
       prev.map((it, i) => {
         if (i !== idx) return it;
-        const currentOrigin: ProductCostOrigin =
-          it.costCurrencyOrigin === 'BS_BCV' ? 'BS_BCV' : 'DIVISAS';
-
-        if (field === 'costCurrencyOrigin') {
-          const nextOrigin: ProductCostOrigin = rawValue === 'BS_BCV' ? 'BS_BCV' : 'DIVISAS';
-          const costCalc = calculateReferenceCostUSD({
-            origin: nextOrigin,
-            costUSD: it.unitCostUSD,
-            costBs: nextOrigin === 'BS_BCV' ? round2((it.unitCostUSD || 0) * activeBcv) : undefined,
-            bcvRate: activeBcv,
-            usdtRate,
-          });
-          return {
-            ...it,
-            costCurrencyOrigin: nextOrigin,
-            costPriceBs: costCalc.costBs,
-            referenceCostUSD: costCalc.referenceCostUSD,
-          };
-        }
-
-        if (field === 'costPriceBs') {
-          const bsVal = Math.max(0, parseFloat(rawValue) || 0);
-          const costCalc = calculateReferenceCostUSD({
-            origin: 'BS_BCV',
-            costBs: bsVal,
-            bcvRate: activeBcv,
-            usdtRate,
-          });
-          return {
-            ...it,
-            costCurrencyOrigin: 'BS_BCV',
-            costPriceBs: bsVal,
-            unitCostUSD: costCalc.costUsdAtBcv,
-            referenceCostUSD: costCalc.referenceCostUSD,
-            totalCostUSD: round2(it.quantity * costCalc.costUsdAtBcv),
-          };
-        }
 
         if (field === 'quantity' || field === 'unitCostUSD') {
           const num = parseFloat(rawValue);
           const qty = field === 'quantity' ? Math.max(1, Math.round(num || 1)) : it.quantity;
           const cost = field === 'unitCostUSD' ? Math.max(0, num || 0) : it.unitCostUSD;
-          const costCalc = calculateReferenceCostUSD({
-            origin: currentOrigin,
-            costUSD: cost,
-            bcvRate: activeBcv,
-            usdtRate,
-          });
           return {
             ...it,
             quantity: qty,
             unitCostUSD: cost,
-            costPriceBs: costCalc.costBs,
-            referenceCostUSD: costCalc.referenceCostUSD,
+            costCurrencyOrigin: 'DIVISAS',
+            costPriceBs: round2(cost * usdtRate),
+            referenceCostUSD: round2(cost),
             totalCostUSD: round2(qty * cost),
           };
         }
@@ -974,24 +899,12 @@ export const PurchaseOrdersView: React.FC = () => {
         if (field === 'salePriceRefUSD') {
           const refUsd = Math.max(0, parseFloat(rawValue) || 0);
           const nextBs = round2(refUsd * usdtRate);
-          const nextUsdBcv = activeBcv > 0 ? round4(nextBs / activeBcv) : refUsd;
+          const nextUsdBcv = activeBcv > 0 ? round2(nextBs / activeBcv) : refUsd;
           return {
             ...it,
             salePriceRefUSD: refUsd,
             salePriceBsBcv: nextBs,
             salePriceUSD: nextUsdBcv,
-          };
-        }
-
-        if (field === 'salePriceBsBcv') {
-          const bsVal = Math.max(0, parseFloat(rawValue) || 0);
-          const nextUsdBcv = activeBcv > 0 ? round4(bsVal / activeBcv) : 0;
-          const nextRefUsd = usdtRate > 0 ? round2(bsVal / usdtRate) : nextUsdBcv;
-          return {
-            ...it,
-            salePriceBsBcv: bsVal,
-            salePriceUSD: nextUsdBcv,
-            salePriceRefUSD: nextRefUsd,
           };
         }
 
@@ -2531,59 +2444,22 @@ export const PurchaseOrdersView: React.FC = () => {
                       </div>
                     </div>
 
-                    {/* Bloque Financiero de Costo (BCV / Divisas) y Precios Duales */}
+                    {/* Bloque Financiero Simplificado: 1 Costo en Divisas + 2 Precios de Venta */}
                     <div className="rounded-xl bg-slate-50 border border-slate-200 p-3 space-y-2.5">
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <div className="flex items-center gap-1.5">
                           <Calculator className="w-3.5 h-3.5 text-amber-600" />
                           <span className="text-[10px] font-bold uppercase text-slate-700">
-                            Origen del Costo &amp; Precios Duales (Brecha{' '}
-                            {exchangeGap.gapPct >= 0 ? '+' : ''}
-                            {exchangeGap.gapPct.toFixed(1)}%)
+                            Costo en Divisas y Precios de Venta
                           </span>
                         </div>
-                        <div className="inline-flex rounded-lg border border-slate-300 bg-white p-0.5">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setCustomPartCostOrigin('DIVISAS');
-                              if (parseFloat(customPartCostBs) > 0 && usdtRate > 0) {
-                                setCustomPartCost(
-                                  round2(parseFloat(customPartCostBs) / usdtRate).toFixed(2)
-                                );
-                              }
-                            }}
-                            className={`px-2 py-0.5 rounded text-[10px] font-bold cursor-pointer ${
-                              customPartCostOrigin === 'DIVISAS'
-                                ? 'bg-slate-900 text-amber-400'
-                                : 'text-slate-600'
-                            }`}
-                          >
-                            Divisas / USDT ($)
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setCustomPartCostOrigin('BS_BCV');
-                              const activeBcv = customPartPricing.activeBcv;
-                              if (parseFloat(customPartCost) > 0 && !customPartCostBs) {
-                                setCustomPartCostBs(
-                                  round2(parseFloat(customPartCost) * activeBcv).toFixed(2)
-                                );
-                              }
-                            }}
-                            className={`px-2 py-0.5 rounded text-[10px] font-bold cursor-pointer ${
-                              customPartCostOrigin === 'BS_BCV'
-                                ? 'bg-blue-700 text-white'
-                                : 'text-slate-600'
-                            }`}
-                          >
-                            Tasa BCV (Bs)
-                          </button>
-                        </div>
+                        <span className="font-mono text-[10px] font-bold bg-slate-900 text-amber-300 px-2 py-0.5 rounded">
+                          Brecha BCV/Binance: {exchangeGap.gapPct >= 0 ? '+' : ''}
+                          {exchangeGap.gapPct.toFixed(2)}%
+                        </span>
                       </div>
 
-                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5">
                         <div>
                           <label className="block text-[10px] font-bold text-slate-600 mb-1">
                             Cantidad Comprada *
@@ -2597,64 +2473,19 @@ export const PurchaseOrdersView: React.FC = () => {
                           />
                         </div>
 
-                        {customPartCostOrigin === 'BS_BCV' ? (
-                          <div>
-                            <label className="block text-[10px] font-bold text-blue-800 mb-1">
-                              Costo Unit. Bs (BCV) *
-                            </label>
-                            <input
-                              type="number"
-                              step="any"
-                              min={0}
-                              value={customPartCostBs}
-                              onChange={(e) => {
-                                setCustomPartCostBs(e.target.value);
-                                const bsNum = parseFloat(e.target.value) || 0;
-                                setCustomPartCost(
-                                  customPartPricing.activeBcv > 0
-                                    ? round2(bsNum / customPartPricing.activeBcv).toFixed(2)
-                                    : ''
-                                );
-                              }}
-                              placeholder="0.00"
-                              className="w-full px-2.5 py-1.5 bg-white border border-blue-300 rounded-lg text-xs font-mono font-bold text-blue-950"
-                            />
-                            <span className="text-[9px] font-mono text-slate-500 block mt-0.5">
-                              Nominal: {formatUSD(customPartPricing.costCalc.costUsdAtBcv)} BCV
-                            </span>
-                          </div>
-                        ) : (
-                          <div>
-                            <label className="block text-[10px] font-bold text-slate-600 mb-1">
-                              Costo Unit. Divisas ($) *
-                            </label>
-                            <input
-                              type="number"
-                              step="any"
-                              min={0}
-                              value={customPartCost}
-                              onChange={(e) => {
-                                setCustomPartCost(e.target.value);
-                                const usdNum = parseFloat(e.target.value) || 0;
-                                setCustomPartCostBs(round2(usdNum * usdtRate).toFixed(2));
-                              }}
-                              placeholder="0.00"
-                              className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg text-xs font-mono font-bold"
-                            />
-                          </div>
-                        )}
-
-                        <div
-                          className="rounded-lg bg-amber-50 border border-amber-300 px-2.5 py-1.5 flex flex-col justify-center"
-                          title="Costo de referencia en divisas ajustado por brecha BCV/USDT: (Costo Bs ÷ Tasa BCV) ÷ (1 + Brecha%) = Costo Bs ÷ Tasa USDT"
-                        >
-                          <span className="text-[9px] font-bold text-amber-900 flex items-center gap-1">
-                            <Info className="w-2.5 h-2.5 shrink-0" />
-                            <span>Costo Ref. Divisas</span>
-                          </span>
-                          <span className="font-mono font-black text-amber-950 text-xs">
-                            {formatUSD(customPartPricing.costCalc.referenceCostUSD)}
-                          </span>
+                        <div>
+                          <label className="block text-[10px] font-bold text-slate-700 mb-1">
+                            Costo Unit. Divisas ($) *
+                          </label>
+                          <input
+                            type="number"
+                            step="any"
+                            min={0}
+                            value={customPartCost}
+                            onChange={(e) => setCustomPartCost(e.target.value)}
+                            placeholder="0.00"
+                            className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg text-xs font-mono font-bold"
+                          />
                         </div>
 
                         <div>
@@ -2671,12 +2502,39 @@ export const PurchaseOrdersView: React.FC = () => {
                         </div>
                       </div>
 
-                      <div className="grid grid-cols-1 sm:grid-cols-4 gap-2.5 items-end">
-                        <div>
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 items-end">
+                        <div className="bg-emerald-50 border border-emerald-300 rounded-lg p-2">
+                          <label className="flex items-center justify-between text-[10px] font-extrabold text-emerald-900 mb-1">
+                            <span>P. Venta $ BCV *</span>
+                            <span className="text-[8px] bg-emerald-600 text-white px-1 rounded uppercase">
+                              Tienda
+                            </span>
+                          </label>
+                          <input
+                            type="number"
+                            step="any"
+                            min={0}
+                            value={customPartSalePrice}
+                            onChange={(e) => {
+                              setCustomPartSalePrice(e.target.value);
+                              const usdBcv = parseFloat(e.target.value) || 0;
+                              const nextBs = round2(usdBcv * customPartPricing.activeBcv);
+                              const nextRefUsd = usdtRate > 0 ? round2(nextBs / usdtRate) : usdBcv;
+                              setCustomPartSalePriceRefUSD(nextRefUsd > 0 ? nextRefUsd.toFixed(2) : '');
+                            }}
+                            placeholder="0.00"
+                            className="w-full px-2.5 py-1.5 bg-white border border-emerald-400 rounded-lg text-xs font-mono font-black text-emerald-900"
+                          />
+                          <span className="text-[9px] font-mono text-emerald-800 font-semibold block mt-1">
+                            = {formatBs(customPartPricing.saleBsBcv)}
+                          </span>
+                        </div>
+
+                        <div className="bg-amber-50/70 border border-amber-300 rounded-lg p-2">
                           <label className="flex items-center justify-between text-[10px] font-bold text-amber-900 mb-1">
                             <span className="inline-flex items-center gap-1">
                               <Lock className="w-2.5 h-2.5" />
-                              <span>P. Venta Ref. Divisas</span>
+                              <span>Ref. Divisas ($)</span>
                             </span>
                             <span className="text-[8px] bg-amber-200 px-1 rounded uppercase">Admin</span>
                           </label>
@@ -2693,59 +2551,14 @@ export const PurchaseOrdersView: React.FC = () => {
                                 customPartPricing.activeBcv > 0
                                   ? round2(nextBs / customPartPricing.activeBcv)
                                   : refVal;
-                              setCustomPartSalePriceBs(nextBs > 0 ? nextBs.toFixed(2) : '');
                               setCustomPartSalePrice(nextUsdBcv > 0 ? nextUsdBcv.toFixed(2) : '');
                             }}
                             placeholder="0.00"
-                            className="w-full px-2.5 py-1.5 bg-amber-50 border border-amber-300 rounded-lg text-xs font-mono font-bold text-amber-950"
+                            className="w-full px-2.5 py-1.5 bg-white border border-amber-300 rounded-lg text-xs font-mono font-bold text-amber-950"
                           />
-                        </div>
-
-                        <div>
-                          <label className="block text-[10px] font-bold text-emerald-800 mb-1">
-                            P. Venta Bs (Tasa BCV) *
-                          </label>
-                          <input
-                            type="number"
-                            step="any"
-                            min={0}
-                            value={customPartSalePriceBs}
-                            onChange={(e) => {
-                              setCustomPartSalePriceBs(e.target.value);
-                              const bsVal = parseFloat(e.target.value) || 0;
-                              const nextUsdBcv =
-                                customPartPricing.activeBcv > 0
-                                  ? round4(bsVal / customPartPricing.activeBcv)
-                                  : 0;
-                              const nextRefUsd = usdtRate > 0 ? round2(bsVal / usdtRate) : nextUsdBcv;
-                              setCustomPartSalePrice(nextUsdBcv > 0 ? String(round2(nextUsdBcv)) : '');
-                              setCustomPartSalePriceRefUSD(nextRefUsd > 0 ? nextRefUsd.toFixed(2) : '');
-                            }}
-                            placeholder="0.00"
-                            className="w-full px-2.5 py-1.5 bg-emerald-50 border border-emerald-300 rounded-lg text-xs font-mono font-bold text-emerald-950"
-                          />
-                        </div>
-
-                        <div>
-                          <label className="block text-[10px] font-bold text-slate-700 mb-1">
-                            Equiv. $ BCV (Tienda) *
-                          </label>
-                          <input
-                            type="number"
-                            step="any"
-                            min={0}
-                            value={customPartSalePrice}
-                            onChange={(e) => {
-                              setCustomPartSalePrice(e.target.value);
-                              const usdBcv = parseFloat(e.target.value) || 0;
-                              const nextBs = round2(usdBcv * customPartPricing.activeBcv);
-                              const nextRefUsd = usdtRate > 0 ? round2(nextBs / usdtRate) : usdBcv;
-                              setCustomPartSalePriceBs(nextBs > 0 ? nextBs.toFixed(2) : '');
-                              setCustomPartSalePriceRefUSD(nextRefUsd > 0 ? nextRefUsd.toFixed(2) : '');
-                            }}
-                            placeholder="0.00"
-                            className="w-full px-2.5 py-1.5 bg-white border border-slate-300 rounded-lg text-xs font-mono font-bold text-slate-900"
-                          />
+                          <span className="text-[9px] text-amber-800 block mt-1">
+                            Solo visible en Panel Admin
+                          </span>
                         </div>
 
                         <div>
@@ -2759,12 +2572,12 @@ export const PurchaseOrdersView: React.FC = () => {
                               max={95}
                               value={customPartTargetPct}
                               onChange={(e) => setCustomPartTargetPct(e.target.value)}
-                              className="w-14 px-2 py-1.5 bg-white border border-slate-300 rounded-lg text-xs font-mono text-center"
+                              className="w-16 px-2 py-1.5 bg-white border border-slate-300 rounded-lg text-xs font-mono text-center"
                             />
                             <button
                               type="button"
                               onClick={handleApplyCustomPartTargetProfit}
-                              disabled={customPartPricing.costCalc.referenceCostUSD <= 0}
+                              disabled={customPartPricing.costUSD <= 0}
                               className="flex-1 px-2 py-1.5 bg-amber-500 hover:bg-amber-400 disabled:opacity-40 text-slate-950 font-bold text-[10px] rounded-lg cursor-pointer"
                             >
                               Aplicar
@@ -2870,9 +2683,9 @@ export const PurchaseOrdersView: React.FC = () => {
                         const itemPricing = calculateProductPricing(
                           {
                             costPrice: it.unitCostUSD,
-                            costCurrencyOrigin: it.costCurrencyOrigin || 'DIVISAS',
-                            costPriceBs: it.costPriceBs,
-                            referenceCostUSD: it.referenceCostUSD,
+                            costCurrencyOrigin: 'DIVISAS',
+                            costPriceBs: round2(it.unitCostUSD * usdtRate),
+                            referenceCostUSD: it.unitCostUSD,
                             salePrice: it.salePriceUSD ?? 0,
                             salePriceRefUSD: it.salePriceRefUSD,
                             salePriceBsBcv: it.salePriceBsBcv,
@@ -2898,33 +2711,9 @@ export const PurchaseOrdersView: React.FC = () => {
                                       {it.category}
                                     </span>
                                   )}
-                                  <button
-                                    type="button"
-                                    onClick={() =>
-                                      handleUpdateOrderItem(
-                                        idx,
-                                        'costCurrencyOrigin',
-                                        itemPricing.costOrigin === 'BS_BCV' ? 'DIVISAS' : 'BS_BCV'
-                                      )
-                                    }
-                                    className={`px-1.5 py-0.5 rounded text-[9px] font-bold uppercase cursor-pointer ${
-                                      itemPricing.costOrigin === 'BS_BCV'
-                                        ? 'bg-blue-100 text-blue-800 border border-blue-300'
-                                        : 'bg-slate-200 text-slate-700 border border-slate-300'
-                                    }`}
-                                    title="Clic para alternar origen de costo entre Divisas/USDT y Tasa BCV"
-                                  >
-                                    Costo: {itemPricing.costOrigin === 'BS_BCV' ? 'BCV' : 'Divisas'}
-                                  </button>
                                 </div>
                                 <div className="flex flex-wrap items-center gap-2 text-[10px] font-mono text-slate-500 mt-0.5">
                                   <span>SKU: {it.sku || 'AUTO'}</span>
-                                  <span
-                                    className="text-amber-800 font-bold"
-                                    title="Costo de referencia en divisas ajustado por brecha BCV/USDT"
-                                  >
-                                    Ref. Div: {formatUSD(itemPricing.referenceCostUSD)}
-                                  </span>
                                   {itemPricing.realProfitMarginPct !== null && (
                                     <span
                                       className={`px-1.5 py-0.2 rounded font-bold ${
@@ -2959,34 +2748,38 @@ export const PurchaseOrdersView: React.FC = () => {
                                   />
                                 </div>
                                 <div>
-                                  <span className="text-[10px] text-slate-500 font-semibold block">
-                                    {itemPricing.costOrigin === 'BS_BCV'
-                                      ? 'Costo Bs BCV'
-                                      : 'Costo Div $'}
+                                  <span className="text-[10px] text-slate-600 font-semibold block">
+                                    Costo Divisas $
                                   </span>
-                                  {itemPricing.costOrigin === 'BS_BCV' ? (
-                                    <input
-                                      type="number"
-                                      step="any"
-                                      min={0}
-                                      value={it.costPriceBs ?? round2(it.unitCostUSD * activeBcv)}
-                                      onChange={(e) =>
-                                        handleUpdateOrderItem(idx, 'costPriceBs', e.target.value)
-                                      }
-                                      className="w-24 px-2 py-1 bg-blue-50 border border-blue-300 rounded-lg font-mono text-xs text-right text-blue-950"
-                                    />
-                                  ) : (
-                                    <input
-                                      type="number"
-                                      step="any"
-                                      min={0}
-                                      value={it.unitCostUSD}
-                                      onChange={(e) =>
-                                        handleUpdateOrderItem(idx, 'unitCostUSD', e.target.value)
-                                      }
-                                      className="w-22 px-2 py-1 bg-slate-50 border border-slate-300 rounded-lg font-mono text-xs text-right"
-                                    />
-                                  )}
+                                  <input
+                                    type="number"
+                                    step="any"
+                                    min={0}
+                                    value={it.unitCostUSD}
+                                    onChange={(e) =>
+                                      handleUpdateOrderItem(idx, 'unitCostUSD', e.target.value)
+                                    }
+                                    className="w-22 px-2 py-1 bg-slate-50 border border-slate-300 rounded-lg font-mono text-xs text-right"
+                                  />
+                                </div>
+                                <div>
+                                  <span className="text-[10px] text-emerald-800 font-extrabold block">
+                                    P. Venta $ BCV
+                                  </span>
+                                  <input
+                                    type="number"
+                                    step="any"
+                                    min={0}
+                                    value={it.salePriceUSD ?? ''}
+                                    onChange={(e) =>
+                                      handleUpdateOrderItem(idx, 'salePriceUSD', e.target.value)
+                                    }
+                                    placeholder="0.00"
+                                    className="w-22 px-2 py-1 bg-emerald-50 border-2 border-emerald-400 rounded-lg font-mono font-black text-xs text-right text-emerald-900"
+                                  />
+                                  <span className="text-[9px] font-mono text-emerald-700 font-semibold block text-right">
+                                    {formatBs(itemPricing.salePriceBsBcv)}
+                                  </span>
                                 </div>
                                 <div>
                                   <span className="text-[10px] text-amber-800 font-bold flex items-center gap-0.5">
@@ -3004,25 +2797,6 @@ export const PurchaseOrdersView: React.FC = () => {
                                     placeholder="0.00"
                                     className="w-22 px-2 py-1 bg-amber-50 border border-amber-300 rounded-lg font-mono font-bold text-xs text-right text-amber-950"
                                   />
-                                </div>
-                                <div>
-                                  <span className="text-[10px] text-emerald-700 font-bold block">
-                                    P. Venta $ BCV
-                                  </span>
-                                  <input
-                                    type="number"
-                                    step="any"
-                                    min={0}
-                                    value={it.salePriceUSD ?? ''}
-                                    onChange={(e) =>
-                                      handleUpdateOrderItem(idx, 'salePriceUSD', e.target.value)
-                                    }
-                                    placeholder="0.00"
-                                    className="w-22 px-2 py-1 bg-emerald-50 border border-emerald-300 rounded-lg font-mono font-bold text-xs text-right text-emerald-950"
-                                  />
-                                  <span className="text-[9px] font-mono text-emerald-700 block text-right">
-                                    {formatBs(itemPricing.salePriceBsBcv)}
-                                  </span>
                                 </div>
                                 <div className="w-20 text-right">
                                   <span className="text-[10px] text-slate-400 block">

@@ -393,9 +393,32 @@ function writeDatabase(
         : data.treasuryDebts
       : current.treasuryDebts || [];
 
+    // Protect fresher official BCV rate from being overwritten by stale client POST /api/data payloads
+    let mergedSettings = data.settings !== undefined ? data.settings : current.settings;
+    if (data.settings && current.settings) {
+      const currTs = current.settings.bcvSyncedAtISO ? Date.parse(current.settings.bcvSyncedAtISO) : 0;
+      const incTs = data.settings.bcvSyncedAtISO ? Date.parse(data.settings.bcvSyncedAtISO) : 0;
+      if (
+        currTs > 0 &&
+        (!incTs || currTs > incTs) &&
+        Number(current.settings.bcvRate) > 0 &&
+        Number(current.settings.bcvRate) !== Number(data.settings.bcvRate)
+      ) {
+        mergedSettings = {
+          ...data.settings,
+          bcvRate: current.settings.bcvRate,
+          bcvOfficialDate: current.settings.bcvOfficialDate,
+          bcvSource: current.settings.bcvSource,
+          bcvLastUpdated: current.settings.bcvLastUpdated,
+          bcvSyncedAtISO: current.settings.bcvSyncedAtISO,
+        };
+      }
+    }
+
     const updated: AppDatabase = {
       ...current,
       ...data,
+      settings: mergedSettings,
       products: Array.isArray(rawProducts) ? rawProducts.filter((p: any) => !deletedProductsSet.has(p.id)) : [],
       customers: Array.isArray(rawCustomers) ? rawCustomers.filter((c: any) => !deletedCustomersSet.has(c.id)) : [],
       sales: Array.isArray(rawSales) ? rawSales.filter((s: any) => !deletedSalesSet.has(s.id)) : [],
@@ -432,69 +455,110 @@ interface BcvRateResponse {
   date?: string;
   source: string;
   timestamp: string;
+  isLive?: boolean;
 }
 
-// Scrape official BCV rate directly from https://www.bcv.org.ve/
-async function scrapeBcvOfficial(): Promise<BcvRateResponse> {
+const BCV_ALLOWED_HOSTS = new Set(['www.bcv.org.ve', 'bcv.org.ve']);
+const BCV_CACHE_TTL_MS = 3 * 60 * 1000; // 3 minutes cache for live BCV responses
+const BCV_MIN_FORCE_INTERVAL_MS = 15 * 1000; // 15s throttle on forced refreshes to protect bcv.org.ve
+const BCV_BACKGROUND_POLL_MS = 10 * 60 * 1000; // Auto-check bcv.org.ve every 10 minutes on the server
+
+let cachedBcvResponse: BcvRateResponse | null = null;
+let cachedBcvFetchedAtMs = 0;
+let inFlightBcvPromise: Promise<BcvRateResponse> | null = null;
+
+function formatCaracasTime(): string {
+  try {
+    return new Date().toLocaleTimeString('es-VE', {
+      timeZone: 'America/Caracas',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  } catch {
+    return new Date().toLocaleTimeString('es-VE', { hour: '2-digit', minute: '2-digit' });
+  }
+}
+
+function sanitizeBcvDateText(raw?: string): string {
+  if (!raw || typeof raw !== 'string') {
+    return new Date().toLocaleDateString('es-VE', { timeZone: 'America/Caracas' });
+  }
+  return raw
+    .replace(/<[^>]*>/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 80);
+}
+
+// Fetch raw HTML from https://www.bcv.org.ve/ with safe redirect handling (strictly confined to bcv.org.ve)
+function fetchBcvHtml(targetUrl: string, redirectsLeft = 3): Promise<string> {
   return new Promise((resolve, reject) => {
+    let parsed: URL;
+    try {
+      parsed = new URL(targetUrl);
+    } catch {
+      return reject(new Error('URL BCV inválida'));
+    }
+
+    if (parsed.protocol !== 'https:' || !BCV_ALLOWED_HOSTS.has(parsed.hostname.toLowerCase())) {
+      return reject(new Error('Host BCV no permitido'));
+    }
+
     const agent = new https.Agent({
-      rejectUnauthorized: false, // BCV SSL chain frequently has issues
+      rejectUnauthorized: false, // BCV SSL chain frequently has intermediate certificate issues
     });
 
-    const options = {
-      hostname: 'www.bcv.org.ve',
-      port: 443,
-      path: '/',
-      method: 'GET',
-      agent,
-      headers: {
-        'User-Agent':
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-        'Accept-Language': 'es-ES,es;q=0.9,en;q=0.8',
-        'Cache-Control': 'no-cache',
+    const req = https.request(
+      {
+        hostname: parsed.hostname,
+        port: 443,
+        path: `${parsed.pathname || '/'}${parsed.search || ''}`,
+        method: 'GET',
+        agent,
+        headers: {
+          'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+          Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'Accept-Language': 'es-VE,es;q=0.9,en;q=0.8',
+          'Cache-Control': 'no-cache',
+          Pragma: 'no-cache',
+        },
+        timeout: 12000,
       },
-      timeout: 6000,
-    };
-
-    const req = https.request(options, (res) => {
-      let data = '';
-      res.setEncoding('utf8');
-
-      res.on('data', (chunk) => {
-        data += chunk;
-      });
-
-      res.on('end', () => {
-        try {
-          // Extract dollar rate from <div id="dolar"...>...<strong ...>889,57540000</strong>
-          const dollarMatch = data.match(/id=["']dolar["'][\s\S]*?<strong[^>]*>\s*([0-9]+[.,][0-9]+)\s*<\/strong>/i);
-          
-          // Extract official value date: Fecha Valor: <span class="date-display-single"...>Lunes, 02 Noviembre 2026</span>
-          const dateMatch = data.match(/Fecha Valor:[\s\S]*?<span[^>]*class=["'][^"']*date-display-single[^"']*["'][^>]*>([^<]+)<\/span>/i);
-
-          if (dollarMatch && dollarMatch[1]) {
-            const rawRateStr = dollarMatch[1].replace(/\./g, '').replace(',', '.');
-            const numericRate = parseFloat(rawRateStr);
-
-            if (!isNaN(numericRate) && numericRate > 0) {
-              const valueDate = dateMatch ? dateMatch[1].trim().replace(/\s+/g, ' ') : new Date().toLocaleDateString('es-VE');
-              return resolve({
-                success: true,
-                rate: Math.round(numericRate * 100) / 100,
-                rawRate: numericRate,
-                date: valueDate,
-                source: 'Banco Central de Venezuela (bcv.org.ve)',
-                timestamp: new Date().toISOString(),
-              });
-            }
+      (res) => {
+        const status = res.statusCode || 0;
+        if (
+          status >= 300 &&
+          status < 400 &&
+          res.headers.location &&
+          redirectsLeft > 0
+        ) {
+          res.resume();
+          try {
+            const nextUrl = new URL(res.headers.location, targetUrl).toString();
+            return fetchBcvHtml(nextUrl, redirectsLeft - 1).then(resolve, reject);
+          } catch (err) {
+            return reject(err);
           }
-          reject(new Error('No se pudo extraer la tasa del HTML de bcv.org.ve'));
-        } catch (err) {
-          reject(err);
         }
-      });
-    });
+
+        if (status < 200 || status >= 300) {
+          res.resume();
+          return reject(new Error(`BCV respondió HTTP ${status}`));
+        }
+
+        let data = '';
+        res.setEncoding('utf8');
+        res.on('data', (chunk) => {
+          data += chunk;
+          if (data.length > 2_000_000) {
+            req.destroy();
+            reject(new Error('Respuesta HTML de BCV excedió límite permitido'));
+          }
+        });
+        res.on('end', () => resolve(data));
+      }
+    );
 
     req.on('timeout', () => {
       req.destroy();
@@ -509,59 +573,200 @@ async function scrapeBcvOfficial(): Promise<BcvRateResponse> {
   });
 }
 
-// Fallback using DolarApi (mirrors official BCV with CORS)
-async function fetchBcvFallback(): Promise<BcvRateResponse> {
-  const response = await fetch('https://ve.dolarapi.com/v1/dolares/oficial', {
-    headers: { Accept: 'application/json' },
-  });
+// Parse official USD rate & Fecha Valor from BCV homepage HTML
+function parseBcvOfficialHtml(html: string): BcvRateResponse {
+  // Primary selector: <div id="dolar" ...> ... <strong ...>919,82270000</strong>
+  const dollarMatch =
+    html.match(/id=["']dolar["'][\s\S]{0,1200}?<strong[^>]*>\s*([0-9.,]+)\s*<\/strong>/i) ||
+    html.match(/USD[\s\S]{0,400}?<strong[^>]*>\s*([0-9]+[.,][0-9]+)\s*<\/strong>/i);
 
-  if (!response.ok) {
-    throw new Error(`DolarApi error HTTP ${response.status}`);
+  // Extract official value date: Fecha Valor: <span ... class="date-display-single">Martes, 24 Noviembre 2026</span>
+  const dateMatch =
+    html.match(/Fecha\s+Valor:[\s\S]{0,400}?<span[^>]*class=["'][^"']*date-display-single[^"']*["'][^>]*>([^<]+)<\/span>/i) ||
+    html.match(/class=["'][^"']*date-display-single[^"']*["'][^>]*>([^<]+)<\/span>/i);
+
+  if (!dollarMatch || !dollarMatch[1]) {
+    throw new Error('No se pudo extraer la tasa USD del HTML de bcv.org.ve');
   }
 
-  const json = await response.json();
-  const rate = json.promedio || json.venta || json.compra;
+  const rawToken = dollarMatch[1].trim();
+  const normalizedStr = rawToken.includes(',')
+    ? rawToken.replace(/\./g, '').replace(',', '.')
+    : rawToken;
+  const numericRate = parseFloat(normalizedStr);
 
-  if (!rate || isNaN(rate)) {
-    throw new Error('Respuesta inválida de mirror BCV');
+  if (!Number.isFinite(numericRate) || numericRate <= 1 || numericRate >= 1_000_000) {
+    throw new Error(`Tasa BCV fuera de rango válido: ${rawToken}`);
   }
 
   return {
     success: true,
-    rate: Math.round(rate * 100) / 100,
-    rawRate: rate,
-    date: json.fechaActualizacion || new Date().toISOString(),
-    source: 'Banco Central de Venezuela (BCV Oficial vía Mirror)',
+    rate: Math.round(numericRate * 100) / 100,
+    rawRate: numericRate,
+    date: sanitizeBcvDateText(dateMatch ? dateMatch[1] : undefined),
+    source: 'Banco Central de Venezuela (bcv.org.ve)',
     timestamp: new Date().toISOString(),
+    isLive: true,
   };
 }
 
-// API endpoint to fetch real-time BCV official rate
-app.get('/api/bcv', async (_req, res) => {
-  try {
-    // 1. Try direct BCV scrape
-    const bcvData = await scrapeBcvOfficial();
-    return res.json(bcvData);
-  } catch (directErr) {
-    console.warn('Scraping directo de bcv.org.ve falló, usando mirror:', (directErr as Error).message);
+// Scrape official BCV rate directly from https://www.bcv.org.ve/ with 1 automatic retry
+async function scrapeBcvOfficial(): Promise<BcvRateResponse> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      // 2. Fallback to BCV mirror
-      const fallbackData = await fetchBcvFallback();
-      return res.json(fallbackData);
-    } catch (fallbackErr) {
-      console.warn('Ambas fuentes en vivo fallaron, usando tasa guardada en BD:', fallbackErr);
-      const db = readDatabase();
-      const currentRate = db.settings?.bcvRate || 901.62;
-      return res.json({
-        success: true,
-        rate: currentRate,
-        rawRate: currentRate,
-        date: db.settings?.bcvLastUpdated || new Date().toLocaleDateString('es-VE'),
-        source: 'Base de Datos (Tasa activa guardada)',
-        timestamp: new Date().toISOString(),
-      });
+      const html = await fetchBcvHtml('https://www.bcv.org.ve/');
+      return parseBcvOfficialHtml(html);
+    } catch (err) {
+      lastError = err;
     }
   }
+  throw lastError instanceof Error ? lastError : new Error('Fallo al consultar bcv.org.ve');
+}
+
+// Fallback using DolarApi (mirrors official BCV with CORS)
+async function fetchBcvFallback(): Promise<BcvRateResponse> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 8000);
+  try {
+    const response = await fetch('https://ve.dolarapi.com/v1/dolares/oficial', {
+      headers: { Accept: 'application/json' },
+      signal: controller.signal,
+    });
+
+    if (!response.ok) {
+      throw new Error(`DolarApi error HTTP ${response.status}`);
+    }
+
+    const json = await response.json();
+    const rate = Number(json.promedio || json.venta || json.compra);
+
+    if (!Number.isFinite(rate) || rate <= 1 || rate >= 1_000_000) {
+      throw new Error('Respuesta inválida de mirror BCV');
+    }
+
+    return {
+      success: true,
+      rate: Math.round(rate * 100) / 100,
+      rawRate: rate,
+      date: sanitizeBcvDateText(
+        json.fechaActualizacion
+          ? new Date(json.fechaActualizacion).toLocaleDateString('es-VE', {
+              timeZone: 'America/Caracas',
+              weekday: 'long',
+              day: 'numeric',
+              month: 'long',
+              year: 'numeric',
+            })
+          : undefined
+      ),
+      source: 'Banco Central de Venezuela (BCV Oficial vía Mirror)',
+      timestamp: new Date().toISOString(),
+      isLive: true,
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+// Persist newly fetched official BCV rate into server database.json so all APIs stay automatically up to date
+function persistLiveBcvToDatabase(bcvData: BcvRateResponse): void {
+  if (!bcvData.success || !bcvData.isLive || !(bcvData.rate > 0)) return;
+  try {
+    const db = readDatabase();
+    const currentSettings = db.settings || {};
+    const prevRate = Number(currentSettings.bcvRate) || 0;
+    const prevDate = String(currentSettings.bcvOfficialDate || '');
+    const nextDate = String(bcvData.date || prevDate);
+
+    // Always update if rate, official date, or source changed, or if no ISO sync timestamp exists yet
+    const hasChanged =
+      Math.abs(prevRate - bcvData.rate) >= 0.005 ||
+      (nextDate && prevDate !== nextDate) ||
+      !currentSettings.bcvSyncedAtISO;
+
+    if (hasChanged) {
+      writeDatabase({
+        settings: {
+          ...currentSettings,
+          bcvRate: bcvData.rate,
+          bcvOfficialDate: nextDate,
+          bcvSource: bcvData.source,
+          bcvLastUpdated: formatCaracasTime(),
+          bcvSyncedAtISO: bcvData.timestamp,
+        },
+      });
+      console.log(
+        `[BCV Auto-Sync] Tasa BCV actualizada automáticamente: Bs. ${bcvData.rate.toFixed(2)} (${nextDate}) [${bcvData.source}]`
+      );
+    }
+  } catch (err) {
+    console.warn('[BCV Auto-Sync] No se pudo persistir la tasa BCV en BD local:', err);
+  }
+}
+
+async function getLatestBcvRate(forceRefresh = false): Promise<BcvRateResponse> {
+  const now = Date.now();
+  const cacheAgeMs = now - cachedBcvFetchedAtMs;
+
+  if (cachedBcvResponse && cachedBcvResponse.isLive) {
+    if (!forceRefresh && cacheAgeMs < BCV_CACHE_TTL_MS) {
+      return cachedBcvResponse;
+    }
+    if (forceRefresh && cacheAgeMs < BCV_MIN_FORCE_INTERVAL_MS) {
+      return cachedBcvResponse;
+    }
+  }
+
+  if (inFlightBcvPromise) {
+    return inFlightBcvPromise;
+  }
+
+  inFlightBcvPromise = (async (): Promise<BcvRateResponse> => {
+    try {
+      // 1. Primary: Direct live scrape from https://www.bcv.org.ve/
+      const bcvData = await scrapeBcvOfficial();
+      cachedBcvResponse = bcvData;
+      cachedBcvFetchedAtMs = Date.now();
+      persistLiveBcvToDatabase(bcvData);
+      return bcvData;
+    } catch (directErr) {
+      console.warn('Scraping directo de bcv.org.ve falló, usando mirror:', (directErr as Error).message);
+      try {
+        // 2. Fallback: Official BCV mirror
+        const fallbackData = await fetchBcvFallback();
+        cachedBcvResponse = fallbackData;
+        cachedBcvFetchedAtMs = Date.now();
+        persistLiveBcvToDatabase(fallbackData);
+        return fallbackData;
+      } catch (fallbackErr) {
+        console.warn('Ambas fuentes en vivo fallaron, usando tasa guardada en BD:', fallbackErr);
+        const db = readDatabase();
+        const currentRate = Number(db.settings?.bcvRate) || 919.82;
+        return {
+          success: true,
+          rate: currentRate,
+          rawRate: currentRate,
+          date: db.settings?.bcvOfficialDate || db.settings?.bcvLastUpdated || new Date().toLocaleDateString('es-VE'),
+          source: 'Base de Datos (Tasa activa guardada)',
+          timestamp: db.settings?.bcvSyncedAtISO || new Date().toISOString(),
+          isLive: false,
+        };
+      }
+    } finally {
+      inFlightBcvPromise = null;
+    }
+  })();
+
+  return inFlightBcvPromise;
+}
+
+// API endpoint to fetch real-time BCV official rate
+app.get('/api/bcv', async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+  const force = req.query.force === '1' || req.query.force === 'true';
+  const bcvData = await getLatestBcvRate(force);
+  return res.json(bcvData);
 });
 
 // API endpoint to fetch USDT Binance / parallel reference rate (used by Admin panel)
@@ -1613,9 +1818,17 @@ async function startServer() {
 
   httpServer.listen(PORT, '0.0.0.0', () => {
     console.log(`Server running at http://0.0.0.0:${PORT}`);
+    // Immediately sync live official BCV rate at startup and poll bcv.org.ve every 10 minutes
+    getLatestBcvRate(true).catch(() => {});
   });
 
+  const bcvInterval = setInterval(() => {
+    getLatestBcvRate(true).catch(() => {});
+  }, BCV_BACKGROUND_POLL_MS);
+  bcvInterval.unref();
+
   const shutdown = async () => {
+    clearInterval(bcvInterval);
     try {
       if (viteServer) await viteServer.close();
     } catch {}

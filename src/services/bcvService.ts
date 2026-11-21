@@ -11,25 +11,50 @@ export interface BcvSyncResult {
   date?: string;
   source: string;
   timestamp: string;
+  isLive?: boolean;
   error?: string;
 }
 
-export async function fetchOfficialBcvRate(): Promise<BcvSyncResult> {
+export async function fetchOfficialBcvRate(options?: { force?: boolean }): Promise<BcvSyncResult> {
+  const forceQuery = options?.force ? '?force=1' : '';
   // Intento 1: Servidor local /api/bcv (scraping directo de https://www.bcv.org.ve/)
   try {
-    const res = await fetch('/api/bcv', {
+    const res = await fetch(`/api/bcv${forceQuery}`, {
       headers: { Accept: 'application/json' },
+      cache: 'no-store',
     });
-    if (res.ok) {
+    const contentType = res.headers.get('content-type') || '';
+    if (res.ok && contentType.includes('application/json')) {
       const data = await res.json();
-      if (data.success && data.rate && !isNaN(data.rate)) {
+      if (data.success && data.rate && !isNaN(Number(data.rate)) && Number(data.rate) > 0) {
+        const parsedRate = Math.round(Number(data.rate) * 100) / 100;
+        // Si el backend respondió con tasa en vivo de bcv.org.ve (o mirror), úsala de inmediato
+        if (data.isLive !== false) {
+          return {
+            success: true,
+            rate: parsedRate,
+            rawRate: data.rawRate ? Number(data.rawRate) : parsedRate,
+            date: data.date || 'Tasa Oficial BCV',
+            source: data.source || 'Banco Central de Venezuela (bcv.org.ve)',
+            timestamp: data.timestamp || new Date().toISOString(),
+            isLive: true,
+          };
+        }
+        // Si el servidor devolvió fallback local (offline), intentar mirror directo antes de aceptarlo
+        try {
+          const mirrorFallback = await fetchDolarApiOfficialBcv();
+          if (mirrorFallback.success && mirrorFallback.rate > 0) {
+            return mirrorFallback;
+          }
+        } catch {}
         return {
           success: true,
-          rate: Number(data.rate),
-          rawRate: data.rawRate ? Number(data.rawRate) : Number(data.rate),
+          rate: parsedRate,
+          rawRate: data.rawRate ? Number(data.rawRate) : parsedRate,
           date: data.date || 'Tasa Oficial BCV',
-          source: data.source || 'Banco Central de Venezuela (bcv.org.ve)',
+          source: data.source || 'Base de Datos (Tasa activa guardada)',
           timestamp: data.timestamp || new Date().toISOString(),
+          isLive: false,
         };
       }
     }
@@ -38,9 +63,14 @@ export async function fetchOfficialBcvRate(): Promise<BcvSyncResult> {
   }
 
   // Intento 2: Mirror oficial DolarApi directo desde el navegador (con soporte CORS y tasa oficial BCV)
+  return fetchDolarApiOfficialBcv();
+}
+
+async function fetchDolarApiOfficialBcv(): Promise<BcvSyncResult> {
   try {
     const mirrorRes = await fetch('https://ve.dolarapi.com/v1/dolares/oficial', {
       headers: { Accept: 'application/json' },
+      cache: 'no-store',
     });
     if (mirrorRes.ok) {
       const mirrorJson = await mirrorRes.json();
@@ -59,8 +89,9 @@ export async function fetchOfficialBcvRate(): Promise<BcvSyncResult> {
                 year: 'numeric',
               })
             : 'Tasa Oficial BCV',
-          source: 'Banco Central de Venezuela (bcv.org.ve)',
+          source: 'Banco Central de Venezuela (BCV vía Mirror)',
           timestamp: new Date().toISOString(),
+          isLive: true,
         };
       }
     }
@@ -73,6 +104,7 @@ export async function fetchOfficialBcvRate(): Promise<BcvSyncResult> {
     rate: 0,
     source: 'Banco Central de Venezuela (bcv.org.ve)',
     timestamp: new Date().toISOString(),
+    isLive: false,
     error: 'No se pudo contactar los servidores del BCV en este momento.',
   };
 }

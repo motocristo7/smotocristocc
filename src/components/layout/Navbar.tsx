@@ -232,7 +232,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenCart }) => {
                 className={`font-mono tabular-nums text-emerald-950 font-bold whitespace-nowrap ${
                   isAdminView ? 'hover:underline cursor-pointer' : 'cursor-default'
                 }`}
-                title={`Tasa oficial BCV: Bs. ${settings.bcvRate.toFixed(2)}${settings.bcvLastUpdated ? ` (Última sinc: ${settings.bcvLastUpdated})` : ''}`}
+                title={`Tasa oficial BCV: Bs. ${settings.bcvRate.toFixed(2)}${settings.bcvOfficialDate ? ` · Fecha Valor: ${settings.bcvOfficialDate}` : ''}${settings.bcvLastUpdated ? ` · Última comprobación: ${settings.bcvLastUpdated}` : ''}`}
               >
                 Bs. {settings.bcvRate.toFixed(2)}
               </button>
@@ -241,12 +241,12 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenCart }) => {
             {isAdminView && (
               <button
                 type="button"
-                onClick={() => syncBcvRate()}
+                onClick={() => syncBcvRate(true)}
                 disabled={isSyncingBcv}
                 className={`p-0.5 text-emerald-700 hover:text-emerald-950 hover:bg-emerald-100 rounded transition-colors cursor-pointer ${
                   isSyncingBcv ? 'opacity-60 cursor-not-allowed' : ''
                 }`}
-                title="Sincronizar tasa oficial en vivo desde el Banco Central de Venezuela"
+                title="Consultar ahora mismo la tasa oficial en vivo desde www.bcv.org.ve"
               >
                 <RefreshCw className={`w-3 h-3 ${isSyncingBcv ? 'animate-spin text-emerald-700' : ''}`} />
               </button>

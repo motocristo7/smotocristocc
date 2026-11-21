@@ -95,13 +95,14 @@ export const SettingsView: React.FC = () => {
   const availableCities = VENEZUELA_LOCATIONS.find((l) => l.state === formData.state)?.cities || [formData.city];
 
   const handleSyncWithBcv = async () => {
-    const res = await syncBcvRate();
+    const res = await syncBcvRate(true);
     if (res.success && res.rate > 0) {
       setFormData((prev) => ({
         ...prev,
         bcvRate: res.rate,
         bcvOfficialDate: res.date,
         bcvSource: res.source,
+        bcvSyncedAtISO: res.timestamp,
         bcvLastUpdated: new Date().toLocaleTimeString('es-VE', {
           hour: '2-digit',
           minute: '2-digit',

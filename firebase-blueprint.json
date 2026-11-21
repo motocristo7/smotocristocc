@@ -53,6 +53,7 @@
         "bcvOfficialDate": { "type": "string", "description": "Fecha valor oficial BCV" },
         "bcvSource": { "type": "string", "description": "Fuente de la tasa" },
         "bcvLastUpdated": { "type": "string", "description": "Hora de actualización" },
+        "bcvSyncedAtISO": { "type": "string", "description": "Timestamp ISO de última sincronización oficial BCV" },
         "customCategories": { "type": "array", "description": "Categorías personalizadas de inventario" },
         "customExpenseCategories": { "type": "array", "description": "Categorías personalizadas de gastos del negocio" }
       },

@@ -317,6 +317,7 @@ export interface BusinessSettings {
   bcvLastUpdated?: string; // Fecha y hora de última sincronización
   bcvOfficialDate?: string; // Fecha Valor oficial reportada por el BCV
   bcvSource?: string; // Fuente oficial (bcv.org.ve)
+  bcvSyncedAtISO?: string; // Timestamp ISO de la última actualización oficial de tasa BCV
   usdtRate?: number; // Tasa referencia USDT Binance (Bs/USDT) — tasa_usdt (Solo Admin)
   usdtLastUpdated?: string; // Fecha y hora de última actualización USDT
   usdtSource?: string; // Fuente de la tasa USDT (Binance / Manual)

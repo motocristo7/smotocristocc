@@ -241,7 +241,7 @@ interface AppContextType {
   updateUsdtRate: (newRate: number) => void;
   isSyncingBcv: boolean;
   bcvSyncMessage: string | null;
-  syncBcvRate: () => Promise<BcvSyncResult>;
+  syncBcvRate: (force?: boolean) => Promise<BcvSyncResult>;
   isSyncingUsdt: boolean;
   usdtSyncMessage: string | null;
   syncUsdtRate: () => Promise<BcvSyncResult>;
@@ -1353,6 +1353,59 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     }
   });
 
+  // Track latest verified live BCV sync in this session so stale server/Firestore snapshots never overwrite it
+  const latestLiveBcvRef = useRef<{
+    rate: number;
+    date?: string;
+    source: string;
+    lastUpdated: string;
+    syncedAtISO: string;
+  } | null>(null);
+  const lastBcvCheckAtRef = useRef<number>(0);
+
+  const applyFreshBcvIfNewer = (
+    incoming: BusinessSettings,
+    prev: BusinessSettings
+  ): { merged: BusinessSettings; shouldPushLiveToCloud: boolean } => {
+    const live = latestLiveBcvRef.current;
+    const incomingTs = incoming.bcvSyncedAtISO ? Date.parse(incoming.bcvSyncedAtISO) : 0;
+    const prevTs = prev.bcvSyncedAtISO ? Date.parse(prev.bcvSyncedAtISO) : 0;
+    const liveTs = live?.syncedAtISO ? Date.parse(live.syncedAtISO) : 0;
+
+    if (live && live.rate > 0 && liveTs > incomingTs) {
+      const differsFromIncoming =
+        Math.abs((Number(incoming.bcvRate) || 0) - live.rate) >= 0.005 ||
+        (live.date && incoming.bcvOfficialDate !== live.date);
+      return {
+        merged: {
+          ...incoming,
+          bcvRate: live.rate,
+          bcvOfficialDate: live.date || incoming.bcvOfficialDate,
+          bcvSource: live.source,
+          bcvLastUpdated: live.lastUpdated,
+          bcvSyncedAtISO: live.syncedAtISO,
+        },
+        shouldPushLiveToCloud: Boolean(differsFromIncoming),
+      };
+    }
+
+    if (prevTs > incomingTs && Number(prev.bcvRate) > 0) {
+      return {
+        merged: {
+          ...incoming,
+          bcvRate: prev.bcvRate,
+          bcvOfficialDate: prev.bcvOfficialDate || incoming.bcvOfficialDate,
+          bcvSource: prev.bcvSource || incoming.bcvSource,
+          bcvLastUpdated: prev.bcvLastUpdated || incoming.bcvLastUpdated,
+          bcvSyncedAtISO: prev.bcvSyncedAtISO,
+        },
+        shouldPushLiveToCloud: false,
+      };
+    }
+
+    return { merged: incoming, shouldPushLiveToCloud: false };
+  };
+
 const DEMO_PRODUCT_IDS = new Set([
   'prod-1', 'prod-2', 'prod-3', 'prod-4', 'prod-5', 'prod-6',
   'prod-7', 'prod-8', 'prod-9', 'prod-10', 'prod-11', 'prod-12'
@@ -2034,13 +2087,17 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
                   ...(Array.isArray(prev.customExpensePosBanks) ? prev.customExpensePosBanks : []),
                 ])
               );
-              const nextSettings: BusinessSettings = {
+              const baseNextSettings: BusinessSettings = {
                 ...serverDb.settings,
                 ...(mergedCustom.length > 0 ? { customCategories: mergedCustom } : {}),
                 ...(mergedCustomExpenses.length > 0 ? { customExpenseCategories: mergedCustomExpenses } : {}),
                 ...(mergedCustomPosBanks.length > 0 ? { customExpensePosBanks: mergedCustomPosBanks } : {}),
               };
-              localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(nextSettings));
+              const { merged: nextSettings } = applyFreshBcvIfNewer(baseNextSettings, prev);
+              settingsRef.current = nextSettings;
+              try {
+                localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(nextSettings));
+              } catch {}
               return nextSettings;
             });
           }
@@ -2621,7 +2678,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
               const mergedCustomPosBanks = Array.from(
                 new Set([...remoteCustomPosBanks, ...localCustomPosBanks])
               );
-              const nextSettings: BusinessSettings = {
+              const baseNextSettings: BusinessSettings = {
                 ...firestoreSettings,
                 ...(mergedCustom.length > 0 ? { customCategories: mergedCustom } : {}),
                 ...(mergedCustomExpenses.length > 0
@@ -2631,7 +2688,19 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
                   ? { customExpensePosBanks: mergedCustomPosBanks }
                   : {}),
               };
+              const { merged: nextSettings, shouldPushLiveToCloud } = applyFreshBcvIfNewer(
+                baseNextSettings,
+                prev
+              );
               settingsRef.current = nextSettings;
+              try {
+                localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(nextSettings));
+              } catch {}
+              if (shouldPushLiveToCloud) {
+                queueMicrotask(() => {
+                  syncSettingsToFirestore(nextSettings).catch(() => {});
+                });
+              }
               return nextSettings;
             });
             setFirebaseSyncStatus('synced');
@@ -3699,27 +3768,58 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
   const [isSyncingBcv, setIsSyncingBcv] = useState(false);
   const [bcvSyncMessage, setBcvSyncMessage] = useState<string | null>(null);
 
-  const syncBcvRate = async (): Promise<BcvSyncResult> => {
+  const syncBcvRate = async (force: boolean = false): Promise<BcvSyncResult> => {
+    lastBcvCheckAtRef.current = Date.now();
     setIsSyncingBcv(true);
     setBcvSyncMessage('Consultando tasa oficial en bcv.org.ve...');
     try {
-      const result = await fetchOfficialBcvRate();
+      const result = await fetchOfficialBcvRate({ force });
       if (result.success && result.rate > 0) {
+        const syncedAtISO = result.timestamp || new Date().toISOString();
+        const checkedTime = new Date().toLocaleTimeString('es-VE', {
+          hour: '2-digit',
+          minute: '2-digit',
+        });
+
+        if (result.isLive !== false) {
+          latestLiveBcvRef.current = {
+            rate: result.rate,
+            date: result.date,
+            source: result.source,
+            lastUpdated: checkedTime,
+            syncedAtISO,
+          };
+        }
+
         setSettings((prev) => {
+          const prevRate = Number(prev.bcvRate) || 0;
+          const rateChanged = Math.abs(prevRate - result.rate) >= 0.005;
+          const dateChanged = Boolean(result.date && prev.bcvOfficialDate !== result.date);
+          const sourceChanged = Boolean(result.source && prev.bcvSource !== result.source);
+
           const updated: BusinessSettings = {
             ...prev,
             bcvRate: result.rate,
-            bcvOfficialDate: result.date,
+            bcvOfficialDate: result.date || prev.bcvOfficialDate,
             bcvSource: result.source,
-            bcvLastUpdated: new Date().toLocaleTimeString('es-VE', {
-              hour: '2-digit',
-              minute: '2-digit',
-            }),
+            bcvLastUpdated: checkedTime,
+            bcvSyncedAtISO: syncedAtISO,
           };
-          syncSettingsToFirestore(updated).catch(() => {});
+          settingsRef.current = updated;
+          try {
+            localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(updated));
+          } catch {}
+
+          // Persist to Firestore whenever the official rate/date actually updated or on manual force sync
+          if (rateChanged || dateChanged || sourceChanged || force || !prev.bcvSyncedAtISO) {
+            syncSettingsToFirestore(updated).catch(() => {});
+          }
           return updated;
         });
-        setBcvSyncMessage(`Tasa BCV oficial: Bs. ${result.rate.toFixed(2)}`);
+
+        setBcvSyncMessage(
+          `Tasa BCV oficial: Bs. ${result.rate.toFixed(2)}${result.date ? ` (${result.date})` : ''}`
+        );
       } else {
         setBcvSyncMessage(result.error || 'No se pudo sincronizar con BCV');
       }
@@ -3734,6 +3834,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
         rate: 0,
         source: 'Banco Central de Venezuela (bcv.org.ve)',
         timestamp: new Date().toISOString(),
+        isLive: false,
         error: errMsg,
       };
     } finally {
@@ -3741,20 +3842,50 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     }
   };
 
-  // Auto-sync BCV on startup and every 30 minutes
+  // Auto-sync BCV immediately on startup, every 5 minutes, and whenever the user returns to the tab or reconnects
   useEffect(() => {
-    syncBcvRate();
+    syncBcvRate(false);
+
     const interval = setInterval(() => {
-      syncBcvRate();
-    }, 30 * 60 * 1000);
-    return () => clearInterval(interval);
+      syncBcvRate(false);
+    }, 5 * 60 * 1000);
+
+    const handleVisibilityOrOnline = () => {
+      if (document.visibilityState === 'hidden') return;
+      const elapsed = Date.now() - lastBcvCheckAtRef.current;
+      if (elapsed >= 2 * 60 * 1000) {
+        syncBcvRate(false);
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityOrOnline);
+    window.addEventListener('online', handleVisibilityOrOnline);
+
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener('visibilitychange', handleVisibilityOrOnline);
+      window.removeEventListener('online', handleVisibilityOrOnline);
+    };
   }, []);
 
   // Update Settings
   const updateSettings = async (newSettings: Partial<BusinessSettings>): Promise<void> => {
+    const manualBcvChanged =
+      newSettings.bcvRate !== undefined &&
+      Math.abs(Number(newSettings.bcvRate) - Number(settings.bcvRate)) >= 0.005;
+    const nowISO = new Date().toISOString();
     const updatedSettings: BusinessSettings = {
       ...settings,
       ...newSettings,
+      ...(manualBcvChanged
+        ? {
+            bcvSyncedAtISO: nowISO,
+            bcvLastUpdated: new Date().toLocaleTimeString('es-VE', {
+              hour: '2-digit',
+              minute: '2-digit',
+            }),
+          }
+        : {}),
       bankDetails: {
         ...settings.bankDetails,
         ...(newSettings.bankDetails || {}),
@@ -3766,6 +3897,17 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       },
     };
 
+    if (manualBcvChanged && updatedSettings.bcvRate > 0) {
+      latestLiveBcvRef.current = {
+        rate: updatedSettings.bcvRate,
+        date: updatedSettings.bcvOfficialDate,
+        source: updatedSettings.bcvSource || 'Ajuste Manual / BCV',
+        lastUpdated: updatedSettings.bcvLastUpdated || '',
+        syncedAtISO: nowISO,
+      };
+    }
+
+    settingsRef.current = updatedSettings;
     setSettings(updatedSettings);
     localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(updatedSettings));
     syncSettingsToFirestore(updatedSettings).catch((err) =>
@@ -3840,16 +3982,27 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
 
   const updateBcvRate = (newRate: number) => {
     if (newRate > 0) {
+      const nowISO = new Date().toISOString();
+      const checkedTime = new Date().toLocaleTimeString('es-VE', {
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+      latestLiveBcvRef.current = {
+        rate: newRate,
+        date: settingsRef.current.bcvOfficialDate,
+        source: 'Ajuste Manual / BCV',
+        lastUpdated: checkedTime,
+        syncedAtISO: nowISO,
+      };
       setSettings((prev) => {
         const updated: BusinessSettings = {
           ...prev,
           bcvRate: newRate,
-          bcvLastUpdated: new Date().toLocaleTimeString('es-VE', {
-            hour: '2-digit',
-            minute: '2-digit',
-          }),
+          bcvLastUpdated: checkedTime,
           bcvSource: 'Ajuste Manual / BCV',
+          bcvSyncedAtISO: nowISO,
         };
+        settingsRef.current = updated;
         try {
           localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(updated));
         } catch {}

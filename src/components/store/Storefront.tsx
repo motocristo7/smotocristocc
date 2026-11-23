@@ -151,7 +151,7 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
           <div className="absolute inset-0 bg-gradient-to-t from-slate-950 via-slate-950/60 to-transparent" />
         </div>
 
-        <div className="relative z-10 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-16 sm:py-24">
+        <div className="relative z-10 max-w-[1440px] mx-auto px-4 sm:px-6 lg:px-8 py-16 sm:py-24">
           <div className="max-w-2xl">
             <div className="flex flex-wrap items-center gap-2 text-xs font-semibold text-amber-400 tracking-wider uppercase mb-3">
               <span>Tienda Oficial Online</span>
@@ -234,7 +234,7 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
       </section>
 
       {/* Main Catalog Viewport */}
-      <main id="catalogo" className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 pt-6 sm:pt-8">
+      <main id="catalogo" className="max-w-[1440px] mx-auto px-3 sm:px-6 lg:px-8 pt-6 sm:pt-8">
         {/* Search & Categories Navigation Bar */}
         <div className="bg-white rounded-xl border border-slate-200 p-3 sm:p-4 shadow-xs mb-5">
           <div className="flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3">

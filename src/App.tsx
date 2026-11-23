@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { AppProvider, useApp } from './context/AppContext';
 import { Navbar } from './components/layout/Navbar';
 import { Storefront } from './components/store/Storefront';
@@ -49,6 +49,16 @@ const AppContent: React.FC = () => {
   const [isCartOpen, setIsCartOpen] = useState(false);
   const [cartInitialStep, setCartInitialStep] = useState<'cart' | 'checkout'>('cart');
 
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem('servimotos_ui_font_scale');
+      const scale = saved === 'normal' || saved === 'max' ? saved : 'grande';
+      document.documentElement.setAttribute('data-font-scale', scale);
+    } catch {
+      document.documentElement.setAttribute('data-font-scale', 'grande');
+    }
+  }, []);
+
   const handleOpenCart = (step: 'cart' | 'checkout' = 'cart') => {
     setCartInitialStep(step);
     setIsCartOpen(true);
@@ -71,7 +81,7 @@ const AppContent: React.FC = () => {
 
           {/* Admin Views - strictly restricted to authenticated Admin */}
           {isCurrentViewAdmin && (
-            <main className="max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8 flex-1">
+            <main className="max-w-[1440px] w-full mx-auto px-3 sm:px-5 lg:px-7 py-6 sm:py-7 flex-1">
               {currentView === 'admin_dashboard' && <AdminDashboard />}
               {currentView === 'admin_pos' && <PosView />}
               {currentView === 'admin_ventas' && <SalesDatabaseView />}
@@ -107,7 +117,7 @@ const AppContent: React.FC = () => {
 
       {/* Clean Domain Footer */}
       <footer className="bg-slate-950 text-slate-400 text-xs border-t border-slate-800 mt-auto no-print">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-10">
+        <div className="max-w-[1440px] mx-auto px-4 sm:px-6 lg:px-8 py-10">
           <div className="grid grid-cols-1 md:grid-cols-4 gap-8">
             <div className="space-y-3">
               <span className="text-base font-bold text-white font-display">

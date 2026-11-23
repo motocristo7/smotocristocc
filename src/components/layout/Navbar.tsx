@@ -58,7 +58,22 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenCart }) => {
   const [isEditingUsdt, setIsEditingUsdt] = useState(false);
   const [tempUsdtRate, setTempUsdtRate] = useState(exchangeGap.usdtRate.toString());
   const [isUserMenuOpen, setIsUserMenuOpen] = useState(false);
+  const [fontScale, setFontScale] = useState<'normal' | 'grande' | 'max'>(() => {
+    try {
+      const saved = localStorage.getItem('servimotos_ui_font_scale');
+      if (saved === 'normal' || saved === 'max') return saved;
+    } catch {}
+    return 'grande';
+  });
   const userMenuRef = useRef<HTMLDivElement>(null);
+
+  const handleFontScaleChange = (next: 'normal' | 'grande' | 'max') => {
+    setFontScale(next);
+    document.documentElement.setAttribute('data-font-scale', next);
+    try {
+      localStorage.setItem('servimotos_ui_font_scale', next);
+    } catch {}
+  };
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -112,7 +127,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenCart }) => {
       )}
 
       {/* Top Bar Zone: Brand | Links | Primary Actions */}
-      <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 h-14 sm:h-16 flex items-center justify-between gap-3 md:gap-6 lg:gap-8">
+      <div className="max-w-[1440px] mx-auto px-3 sm:px-5 lg:px-7 h-15 sm:h-16 flex items-center justify-between gap-2 md:gap-4 xl:gap-5">
         {/* Zone 1: Brand Wordmark & Sidebar Toggle (Protected from squishing) */}
         <div className="flex items-center gap-2 sm:gap-2.5 shrink-0 min-w-0">
           {isAdminView && (
@@ -159,7 +174,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenCart }) => {
         </div>
 
         {/* Zone 2: Navigation Links (Single-line, concise, centered) */}
-        <nav className="hidden md:flex items-center justify-center gap-5 lg:gap-7 text-sm font-medium text-slate-600 shrink-0">
+        <nav className="hidden md:flex items-center justify-center gap-4 lg:gap-6 text-sm font-medium text-slate-600 shrink-0">
           <button
             type="button"
             onClick={() => setCurrentView('tienda')}
@@ -213,7 +228,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenCart }) => {
                   step="0.01"
                   value={tempRate}
                   onChange={(e) => setTempRate(e.target.value)}
-                  className="w-16 p-0.5 text-xs font-mono bg-white border border-emerald-400 rounded text-slate-900"
+                  className="w-20 p-0.5 text-xs font-mono bg-white border border-emerald-400 rounded text-slate-900"
                   autoFocus
                 />
                 <button type="submit" className="text-[10px] bg-emerald-600 text-white px-1.5 py-0.5 rounded cursor-pointer">
@@ -264,7 +279,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenCart }) => {
                     step="0.01"
                     value={tempUsdtRate}
                     onChange={(e) => setTempUsdtRate(e.target.value)}
-                    className="w-16 p-0.5 text-xs font-mono bg-white border border-amber-400 rounded text-slate-900"
+                    className="w-20 p-0.5 text-xs font-mono bg-white border border-amber-400 rounded text-slate-900"
                     autoFocus
                   />
                   <button type="submit" className="text-[10px] bg-amber-600 text-white px-1.5 py-0.5 rounded cursor-pointer">
@@ -350,7 +365,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenCart }) => {
 
               {/* User Dropdown Menu */}
               {isUserMenuOpen && (
-                <div className="absolute right-0 mt-2 w-56 bg-white rounded-2xl shadow-2xl border border-slate-200 py-2 z-50 animate-in fade-in zoom-in-95 duration-150">
+                <div className="absolute right-0 mt-2 w-64 bg-white rounded-2xl shadow-2xl border border-slate-200 py-2 z-50 animate-in fade-in zoom-in-95 duration-150">
                   <div className="px-4 py-2 border-b border-slate-100">
                     <p className="text-xs font-bold text-slate-900 truncate">{currentUser.name}</p>
                     <p className="text-[10px] text-slate-500 font-mono truncate">
@@ -359,6 +374,35 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenCart }) => {
                     <p className="text-[10px] font-bold text-amber-700 mt-1">
                       {isAdmin ? 'Administrador' : 'Cliente Registrado'}
                     </p>
+                  </div>
+
+                  {/* Text Size / Readability Control */}
+                  <div className="px-4 py-2.5 border-b border-slate-100">
+                    <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block mb-1.5">
+                      Tamaño de letra y números
+                    </span>
+                    <div className="grid grid-cols-3 gap-1 p-1 rounded-lg bg-slate-100">
+                      {(
+                        [
+                          { id: 'normal', label: 'Normal' },
+                          { id: 'grande', label: 'Grande' },
+                          { id: 'max', label: 'Máximo' },
+                        ] as const
+                      ).map((opt) => (
+                        <button
+                          key={opt.id}
+                          type="button"
+                          onClick={() => handleFontScaleChange(opt.id)}
+                          className={`py-1 px-1.5 rounded-md text-[11px] font-bold transition-colors cursor-pointer whitespace-nowrap ${
+                            fontScale === opt.id
+                              ? 'bg-slate-900 text-amber-400 shadow-xs'
+                              : 'text-slate-600 hover:text-slate-900'
+                          }`}
+                        >
+                          {opt.label}
+                        </button>
+                      ))}
+                    </div>
                   </div>
 
                   <div className="py-1">
@@ -435,7 +479,7 @@ export const Navbar: React.FC<NavbarProps> = ({ onOpenCart }) => {
               <button
                 type="button"
                 onClick={enterPublicStore}
-                className="hidden lg:inline-flex items-center gap-1.5 px-3 py-2 text-xs font-bold text-slate-900 bg-amber-400 hover:bg-amber-300 rounded-xl transition-all whitespace-nowrap shrink-0 shadow-xs cursor-pointer"
+                className="hidden 2xl:inline-flex items-center gap-1.5 px-3 py-2 text-xs font-bold text-slate-900 bg-amber-400 hover:bg-amber-300 rounded-xl transition-all whitespace-nowrap shrink-0 shadow-xs cursor-pointer"
                 title="Ver Mercado Moto CC tal como lo ven los clientes"
               >
                 <ShoppingBag className="w-3.5 h-3.5 shrink-0" />

@@ -185,11 +185,11 @@ export const AdminSidebar: React.FC = () => {
         className={`fixed inset-y-0 left-0 md:sticky md:top-16 z-50 md:z-30 h-screen md:h-[calc(100vh-4rem)] bg-slate-900 text-slate-300 border-r border-slate-800 transition-all duration-300 ease-in-out flex flex-col justify-between select-none shadow-xl md:shadow-none ${
           // Mobile state
           isAdminMobileMenuOpen
-            ? 'w-64 translate-x-0'
+            ? 'w-72 translate-x-0'
             : '-translate-x-full md:translate-x-0'
         } ${
           // Desktop state
-          isAdminSidebarCollapsed ? 'md:w-18' : 'md:w-64'
+          isAdminSidebarCollapsed ? 'md:w-18' : 'md:w-72'
         }`}
       >
         {/* Top Header inside Sidebar: Title + 1-Click Collapse/Expand Button */}

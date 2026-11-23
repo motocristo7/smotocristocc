@@ -43,6 +43,8 @@ import {
   TreasuryCommitmentCategory,
   TreasuryCommitmentPaymentCurrency,
   TreasuryCommitmentRateType,
+  TreasuryCommitmentRecurrence,
+  TreasuryCommitmentRecurrenceMode,
   TreasuryCommitment,
   TreasuryMovementType,
   TreasuryMovement,
@@ -538,10 +540,18 @@ interface AppContextType {
     reservedUSD?: number;
     linkedPurchaseOrderId?: string;
     isRecurringMonthly?: boolean;
+    recurrenceFrequency?: TreasuryCommitmentRecurrence;
+    recurrenceMode?: TreasuryCommitmentRecurrenceMode;
+    recurrenceDayOfWeek?: number;
+    recurrenceActive?: boolean;
     notes?: string;
   }) => TreasuryCommitment;
   updateTreasuryCommitment: (id: string, updates: Partial<TreasuryCommitment>) => TreasuryCommitment | null;
   deleteTreasuryCommitment: (id: string) => void;
+  syncRecurringCommitments: (options?: {
+    targetGroupId?: string;
+    forceFillCurrentMonth?: boolean;
+  }) => TreasuryCommitment[];
   markCommitmentPaidFromAccount: (
     commitmentId: string,
     accountId: string,
@@ -557,6 +567,7 @@ interface AppContextType {
     commitment: TreasuryCommitment;
     movement: TreasuryMovement;
     account: TreasuryAccount;
+    generatedNextCommitments?: TreasuryCommitment[];
   } | null;
   recordTreasuryMovement: (data: {
     date: string;
@@ -9096,6 +9107,261 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     setTreasuryAccounts(nextList);
   };
 
+  // Local calendar date helpers (immune to UTC midnight timezone shifts)
+  const getLocalTodayYMD = (): string => {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(
+      now.getDate()
+    ).padStart(2, '0')}`;
+  };
+
+  const parseLocalYMD = (ymd: string): Date | null => {
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec((ymd || '').trim());
+    if (!m) return null;
+    const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 12, 0, 0);
+    return isNaN(d.getTime()) ? null : d;
+  };
+
+  const formatLocalYMD = (d: Date): string =>
+    `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(
+      d.getDate()
+    ).padStart(2, '0')}`;
+
+  const addDaysYMD = (ymd: string, days: number): string => {
+    const d = parseLocalYMD(ymd);
+    if (!d) return ymd;
+    d.setDate(d.getDate() + days);
+    return formatLocalYMD(d);
+  };
+
+  const addMonthsYMD = (ymd: string, months: number): string => {
+    const d = parseLocalYMD(ymd);
+    if (!d) return ymd;
+    const targetDay = d.getDate();
+    const targetMonthIndex = d.getMonth() + months;
+    const firstOfTarget = new Date(d.getFullYear(), targetMonthIndex, 1, 12, 0, 0);
+    const daysInTargetMonth = new Date(
+      firstOfTarget.getFullYear(),
+      firstOfTarget.getMonth() + 1,
+      0,
+      12,
+      0,
+      0
+    ).getDate();
+    firstOfTarget.setDate(Math.min(targetDay, daysInTargetMonth));
+    return formatLocalYMD(firstOfTarget);
+  };
+
+  const getEndOfMonthYMD = (ymd: string): string => {
+    const d = parseLocalYMD(ymd) || new Date();
+    const lastDay = new Date(d.getFullYear(), d.getMonth() + 1, 0, 12, 0, 0);
+    return formatLocalYMD(lastDay);
+  };
+
+  const getDayOfWeekYMD = (ymd: string): number => {
+    const d = parseLocalYMD(ymd);
+    return d ? d.getDay() : new Date().getDay();
+  };
+
+  const getEffectiveRecurrenceFrequency = (
+    cm: TreasuryCommitment
+  ): TreasuryCommitmentRecurrence => {
+    if (cm.recurrenceFrequency) return cm.recurrenceFrequency;
+    if (cm.isRecurringMonthly) return 'MENSUAL';
+    return 'UNICO';
+  };
+
+  const advanceCommitmentDate = (
+    ymd: string,
+    freq: TreasuryCommitmentRecurrence
+  ): string | null => {
+    if (freq === 'SEMANAL') return addDaysYMD(ymd, 7);
+    if (freq === 'QUINCENAL') return addDaysYMD(ymd, 14);
+    if (freq === 'MENSUAL') return addMonthsYMD(ymd, 1);
+    return null;
+  };
+
+  const sanitizeRecurrenceGroupId = (raw: string): string => {
+    const cleaned = raw.replace(/[^a-zA-Z0-9_-]/g, '');
+    return cleaned || `rec${Date.now()}`;
+  };
+
+  const syncRecurringCommitments: AppContextType['syncRecurringCommitments'] = (options) => {
+    const currentList = treasuryCommitmentsRef.current;
+    if (currentList.length === 0) return [];
+
+    const deletedSet = new Set(deletedIdsRef.current.treasuryCommitments || []);
+    const existingIds = new Set(currentList.map((c) => c.id));
+    const today = getLocalTodayYMD();
+    const endOfCurrentMonth = getEndOfMonthYMD(today);
+
+    // Group recurring commitments by recurrenceGroupId (or own id for legacy monthly entries)
+    const groups = new Map<string, TreasuryCommitment[]>();
+    currentList.forEach((cm) => {
+      const freq = getEffectiveRecurrenceFrequency(cm);
+      if (freq === 'UNICO') return;
+      const gKey = sanitizeRecurrenceGroupId(cm.recurrenceGroupId || cm.id);
+      if (options?.targetGroupId && gKey !== sanitizeRecurrenceGroupId(options.targetGroupId)) {
+        return;
+      }
+      const list = groups.get(gKey) || [];
+      list.push(cm);
+      groups.set(gKey, list);
+    });
+
+    if (groups.size === 0) return [];
+
+    const createdList: TreasuryCommitment[] = [];
+    const nowIso = new Date().toISOString();
+    const currentBcvRate = settingsRef.current.bcvRate || 1;
+
+    groups.forEach((items, safeGroupId) => {
+      const sorted = [...items].sort(
+        (a, b) =>
+          (a.dueDate || '').localeCompare(b.dueDate || '') ||
+          (a.createdAt || '').localeCompare(b.createdAt || '')
+      );
+      const latest = sorted[sorted.length - 1];
+      if (!latest) return;
+
+      const freq = getEffectiveRecurrenceFrequency(latest);
+      if (freq === 'UNICO' || latest.recurrenceActive === false) return;
+      if (!parseLocalYMD(latest.dueDate)) return;
+
+      const mode: TreasuryCommitmentRecurrenceMode =
+        options?.forceFillCurrentMonth
+          ? 'MES_COMPLETO'
+          : latest.recurrenceMode || 'PROGRESIVO';
+
+      const existingDates = new Set(sorted.map((item) => item.dueDate));
+      const datesToCreate: string[] = [];
+
+      let cursor = advanceCommitmentDate(latest.dueDate, freq);
+      let guard = 0;
+      const maxSteps = 24;
+
+      if (mode === 'MES_COMPLETO') {
+        const nextWeekHorizon = addDaysYMD(today, 7);
+        while (cursor && guard < maxSteps) {
+          guard += 1;
+          const withinCurrentMonth = cursor <= endOfCurrentMonth;
+          const isImmediateNextAfterPayingLast =
+            latest.isPaid && datesToCreate.length === 0 && cursor <= nextWeekHorizon;
+
+          if (withinCurrentMonth || isImmediateNextAfterPayingLast) {
+            if (!existingDates.has(cursor)) {
+              datesToCreate.push(cursor);
+              existingDates.add(cursor);
+            }
+            if (!withinCurrentMonth) break;
+            cursor = advanceCommitmentDate(cursor, freq);
+          } else {
+            break;
+          }
+        }
+      } else {
+        // PROGRESIVO: appears week-by-week depending on its payment date (or right after marking paid)
+        const shouldGenerateNext = latest.isPaid || latest.dueDate < today;
+        if (shouldGenerateNext) {
+          while (cursor && guard < maxSteps) {
+            guard += 1;
+            const occIdCheck = `cmt-${safeGroupId}-${cursor}`;
+            const isDeleted = deletedSet.has(occIdCheck);
+            const alreadyExists = existingDates.has(cursor) || existingIds.has(occIdCheck);
+
+            if (!alreadyExists && !isDeleted) {
+              datesToCreate.push(cursor);
+              existingDates.add(cursor);
+            }
+
+            // Keep catching up any missed dates <= today, then stop once we have scheduled the next upcoming date > today
+            if (cursor > today && (!isDeleted || cursor > addDaysYMD(today, 35))) {
+              break;
+            }
+            cursor = advanceCommitmentDate(cursor, freq);
+          }
+        }
+      }
+
+      if (datesToCreate.length === 0) return;
+
+      const baseAmountUSD =
+        Math.round(
+          Math.max(0, Number(latest.originalAmountUSD ?? latest.amountUSD) || 0) * 100
+        ) / 100;
+      const paymentCurrency: TreasuryCommitmentPaymentCurrency =
+        latest.paymentCurrency === 'BS' ? 'BS' : 'EFECTIVO_USD';
+      const exchangeRateType: TreasuryCommitmentRateType | undefined =
+        paymentCurrency === 'BS' ? latest.exchangeRateType || 'BCV' : undefined;
+      const appliedRate =
+        paymentCurrency === 'BS'
+          ? exchangeRateType === 'BCV'
+            ? currentBcvRate
+            : Number(latest.appliedExchangeRate) > 0
+              ? Number(latest.appliedExchangeRate)
+              : currentBcvRate
+          : currentBcvRate;
+      const amountBs = Math.round(baseAmountUSD * appliedRate * 100) / 100;
+
+      datesToCreate.forEach((dueDate) => {
+        const occId = `cmt-${safeGroupId}-${dueDate}`;
+        if (deletedSet.has(occId) || existingIds.has(occId)) return;
+        existingIds.add(occId);
+
+        const nextCommitment: TreasuryCommitment = {
+          id: occId,
+          title: latest.title,
+          workerName: latest.workerName,
+          category: latest.category,
+          dueDate,
+          amountUSD: baseAmountUSD,
+          originalAmountUSD: baseAmountUSD,
+          advancesTotalUSD: 0,
+          bcvRate: appliedRate,
+          amountBs,
+          paymentCurrency,
+          exchangeRateType,
+          appliedExchangeRate: paymentCurrency === 'BS' ? appliedRate : undefined,
+          reservedUSD: 0,
+          isPaid: false,
+          isRecurringMonthly: freq === 'MENSUAL',
+          recurrenceFrequency: freq,
+          recurrenceMode: latest.recurrenceMode || 'PROGRESIVO',
+          recurrenceGroupId: safeGroupId,
+          recurrenceDayOfWeek:
+            freq === 'SEMANAL'
+              ? latest.recurrenceDayOfWeek ?? getDayOfWeekYMD(dueDate)
+              : undefined,
+          recurrenceActive: true,
+          isAutoGenerated: true,
+          notes: latest.notes,
+          createdAt: nowIso,
+          updatedAt: nowIso,
+        };
+        createdList.push(nextCommitment);
+      });
+    });
+
+    if (createdList.length === 0) return [];
+
+    createdList.forEach((cm) => pendingSyncTreasuryCommitmentIdsRef.current.add(cm.id));
+    const nextList = [...treasuryCommitmentsRef.current, ...createdList].sort((a, b) =>
+      (a.dueDate || '').localeCompare(b.dueDate || '')
+    );
+    treasuryCommitmentsRef.current = nextList;
+    setTreasuryCommitments(nextList);
+    try {
+      localStorage.setItem(STORAGE_KEYS.TREASURY_COMMITMENTS, JSON.stringify(nextList));
+    } catch {}
+    createdList.forEach((cm) => {
+      syncTreasuryCommitmentToFirestore(cm)
+        .then(() => pendingSyncTreasuryCommitmentIdsRef.current.delete(cm.id))
+        .catch(() => {});
+    });
+
+    return createdList;
+  };
+
   const addTreasuryCommitment: AppContextType['addTreasuryCommitment'] = (data) => {
     const now = new Date().toISOString();
     const paymentCurrency: TreasuryCommitmentPaymentCurrency =
@@ -9116,12 +9382,28 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
         ? Math.min(amountUSD, Math.max(0, Math.round(Number(data.reservedUSD) * 100) / 100))
         : 0;
 
+    const dueDate = data.dueDate || getLocalTodayYMD();
+    const recurrenceFrequency: TreasuryCommitmentRecurrence =
+      data.recurrenceFrequency || (data.isRecurringMonthly ? 'MENSUAL' : 'UNICO');
+    const isRecurring = recurrenceFrequency !== 'UNICO';
+    const recurrenceMode: TreasuryCommitmentRecurrenceMode | undefined = isRecurring
+      ? data.recurrenceMode || 'PROGRESIVO'
+      : undefined;
+    const recurrenceGroupId = isRecurring
+      ? sanitizeRecurrenceGroupId(`rec${Date.now()}${Math.random().toString(36).slice(2, 6)}`)
+      : undefined;
+    const recurrenceDayOfWeek =
+      recurrenceFrequency === 'SEMANAL'
+        ? data.recurrenceDayOfWeek ?? getDayOfWeekYMD(dueDate)
+        : undefined;
+    const recurrenceActive = isRecurring ? data.recurrenceActive !== false : false;
+
     const newCommitment: TreasuryCommitment = {
       id: `cmt-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
       title: data.title.trim(),
       workerName: data.workerName?.trim() || undefined,
       category: data.category,
-      dueDate: data.dueDate || now.split('T')[0],
+      dueDate,
       amountUSD,
       originalAmountUSD: amountUSD,
       advancesTotalUSD: 0,
@@ -9133,7 +9415,12 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       reservedUSD,
       isPaid: false,
       linkedPurchaseOrderId: data.linkedPurchaseOrderId || undefined,
-      isRecurringMonthly: Boolean(data.isRecurringMonthly),
+      isRecurringMonthly: recurrenceFrequency === 'MENSUAL' || Boolean(data.isRecurringMonthly),
+      recurrenceFrequency,
+      recurrenceMode,
+      recurrenceGroupId,
+      recurrenceDayOfWeek,
+      recurrenceActive: isRecurring ? recurrenceActive : undefined,
       notes: data.notes?.trim() || undefined,
       createdAt: now,
       updatedAt: now,
@@ -9151,6 +9438,11 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     syncTreasuryCommitmentToFirestore(newCommitment)
       .then(() => pendingSyncTreasuryCommitmentIdsRef.current.delete(newCommitment.id))
       .catch(() => {});
+
+    // Immediately generate remaining weeks of current month (or catch-up dates) if recurring
+    if (isRecurring && recurrenceActive && recurrenceGroupId) {
+      syncRecurringCommitments({ targetGroupId: recurrenceGroupId });
+    }
 
     return newCommitment;
   };
@@ -9196,10 +9488,37 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       updates.workerName !== undefined
         ? updates.workerName?.trim() || undefined
         : existing.workerName;
+    const nextDueDate = updates.dueDate !== undefined ? updates.dueDate : existing.dueDate;
+
+    const nextRecurrenceFreq: TreasuryCommitmentRecurrence =
+      updates.recurrenceFrequency !== undefined
+        ? updates.recurrenceFrequency
+        : getEffectiveRecurrenceFrequency(existing);
+    const isNowRecurring = nextRecurrenceFreq !== 'UNICO';
+    const nextRecurrenceGroupId = isNowRecurring
+      ? sanitizeRecurrenceGroupId(
+          updates.recurrenceGroupId ||
+            existing.recurrenceGroupId ||
+            `rec${Date.now()}${Math.random().toString(36).slice(2, 6)}`
+        )
+      : undefined;
+    const nextRecurrenceMode: TreasuryCommitmentRecurrenceMode | undefined = isNowRecurring
+      ? updates.recurrenceMode || existing.recurrenceMode || 'PROGRESIVO'
+      : undefined;
+    const nextRecurrenceDayOfWeek =
+      nextRecurrenceFreq === 'SEMANAL'
+        ? updates.recurrenceDayOfWeek ?? getDayOfWeekYMD(nextDueDate)
+        : undefined;
+    const nextRecurrenceActive = isNowRecurring
+      ? updates.recurrenceActive !== undefined
+        ? updates.recurrenceActive
+        : existing.recurrenceActive !== false
+      : false;
 
     const updatedCommitment: TreasuryCommitment = {
       ...existing,
       ...updates,
+      dueDate: nextDueDate,
       workerName: nextWorkerName,
       paymentCurrency: nextPaymentCurrency,
       exchangeRateType: nextRateType,
@@ -9208,12 +9527,41 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       originalAmountUSD: nextOriginalAmountUSD,
       bcvRate: nextAppliedRate,
       amountBs: nextAmountBs,
+      isRecurringMonthly: nextRecurrenceFreq === 'MENSUAL',
+      recurrenceFrequency: nextRecurrenceFreq,
+      recurrenceMode: nextRecurrenceMode,
+      recurrenceGroupId: nextRecurrenceGroupId,
+      recurrenceDayOfWeek: nextRecurrenceDayOfWeek,
+      recurrenceActive: isNowRecurring ? nextRecurrenceActive : undefined,
       updatedAt: new Date().toISOString(),
     };
 
+    const stoppedExistingSeries =
+      Boolean(existing.recurrenceGroupId) &&
+      (!isNowRecurring || nextRecurrenceActive === false);
+
     pendingSyncTreasuryCommitmentIdsRef.current.add(id);
+    const siblingsToSync: TreasuryCommitment[] = [];
     const nextList = treasuryCommitmentsRef.current
-      .map((c) => (c.id === id ? updatedCommitment : c))
+      .map((c) => {
+        if (c.id === id) return updatedCommitment;
+        if (
+          stoppedExistingSeries &&
+          existing.recurrenceGroupId &&
+          c.recurrenceGroupId === existing.recurrenceGroupId &&
+          c.recurrenceActive !== false
+        ) {
+          const pausedSibling: TreasuryCommitment = {
+            ...c,
+            recurrenceActive: false,
+            updatedAt: new Date().toISOString(),
+          };
+          pendingSyncTreasuryCommitmentIdsRef.current.add(pausedSibling.id);
+          siblingsToSync.push(pausedSibling);
+          return pausedSibling;
+        }
+        return c;
+      })
       .sort((a, b) => (a.dueDate || '').localeCompare(b.dueDate || ''));
     treasuryCommitmentsRef.current = nextList;
     setTreasuryCommitments(nextList);
@@ -9223,6 +9571,23 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     syncTreasuryCommitmentToFirestore(updatedCommitment)
       .then(() => pendingSyncTreasuryCommitmentIdsRef.current.delete(id))
       .catch(() => {});
+    siblingsToSync.forEach((sib) => {
+      syncTreasuryCommitmentToFirestore(sib)
+        .then(() => pendingSyncTreasuryCommitmentIdsRef.current.delete(sib.id))
+        .catch(() => {});
+    });
+
+    if (
+      isNowRecurring &&
+      nextRecurrenceActive &&
+      nextRecurrenceGroupId &&
+      (updates.recurrenceFrequency !== undefined ||
+        updates.recurrenceMode !== undefined ||
+        updates.recurrenceActive === true ||
+        updates.dueDate !== undefined)
+    ) {
+      syncRecurringCommitments({ targetGroupId: nextRecurrenceGroupId });
+    }
 
     return updatedCommitment;
   };
@@ -9234,6 +9599,21 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     treasuryCommitmentsRef.current = nextList;
     setTreasuryCommitments(nextList);
   };
+
+  // Auto-schedule recurring weekly/biweekly/monthly commitments on mount, data sync, and daily check
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      syncRecurringCommitments();
+    }, 350);
+    return () => window.clearTimeout(timer);
+  }, [treasuryCommitments]);
+
+  useEffect(() => {
+    const interval = window.setInterval(() => {
+      syncRecurringCommitments();
+    }, 1000 * 60 * 15);
+    return () => window.clearInterval(interval);
+  }, []);
 
   const mapAccountToExpensePayment = (
     account: TreasuryAccount
@@ -9444,10 +9824,23 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       ...(isBsCommitment ? { exchangeRateType: rateType, appliedExchangeRate: rate } : {}),
     });
 
+    // 6. If recurring (semanal / quincenal / mensual), automatically schedule the next payment date
+    let generatedNextCommitments: TreasuryCommitment[] = [];
+    const targetCm = updatedCommitment || commitment;
+    if (
+      getEffectiveRecurrenceFrequency(targetCm) !== 'UNICO' &&
+      targetCm.recurrenceActive !== false
+    ) {
+      generatedNextCommitments = syncRecurringCommitments({
+        targetGroupId: targetCm.recurrenceGroupId || targetCm.id,
+      });
+    }
+
     return {
       commitment: updatedCommitment || { ...commitment, isPaid: true },
       movement: newMovement,
       account: updatedAccount,
+      generatedNextCommitments,
     };
   };
 
@@ -10756,6 +11149,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
         addTreasuryCommitment,
         updateTreasuryCommitment,
         deleteTreasuryCommitment,
+        syncRecurringCommitments,
         markCommitmentPaidFromAccount,
         recordTreasuryMovement,
         recordUsdtPurchase,

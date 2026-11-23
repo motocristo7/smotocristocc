@@ -32,6 +32,8 @@ import {
   PurchasePaymentCurrency,
   PurchasePaymentRecord,
   DEFAULT_EXPENSE_CATEGORIES,
+  DEFAULT_INCOME_CATEGORIES,
+  DEFAULT_COMMITMENT_CATEGORIES,
   DEFAULT_EXPENSE_POS_BANKS,
   ExpensePaymentCurrency,
   ExpensePaymentMethod,
@@ -467,6 +469,12 @@ interface AppContextType {
   expenseCategories: string[];
   addExpenseCategory: (categoryName: string) => { added: boolean; category: string };
   deleteExpenseCategory: (categoryName: string) => void;
+  incomeCategories: string[];
+  addIncomeCategory: (categoryName: string) => { added: boolean; category: string };
+  deleteIncomeCategory: (categoryName: string) => void;
+  commitmentCategories: Array<{ id: string; label: string; isCustom: boolean }>;
+  addCommitmentCategory: (categoryName: string) => { added: boolean; id: string; label: string };
+  deleteCommitmentCategory: (categoryIdOrLabel: string) => void;
   expensePosBanks: string[];
   addExpensePosBank: (bankName: string) => { added: boolean; bank: string };
   deleteExpensePosBank: (bankName: string) => void;
@@ -570,6 +578,22 @@ interface AppContextType {
     account: TreasuryAccount;
     expense?: BusinessExpense;
     updatedCommitment?: TreasuryCommitment;
+  } | null;
+  recordUsdtPurchase: (data: {
+    date: string;
+    sourceAccountId: string;
+    targetAccountId: string;
+    spentBs: number;
+    purchasedUsdt: number;
+    bcvRate?: number;
+    reference?: string;
+    notes?: string;
+  }) => {
+    expenseMovement: TreasuryMovement;
+    incomeMovement: TreasuryMovement;
+    sourceAccount: TreasuryAccount;
+    targetAccount: TreasuryAccount;
+    effectiveUsdtRate: number;
   } | null;
   deleteTreasuryMovement: (id: string, revertAccountBalance?: boolean) => void;
   importUnpaidPurchaseOrdersToCommitments: () => number;
@@ -2081,6 +2105,18 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
                   ...(Array.isArray(prev.customExpenseCategories) ? prev.customExpenseCategories : []),
                 ])
               );
+              const mergedCustomIncomes = Array.from(
+                new Set([
+                  ...(Array.isArray(serverDb.settings.customIncomeCategories) ? serverDb.settings.customIncomeCategories : []),
+                  ...(Array.isArray(prev.customIncomeCategories) ? prev.customIncomeCategories : []),
+                ])
+              );
+              const mergedCustomCommitments = Array.from(
+                new Set([
+                  ...(Array.isArray(serverDb.settings.customCommitmentCategories) ? serverDb.settings.customCommitmentCategories : []),
+                  ...(Array.isArray(prev.customCommitmentCategories) ? prev.customCommitmentCategories : []),
+                ])
+              );
               const mergedCustomPosBanks = Array.from(
                 new Set([
                   ...(Array.isArray(serverDb.settings.customExpensePosBanks) ? serverDb.settings.customExpensePosBanks : []),
@@ -2091,6 +2127,8 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
                 ...serverDb.settings,
                 ...(mergedCustom.length > 0 ? { customCategories: mergedCustom } : {}),
                 ...(mergedCustomExpenses.length > 0 ? { customExpenseCategories: mergedCustomExpenses } : {}),
+                ...(mergedCustomIncomes.length > 0 ? { customIncomeCategories: mergedCustomIncomes } : {}),
+                ...(mergedCustomCommitments.length > 0 ? { customCommitmentCategories: mergedCustomCommitments } : {}),
                 ...(mergedCustomPosBanks.length > 0 ? { customExpensePosBanks: mergedCustomPosBanks } : {}),
               };
               const { merged: nextSettings } = applyFreshBcvIfNewer(baseNextSettings, prev);
@@ -2669,6 +2707,24 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
               const mergedCustomExpenses = Array.from(
                 new Set([...remoteCustomExpenses, ...localCustomExpenses])
               );
+              const remoteCustomIncomes = Array.isArray(firestoreSettings.customIncomeCategories)
+                ? firestoreSettings.customIncomeCategories
+                : [];
+              const localCustomIncomes = Array.isArray(prev.customIncomeCategories)
+                ? prev.customIncomeCategories
+                : [];
+              const mergedCustomIncomes = Array.from(
+                new Set([...remoteCustomIncomes, ...localCustomIncomes])
+              );
+              const remoteCustomCommitments = Array.isArray(firestoreSettings.customCommitmentCategories)
+                ? firestoreSettings.customCommitmentCategories
+                : [];
+              const localCustomCommitments = Array.isArray(prev.customCommitmentCategories)
+                ? prev.customCommitmentCategories
+                : [];
+              const mergedCustomCommitments = Array.from(
+                new Set([...remoteCustomCommitments, ...localCustomCommitments])
+              );
               const remoteCustomPosBanks = Array.isArray(firestoreSettings.customExpensePosBanks)
                 ? firestoreSettings.customExpensePosBanks
                 : [];
@@ -2683,6 +2739,12 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
                 ...(mergedCustom.length > 0 ? { customCategories: mergedCustom } : {}),
                 ...(mergedCustomExpenses.length > 0
                   ? { customExpenseCategories: mergedCustomExpenses }
+                  : {}),
+                ...(mergedCustomIncomes.length > 0
+                  ? { customIncomeCategories: mergedCustomIncomes }
+                  : {}),
+                ...(mergedCustomCommitments.length > 0
+                  ? { customCommitmentCategories: mergedCustomCommitments }
                   : {}),
                 ...(mergedCustomPosBanks.length > 0
                   ? { customExpensePosBanks: mergedCustomPosBanks }
@@ -7608,6 +7670,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
         ...prev,
         customExpenseCategories: [...prevCustom, formatted],
       };
+      settingsRef.current = updated;
       try {
         localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(updated));
       } catch {}
@@ -7631,6 +7694,185 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
         ...prev,
         customExpenseCategories: nextCustom,
       };
+      settingsRef.current = updated;
+      try {
+        localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(updated));
+      } catch {}
+      syncSettingsToFirestore(updated).catch(() => {});
+      return updated;
+    });
+  };
+
+  // Treasury Income / Record Categories (Categorías de Ingresos y Registros)
+  const incomeCategories = useMemo<string[]>(() => {
+    const result: string[] = [];
+    const seenLower = new Set<string>();
+    const registerCat = (cat?: string) => {
+      const cleaned = (cat || '').trim().replace(/\s+/g, ' ');
+      if (!cleaned) return;
+      const key = cleaned.toLowerCase();
+      if (seenLower.has(key)) return;
+      seenLower.add(key);
+      result.push(cleaned);
+    };
+    DEFAULT_INCOME_CATEGORIES.forEach(registerCat);
+    if (Array.isArray(settings.customIncomeCategories)) {
+      settings.customIncomeCategories.forEach(registerCat);
+    }
+    treasuryMovements
+      .filter((m) => m.type === 'INGRESO')
+      .forEach((m) => registerCat(m.category));
+    return result;
+  }, [settings.customIncomeCategories, treasuryMovements]);
+
+  const addIncomeCategory = (categoryName: string): { added: boolean; category: string } => {
+    const cleaned = categoryName.trim().replace(/\s+/g, ' ');
+    if (!cleaned) {
+      return { added: false, category: 'Otros Ingresos' };
+    }
+    const existing = incomeCategories.find(
+      (c) => c.trim().toLowerCase() === cleaned.toLowerCase()
+    );
+    if (existing) {
+      return { added: false, category: existing };
+    }
+    const formatted =
+      cleaned === cleaned.toLowerCase()
+        ? cleaned.charAt(0).toUpperCase() + cleaned.slice(1)
+        : cleaned;
+
+    setSettings((prev) => {
+      const prevCustom = Array.isArray(prev.customIncomeCategories)
+        ? prev.customIncomeCategories
+        : [];
+      if (prevCustom.some((c) => c.trim().toLowerCase() === formatted.toLowerCase())) {
+        return prev;
+      }
+      const updated: BusinessSettings = {
+        ...prev,
+        customIncomeCategories: [...prevCustom, formatted],
+      };
+      settingsRef.current = updated;
+      try {
+        localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(updated));
+      } catch {}
+      syncSettingsToFirestore(updated).catch((err) =>
+        console.warn('Firestore custom income category sync error:', err)
+      );
+      return updated;
+    });
+
+    return { added: true, category: formatted };
+  };
+
+  const deleteIncomeCategory = (categoryName: string) => {
+    const targetLower = categoryName.trim().toLowerCase();
+    setSettings((prev) => {
+      const prevCustom = Array.isArray(prev.customIncomeCategories)
+        ? prev.customIncomeCategories
+        : [];
+      const nextCustom = prevCustom.filter((c) => c.trim().toLowerCase() !== targetLower);
+      const updated: BusinessSettings = {
+        ...prev,
+        customIncomeCategories: nextCustom,
+      };
+      settingsRef.current = updated;
+      try {
+        localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(updated));
+      } catch {}
+      syncSettingsToFirestore(updated).catch(() => {});
+      return updated;
+    });
+  };
+
+  // Planned Payment / Fixed Expense Categories (Categorías de Pagos Planificados / Compromisos)
+  const commitmentCategories = useMemo<
+    Array<{ id: string; label: string; isCustom: boolean }>
+  >(() => {
+    const result: Array<{ id: string; label: string; isCustom: boolean }> = [];
+    const seenIds = new Set<string>();
+    const seenLabels = new Set<string>();
+
+    DEFAULT_COMMITMENT_CATEGORIES.forEach((def) => {
+      seenIds.add(def.id.toLowerCase());
+      seenLabels.add(def.label.toLowerCase());
+      result.push({ id: def.id, label: def.label, isCustom: false });
+    });
+
+    const registerCustom = (raw?: string) => {
+      const cleaned = (raw || '').trim().replace(/\s+/g, ' ');
+      if (!cleaned) return;
+      const lower = cleaned.toLowerCase();
+      if (seenIds.has(lower) || seenLabels.has(lower)) return;
+      seenIds.add(lower);
+      seenLabels.add(lower);
+      result.push({ id: cleaned, label: cleaned, isCustom: true });
+    };
+
+    if (Array.isArray(settings.customCommitmentCategories)) {
+      settings.customCommitmentCategories.forEach(registerCustom);
+    }
+    treasuryCommitments.forEach((cm) => registerCustom(cm.category));
+
+    return result;
+  }, [settings.customCommitmentCategories, treasuryCommitments]);
+
+  const addCommitmentCategory = (
+    categoryName: string
+  ): { added: boolean; id: string; label: string } => {
+    const cleaned = categoryName.trim().replace(/\s+/g, ' ');
+    if (!cleaned) {
+      return { added: false, id: 'GASTOS_FIJOS', label: 'Gastos Fijos' };
+    }
+    const existing = commitmentCategories.find(
+      (c) =>
+        c.id.trim().toLowerCase() === cleaned.toLowerCase() ||
+        c.label.trim().toLowerCase() === cleaned.toLowerCase()
+    );
+    if (existing) {
+      return { added: false, id: existing.id, label: existing.label };
+    }
+    const formatted =
+      cleaned === cleaned.toLowerCase()
+        ? cleaned.charAt(0).toUpperCase() + cleaned.slice(1)
+        : cleaned;
+
+    setSettings((prev) => {
+      const prevCustom = Array.isArray(prev.customCommitmentCategories)
+        ? prev.customCommitmentCategories
+        : [];
+      if (prevCustom.some((c) => c.trim().toLowerCase() === formatted.toLowerCase())) {
+        return prev;
+      }
+      const updated: BusinessSettings = {
+        ...prev,
+        customCommitmentCategories: [...prevCustom, formatted],
+      };
+      settingsRef.current = updated;
+      try {
+        localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(updated));
+      } catch {}
+      syncSettingsToFirestore(updated).catch((err) =>
+        console.warn('Firestore custom commitment category sync error:', err)
+      );
+      return updated;
+    });
+
+    return { added: true, id: formatted, label: formatted };
+  };
+
+  const deleteCommitmentCategory = (categoryIdOrLabel: string) => {
+    const targetLower = categoryIdOrLabel.trim().toLowerCase();
+    setSettings((prev) => {
+      const prevCustom = Array.isArray(prev.customCommitmentCategories)
+        ? prev.customCommitmentCategories
+        : [];
+      const nextCustom = prevCustom.filter((c) => c.trim().toLowerCase() !== targetLower);
+      const updated: BusinessSettings = {
+        ...prev,
+        customCommitmentCategories: nextCustom,
+      };
+      settingsRef.current = updated;
       try {
         localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(updated));
       } catch {}
@@ -9121,7 +9363,11 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     if (options?.syncToExpense !== false && commitment.category !== 'PROVEEDORES') {
       const mapped = mapAccountToExpensePayment(account);
       const expenseCategory =
-        commitment.category === 'NOMINA_SUELDOS' ? 'Sueldo / Nómina' : 'Servicios Básicos';
+        commitment.category === 'NOMINA_SUELDOS'
+          ? 'Sueldos y Nómina'
+          : commitment.category === 'GASTOS_FIJOS'
+            ? 'Servicios Públicos (Luz, Agua, Internet)'
+            : commitment.category;
       createdExpense = addExpense({
         date: payDate,
         category: expenseCategory,
@@ -9146,7 +9392,9 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
         ? 'Nómina/Sueldos'
         : commitment.category === 'PROVEEDORES'
           ? 'Proveedores'
-          : 'Gastos Fijos';
+          : commitment.category === 'GASTOS_FIJOS'
+            ? 'Gastos Fijos'
+            : commitment.category;
 
     const newMovement: TreasuryMovement = {
       id: movementId,
@@ -9334,6 +9582,145 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     };
   };
 
+  const recordUsdtPurchase: AppContextType['recordUsdtPurchase'] = (data) => {
+    const sourceAccount = treasuryAccountsRef.current.find((a) => a.id === data.sourceAccountId);
+    const initialTargetAccount = treasuryAccountsRef.current.find(
+      (a) => a.id === data.targetAccountId
+    );
+    if (!sourceAccount || !initialTargetAccount) return null;
+    if (sourceAccount.id === initialTargetAccount.id) return null;
+
+    const cleanSpentBs = Math.round(Math.max(0, Number(data.spentBs) || 0) * 100) / 100;
+    const cleanPurchasedUsdt =
+      Math.round(Math.max(0, Number(data.purchasedUsdt) || 0) * 100) / 100;
+    if (cleanSpentBs <= 0 || cleanPurchasedUsdt <= 0) return null;
+
+    const safeBcvRate =
+      Number(data.bcvRate) > 0 ? Number(data.bcvRate) : settingsRef.current.bcvRate || 1;
+    const effectiveUsdtRate = Math.round((cleanSpentBs / cleanPurchasedUsdt) * 100) / 100;
+    const sourceDeductUSD = Math.round((cleanSpentBs / safeBcvRate) * 100) / 100;
+
+    // 1) Deduct exact Bolívares (or USD equivalent if non-Bs source) from the source account
+    const sourceExplicitNativeDelta =
+      sourceAccount.currency === 'BS' ? -cleanSpentBs : -sourceDeductUSD;
+    const updatedSourceAccount = applyAccountDelta(
+      sourceAccount,
+      -sourceDeductUSD,
+      safeBcvRate,
+      sourceExplicitNativeDelta
+    );
+
+    // 2) Re-read target account from ref after source update so both updates persist cleanly
+    const freshTargetAccount =
+      treasuryAccountsRef.current.find((a) => a.id === data.targetAccountId) ||
+      initialTargetAccount;
+    const targetExplicitNativeDelta =
+      freshTargetAccount.currency === 'BS' ? cleanSpentBs : cleanPurchasedUsdt;
+    const updatedTargetAccount = applyAccountDelta(
+      freshTargetAccount,
+      cleanPurchasedUsdt,
+      safeBcvRate,
+      targetExplicitNativeDelta
+    );
+
+    // 3) Create two linked TreasuryMovements (GASTO on source account + INGRESO on USDT wallet)
+    const now = new Date().toISOString();
+    const movDate = data.date || now.split('T')[0];
+    const ts = Date.now();
+    const expenseMovementId = `mov-${ts}-usdt-out-${Math.random().toString(36).slice(2, 6)}`;
+    const incomeMovementId = `mov-${ts}-usdt-in-${Math.random().toString(36).slice(2, 6)}`;
+
+    const expenseMovNum = nextMovementNumber();
+    const numMatch = expenseMovNum.match(/^(.+-)(\d+)$/);
+    const incomeMovNum = numMatch
+      ? `${numMatch[1]}${String(parseInt(numMatch[2], 10) + 1).padStart(4, '0')}`
+      : `${expenseMovNum}-B`;
+
+    const formattedRateStr = effectiveUsdtRate.toLocaleString('es-VE', {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    });
+    const formattedSpentBsStr = cleanSpentBs.toLocaleString('es-VE', {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    });
+    const formattedUsdtStr = cleanPurchasedUsdt.toLocaleString('es-VE', {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    });
+
+    const userNote = data.notes?.trim() || '';
+    const rateNote = `Tasa efectiva: Bs. ${formattedRateStr}/USDT`;
+    const combinedNotes = [userNote, rateNote].filter(Boolean).join(' · ');
+
+    const expenseMovement: TreasuryMovement = {
+      id: expenseMovementId,
+      movementNumber: expenseMovNum,
+      date: movDate,
+      type: 'GASTO',
+      accountId: updatedSourceAccount.id,
+      accountName: updatedSourceAccount.name,
+      accountGroup: updatedSourceAccount.group,
+      category: 'Compra de USDT / Divisas',
+      description: `Compra de ${formattedUsdtStr} USDT → ${updatedTargetAccount.name} (Bs. ${formattedSpentBsStr})`,
+      amountUSD: sourceDeductUSD,
+      bcvRate: safeBcvRate,
+      amountBs: cleanSpentBs,
+      reference: data.reference?.trim() || undefined,
+      linkedMovementId: incomeMovementId,
+      notes: combinedNotes,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    const incomeMovement: TreasuryMovement = {
+      id: incomeMovementId,
+      movementNumber: incomeMovNum,
+      date: movDate,
+      type: 'INGRESO',
+      accountId: updatedTargetAccount.id,
+      accountName: updatedTargetAccount.name,
+      accountGroup: updatedTargetAccount.group,
+      category: 'Ingreso de USDT (Compra)',
+      description: `Ingreso de ${formattedUsdtStr} USDT (Pagado desde ${updatedSourceAccount.name}: Bs. ${formattedSpentBsStr})`,
+      amountUSD: cleanPurchasedUsdt,
+      bcvRate: safeBcvRate,
+      amountBs: cleanSpentBs,
+      reference: data.reference?.trim() || undefined,
+      linkedMovementId: expenseMovementId,
+      notes: combinedNotes,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    pendingSyncTreasuryMovementIdsRef.current.add(expenseMovement.id);
+    pendingSyncTreasuryMovementIdsRef.current.add(incomeMovement.id);
+    const nextMovements = [incomeMovement, expenseMovement, ...treasuryMovementsRef.current].sort(
+      (a, b) =>
+        (b.date || b.createdAt || '').localeCompare(a.date || a.createdAt || '') ||
+        (b.createdAt || '').localeCompare(a.createdAt || '')
+    );
+    treasuryMovementsRef.current = nextMovements;
+    setTreasuryMovements(nextMovements);
+    try {
+      localStorage.setItem(STORAGE_KEYS.TREASURY_MOVEMENTS, JSON.stringify(nextMovements));
+    } catch {}
+    syncTreasuryMovementToFirestore(expenseMovement)
+      .then(() => pendingSyncTreasuryMovementIdsRef.current.delete(expenseMovement.id))
+      .catch(() => {});
+    syncTreasuryMovementToFirestore(incomeMovement)
+      .then(() => pendingSyncTreasuryMovementIdsRef.current.delete(incomeMovement.id))
+      .catch(() => {});
+
+    return {
+      expenseMovement,
+      incomeMovement,
+      sourceAccount: updatedSourceAccount,
+      targetAccount: updatedTargetAccount,
+      effectiveUsdtRate,
+    };
+  };
+
   const deleteTreasuryMovement = (id: string, revertAccountBalance: boolean = true) => {
     const existing = treasuryMovementsRef.current.find((m) => m.id === id);
     if (existing && revertAccountBalance) {
@@ -9487,6 +9874,16 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
             .then(() => pendingSyncTreasuryDebtIdsRef.current.delete(updatedDebt.id))
             .catch(() => {});
         }
+      }
+    }
+
+    // If this movement was paired with another (e.g. USDT purchase deducting Bs from source account), revert & remove the paired movement too
+    if (existing?.linkedMovementId) {
+      const sibling = treasuryMovementsRef.current.find(
+        (m) => m.id === existing.linkedMovementId
+      );
+      if (sibling) {
+        deleteTreasuryMovement(sibling.id, revertAccountBalance);
       }
     }
   };
@@ -10333,6 +10730,12 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
         expenseCategories,
         addExpenseCategory,
         deleteExpenseCategory,
+        incomeCategories,
+        addIncomeCategory,
+        deleteIncomeCategory,
+        commitmentCategories,
+        addCommitmentCategory,
+        deleteCommitmentCategory,
         expensePosBanks,
         addExpensePosBank,
         deleteExpensePosBank,
@@ -10355,6 +10758,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
         deleteTreasuryCommitment,
         markCommitmentPaidFromAccount,
         recordTreasuryMovement,
+        recordUsdtPurchase,
         deleteTreasuryMovement,
         importUnpaidPurchaseOrdersToCommitments,
         totalLiquidityUSD,

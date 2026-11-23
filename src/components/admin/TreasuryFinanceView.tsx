@@ -1,6 +1,8 @@
 import React, { useMemo, useState } from 'react';
 import { useApp } from '../../context/AppContext';
 import {
+  DEFAULT_EXPENSE_CATEGORIES,
+  DEFAULT_INCOME_CATEGORIES,
   TreasuryAccount,
   TreasuryAccountGroup,
   TreasuryCommitment,
@@ -40,6 +42,8 @@ import {
   PiggyBank,
   RefreshCw,
   UserCheck,
+  FolderPlus,
+  ArrowLeftRight,
 } from 'lucide-react';
 
 const ACCOUNT_GROUP_META: Record<
@@ -84,7 +88,7 @@ const ACCOUNT_GROUP_META: Record<
 };
 
 const COMMITMENT_CATEGORY_META: Record<
-  TreasuryCommitmentCategory,
+  string,
   { label: string; shortLabel: string; chipClass: string }
 > = {
   GASTOS_FIJOS: {
@@ -103,6 +107,22 @@ const COMMITMENT_CATEGORY_META: Record<
     chipClass: 'bg-amber-50 text-amber-800 border-amber-200',
   },
 };
+
+function getCommitmentCategoryMeta(category: string): {
+  label: string;
+  shortLabel: string;
+  chipClass: string;
+} {
+  if (COMMITMENT_CATEGORY_META[category]) {
+    return COMMITMENT_CATEGORY_META[category];
+  }
+  const clean = (category || 'Otros').trim() || 'Otros';
+  return {
+    label: clean,
+    shortLabel: clean,
+    chipClass: 'bg-teal-50 text-teal-800 border-teal-200',
+  };
+}
 
 const COMMITMENT_RATE_META: Record<
   TreasuryCommitmentRateType,
@@ -248,6 +268,14 @@ export const TreasuryFinanceView: React.FC = () => {
     purchaseOrders,
     technicians,
     expenseCategories,
+    addExpenseCategory,
+    deleteExpenseCategory,
+    incomeCategories,
+    addIncomeCategory,
+    deleteIncomeCategory,
+    commitmentCategories,
+    addCommitmentCategory,
+    deleteCommitmentCategory,
     treasuryAccounts,
     treasuryCommitments,
     treasuryMovements,
@@ -260,6 +288,7 @@ export const TreasuryFinanceView: React.FC = () => {
     deleteTreasuryCommitment,
     markCommitmentPaidFromAccount,
     recordTreasuryMovement,
+    recordUsdtPurchase,
     deleteTreasuryMovement,
     importUnpaidPurchaseOrdersToCommitments,
     totalLiquidityUSD,
@@ -345,9 +374,9 @@ export const TreasuryFinanceView: React.FC = () => {
   const [reservingCommitment, setReservingCommitment] = useState<TreasuryCommitment | null>(null);
   const [reserveInput, setReserveInput] = useState('');
 
-  // New Movement Modal (Registrar Nuevo Gasto o Ingreso)
+  // New Movement Modal (Registrar Nuevo Gasto, Ingreso o Compra/Ingreso de USDT)
   const [isMovementModalOpen, setIsMovementModalOpen] = useState(false);
-  const [movType, setMovType] = useState<'INGRESO' | 'GASTO'>('GASTO');
+  const [movType, setMovType] = useState<'INGRESO' | 'GASTO' | 'COMPRA_USDT'>('GASTO');
   const [movAccountId, setMovAccountId] = useState('');
   const [movDate, setMovDate] = useState(todayStr);
   const [movCategory, setMovCategory] = useState('Servicios Básicos');
@@ -360,6 +389,37 @@ export const TreasuryFinanceView: React.FC = () => {
   const [movIsSalaryAdvance, setMovIsSalaryAdvance] = useState(false);
   const [movLinkedCommitmentId, setMovLinkedCommitmentId] = useState('');
   const [movError, setMovError] = useState('');
+  const [showInlineNewMovCat, setShowInlineNewMovCat] = useState(false);
+  const [inlineNewMovCatName, setInlineNewMovCatName] = useState('');
+
+  // Ingresar USDT (Compra de USDT descontando Bs de una cuenta de tesorería)
+  const [quickUsdtCardInput, setQuickUsdtCardInput] = useState('');
+  const [usdtTargetAccountId, setUsdtTargetAccountId] = useState('');
+  const [usdtSourceAccountId, setUsdtSourceAccountId] = useState('');
+  const [usdtSpentBsInput, setUsdtSpentBsInput] = useState('');
+  const [usdtPurchasedInput, setUsdtPurchasedInput] = useState('');
+  const [usdtDate, setUsdtDate] = useState(todayStr);
+  const [usdtReference, setUsdtReference] = useState('');
+  const [usdtNotes, setUsdtNotes] = useState('');
+
+  // Inline new category inside Commitment modal
+  const [showInlineNewCmtCat, setShowInlineNewCmtCat] = useState(false);
+  const [inlineNewCmtCatName, setInlineNewCmtCatName] = useState('');
+
+  // Unified Category Manager Modal (Gastos / Ingresos-Registros / Pagos Planificados)
+  const [isCategoriesModalOpen, setIsCategoriesModalOpen] = useState(false);
+  const [catManagerTab, setCatManagerTab] = useState<'GASTO' | 'INGRESO' | 'COMPROMISO'>('GASTO');
+  const [newCatManagerInput, setNewCatManagerInput] = useState('');
+  const [catManagerFeedback, setCatManagerFeedback] = useState<string | null>(null);
+
+  const defaultExpenseCatSet = useMemo(
+    () => new Set(DEFAULT_EXPENSE_CATEGORIES.map((c) => c.toLowerCase())),
+    []
+  );
+  const defaultIncomeCatSet = useMemo(
+    () => new Set(DEFAULT_INCOME_CATEGORIES.map((c) => c.toLowerCase())),
+    []
+  );
 
   // Live Account Breakdown (grouped into Efectivo, Bancos Nacionales, Billeteras Digitales/Divisas)
   const accountBreakdown = useMemo(() => {
@@ -500,9 +560,8 @@ export const TreasuryFinanceView: React.FC = () => {
         ? Math.min(100, Math.round((paidUSD / totalMonthlyUSD) * 100))
         : 0;
 
-    const byCategory = (
-      ['GASTOS_FIJOS', 'NOMINA_SUELDOS', 'PROVEEDORES'] as TreasuryCommitmentCategory[]
-    ).map((cat) => {
+    const byCategory = commitmentCategories.map((catItem) => {
+      const cat = catItem.id;
       const items = targetList.filter((cm) => cm.category === cat);
       const total =
         Math.round(items.reduce((s, c) => s + (Number(c.amountUSD) || 0), 0) * 100) /
@@ -527,7 +586,7 @@ export const TreasuryFinanceView: React.FC = () => {
         total > 0 ? Math.min(100, Math.round(((paid + reserved) / total) * 100)) : 0;
       return {
         category: cat,
-        label: COMMITMENT_CATEGORY_META[cat].shortLabel,
+        label: getCommitmentCategoryMeta(cat).shortLabel,
         totalUSD: total,
         paidUSD: paid,
         reservedUSD: reserved,
@@ -548,7 +607,7 @@ export const TreasuryFinanceView: React.FC = () => {
       paidPercent,
       byCategory,
     };
-  }, [treasuryCommitments, totalLiquidityUSD]);
+  }, [treasuryCommitments, totalLiquidityUSD, commitmentCategories]);
 
   // Filtered recent movements
   const filteredMovements = useMemo(() => {
@@ -710,9 +769,7 @@ export const TreasuryFinanceView: React.FC = () => {
 
   const pendingWorkerCommitments = useMemo(() => {
     return treasuryCommitments
-      .filter(
-        (cm) => !cm.isPaid && (cm.category === 'NOMINA_SUELDOS' || cm.category === 'GASTOS_FIJOS')
-      )
+      .filter((cm) => !cm.isPaid && cm.category !== 'PROVEEDORES')
       .sort((a, b) => {
         if (a.category === 'NOMINA_SUELDOS' && b.category !== 'NOMINA_SUELDOS') return -1;
         if (b.category === 'NOMINA_SUELDOS' && a.category !== 'NOMINA_SUELDOS') return 1;
@@ -734,6 +791,8 @@ export const TreasuryFinanceView: React.FC = () => {
     setEuroFetchHint('');
     setCmtNotes('');
     setCmtError('');
+    setShowInlineNewCmtCat(false);
+    setInlineNewCmtCatName('');
     setIsCommitmentModalOpen(true);
   };
 
@@ -758,7 +817,24 @@ export const TreasuryFinanceView: React.FC = () => {
     setEuroFetchHint('');
     setCmtNotes(cm.notes || '');
     setCmtError('');
+    setShowInlineNewCmtCat(false);
+    setInlineNewCmtCatName('');
     setIsCommitmentModalOpen(true);
+  };
+
+  const handleInlineAddCommitmentCategory = () => {
+    const trimmed = inlineNewCmtCatName.trim();
+    if (!trimmed) return;
+    const res = addCommitmentCategory(trimmed);
+    setCmtCategory(res.id);
+    setInlineNewCmtCatName('');
+    setShowInlineNewCmtCat(false);
+    showBanner(
+      'success',
+      res.added
+        ? `Categoría de pago planificado "${res.label}" agregada.`
+        : `Categoría "${res.label}" seleccionada.`
+    );
   };
 
   const handleSaveCommitment = (e: React.FormEvent) => {
@@ -898,7 +974,71 @@ export const TreasuryFinanceView: React.FC = () => {
     }
   };
 
-  const openMovementModal = (defaultType: 'INGRESO' | 'GASTO' = 'GASTO') => {
+  const prepareUsdtPurchaseDefaults = (
+    accountsList: TreasuryAccount[],
+    preferredTargetAccountId?: string,
+    prefillUsdtAmount?: string
+  ) => {
+    const walletCandidates = accountsList.filter(
+      (a) => a.group === 'BILLETERA_DIVISAS' || a.currency === 'USDT'
+    );
+    const chosenTarget =
+      (preferredTargetAccountId &&
+        accountsList.find((a) => a.id === preferredTargetAccountId)) ||
+      walletCandidates.find((a) => a.currency === 'USDT') ||
+      walletCandidates[0] ||
+      null;
+
+    const sourceCandidates = accountsList.filter((a) => a.id !== chosenTarget?.id);
+    const chosenSource =
+      sourceCandidates.find((a) => a.currency === 'BS' && a.group === 'BANCO_NACIONAL') ||
+      sourceCandidates.find((a) => a.currency === 'BS') ||
+      sourceCandidates[0] ||
+      null;
+
+    setUsdtTargetAccountId(chosenTarget?.id || '');
+    setUsdtSourceAccountId(chosenSource?.id || '');
+    setUsdtSpentBsInput('');
+    setUsdtPurchasedInput(prefillUsdtAmount ?? '');
+    setUsdtDate(todayStr);
+    setUsdtReference('');
+    setUsdtNotes('');
+  };
+
+  const openUsdtPurchaseModal = (
+    preferredTargetAccountId?: string,
+    prefillUsdtAmount?: string
+  ) => {
+    let accounts = treasuryAccounts;
+    if (accounts.length === 0) {
+      accounts = initializeDefaultTreasuryAccounts();
+    }
+    prepareUsdtPurchaseDefaults(accounts, preferredTargetAccountId, prefillUsdtAmount);
+    setMovType('COMPRA_USDT');
+    setMovError('');
+    setShowInlineNewMovCat(false);
+    setInlineNewMovCatName('');
+    setIsMovementModalOpen(true);
+  };
+
+  const handleQuickCreateBinanceWallet = () => {
+    const created = addTreasuryAccount({
+      name: 'Binance USDT',
+      group: 'BILLETERA_DIVISAS',
+      currency: 'USDT',
+      nativeBalance: 0,
+      institution: 'Binance',
+      notes: 'Billetera digital USDT',
+    });
+    setUsdtTargetAccountId(created.id);
+    if (usdtSourceAccountId === created.id) {
+      const altSource = treasuryAccounts.find((a) => a.id !== created.id);
+      setUsdtSourceAccountId(altSource?.id || '');
+    }
+    showBanner('success', `Billetera "${created.name}" creada y seleccionada.`);
+  };
+
+  const openMovementModal = (defaultType: 'INGRESO' | 'GASTO' | 'COMPRA_USDT' = 'GASTO') => {
     let accounts = treasuryAccounts;
     if (accounts.length === 0) {
       accounts = initializeDefaultTreasuryAccounts();
@@ -910,7 +1050,7 @@ export const TreasuryFinanceView: React.FC = () => {
     setMovDate(todayStr);
     setMovCategory(
       defaultType === 'INGRESO'
-        ? 'Ingreso de Ventas / Caja'
+        ? incomeCategories[0] || 'Ingreso de Ventas / Caja'
         : expenseCategories[0] || 'Servicios Básicos'
     );
     setMovDescription('');
@@ -920,8 +1060,68 @@ export const TreasuryFinanceView: React.FC = () => {
     setMovSyncExpense(defaultType === 'GASTO');
     setMovIsSalaryAdvance(false);
     setMovLinkedCommitmentId('');
+    prepareUsdtPurchaseDefaults(accounts);
     setMovError('');
+    setShowInlineNewMovCat(false);
+    setInlineNewMovCatName('');
     setIsMovementModalOpen(true);
+  };
+
+  const handleInlineAddMovementCategory = () => {
+    const trimmed = inlineNewMovCatName.trim();
+    if (!trimmed) return;
+    if (movType === 'INGRESO') {
+      const res = addIncomeCategory(trimmed);
+      setMovCategory(res.category);
+      showBanner(
+        'success',
+        res.added
+          ? `Categoría de ingreso/registro "${res.category}" agregada.`
+          : `Categoría "${res.category}" seleccionada.`
+      );
+    } else {
+      const res = addExpenseCategory(trimmed);
+      setMovCategory(res.category);
+      showBanner(
+        'success',
+        res.added
+          ? `Categoría de gasto "${res.category}" agregada.`
+          : `Categoría "${res.category}" seleccionada.`
+      );
+    }
+    setInlineNewMovCatName('');
+    setShowInlineNewMovCat(false);
+  };
+
+  const handleAddCategoryFromManager = (e: React.FormEvent) => {
+    e.preventDefault();
+    const trimmed = newCatManagerInput.trim();
+    if (!trimmed) return;
+
+    if (catManagerTab === 'GASTO') {
+      const res = addExpenseCategory(trimmed);
+      setCatManagerFeedback(
+        res.added
+          ? `Categoría de gasto "${res.category}" creada correctamente.`
+          : `La categoría de gasto "${res.category}" ya existía.`
+      );
+    } else if (catManagerTab === 'INGRESO') {
+      const res = addIncomeCategory(trimmed);
+      setCatManagerFeedback(
+        res.added
+          ? `Categoría de ingreso/registro "${res.category}" creada correctamente.`
+          : `La categoría de ingreso/registro "${res.category}" ya existía.`
+      );
+    } else {
+      const res = addCommitmentCategory(trimmed);
+      setCatManagerFeedback(
+        res.added
+          ? `Categoría de pago planificado "${res.label}" creada correctamente.`
+          : `La categoría "${res.label}" ya existía.`
+      );
+    }
+    setNewCatManagerInput('');
+    setTimeout(() => setCatManagerFeedback(null), 3500);
   };
 
   const openValeModalForCommitment = (cm: TreasuryCommitment) => {
@@ -983,6 +1183,61 @@ export const TreasuryFinanceView: React.FC = () => {
 
   const handleSaveMovement = (e: React.FormEvent) => {
     e.preventDefault();
+
+    if (movType === 'COMPRA_USDT') {
+      if (!usdtTargetAccountId) {
+        setMovError('Selecciona la billetera USDT / Divisas donde ingresarán los USDT');
+        return;
+      }
+      if (!usdtSourceAccountId) {
+        setMovError('Selecciona la cuenta de tesorería de donde gastaste el dinero');
+        return;
+      }
+      if (usdtTargetAccountId === usdtSourceAccountId) {
+        setMovError('La cuenta de donde salió el dinero y la billetera USDT deben ser diferentes');
+        return;
+      }
+      const spentBsVal = parseFloat(usdtSpentBsInput);
+      if (!spentBsVal || isNaN(spentBsVal) || spentBsVal <= 0) {
+        setMovError('Ingresa cuántos Bolívares gastaste (mayor a 0)');
+        return;
+      }
+      const purchasedUsdtVal = parseFloat(usdtPurchasedInput);
+      if (!purchasedUsdtVal || isNaN(purchasedUsdtVal) || purchasedUsdtVal <= 0) {
+        setMovError('Ingresa cuántos USDT compraste (mayor a 0)');
+        return;
+      }
+
+      const res = recordUsdtPurchase({
+        date: usdtDate || todayStr,
+        sourceAccountId: usdtSourceAccountId,
+        targetAccountId: usdtTargetAccountId,
+        spentBs: spentBsVal,
+        purchasedUsdt: purchasedUsdtVal,
+        bcvRate,
+        reference: usdtReference.trim() || undefined,
+        notes: usdtNotes.trim() || undefined,
+      });
+
+      if (res) {
+        setQuickUsdtCardInput('');
+        showBanner(
+          'success',
+          `Ingreso de ${purchasedUsdtVal.toLocaleString('es-VE', {
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2,
+          })} USDT en ${res.targetAccount.name} · Descontado ${formatBs(spentBsVal)} de ${res.sourceAccount.name} (Tasa: Bs. ${res.effectiveUsdtRate.toLocaleString('es-VE', {
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2,
+          })}/USDT).`
+        );
+        setIsMovementModalOpen(false);
+      } else {
+        setMovError('No se pudo registrar el ingreso de USDT. Verifica las cuentas y montos.');
+      }
+      return;
+    }
+
     if (!movAccountId) {
       setMovError('Selecciona una cuenta afectada');
       return;
@@ -1041,6 +1296,83 @@ export const TreasuryFinanceView: React.FC = () => {
     return Math.round(val * 100) / 100;
   }, [movAmountInput, movInputCurrency, bcvRate]);
 
+  // Sorted accounts for USDT purchase selectors
+  const usdtWalletAccounts = useMemo(
+    () =>
+      treasuryAccounts.filter(
+        (a) => a.group === 'BILLETERA_DIVISAS' || a.currency === 'USDT'
+      ),
+    [treasuryAccounts]
+  );
+
+  const usdtSourceCandidates = useMemo(() => {
+    return [...treasuryAccounts]
+      .filter((a) => a.id !== usdtTargetAccountId)
+      .sort((a, b) => {
+        const score = (acc: TreasuryAccount) =>
+          acc.currency === 'BS' && acc.group === 'BANCO_NACIONAL'
+            ? 0
+            : acc.currency === 'BS'
+              ? 1
+              : acc.group === 'EFECTIVO'
+                ? 2
+                : 3;
+        return score(a) - score(b);
+      });
+  }, [treasuryAccounts, usdtTargetAccountId]);
+
+  const usdtPurchasePreview = useMemo(() => {
+    const spentBs = parseFloat(usdtSpentBsInput || '0');
+    const purchasedUsdt = parseFloat(usdtPurchasedInput || '0');
+    const validSpentBs = !isNaN(spentBs) && spentBs > 0 ? Math.round(spentBs * 100) / 100 : 0;
+    const validUsdt =
+      !isNaN(purchasedUsdt) && purchasedUsdt > 0 ? Math.round(purchasedUsdt * 100) / 100 : 0;
+    const effectiveRate =
+      validSpentBs > 0 && validUsdt > 0
+        ? Math.round((validSpentBs / validUsdt) * 100) / 100
+        : 0;
+    const sourceAcc = treasuryAccounts.find((a) => a.id === usdtSourceAccountId) || null;
+    const targetAcc = treasuryAccounts.find((a) => a.id === usdtTargetAccountId) || null;
+    const sourceDeductNative =
+      sourceAcc && validSpentBs > 0
+        ? sourceAcc.currency === 'BS'
+          ? validSpentBs
+          : Math.round((validSpentBs / bcvRate) * 100) / 100
+        : 0;
+    const sourceNextNative = sourceAcc
+      ? Math.round(((Number(sourceAcc.nativeBalance) || 0) - sourceDeductNative) * 100) / 100
+      : 0;
+    const targetNextNative = targetAcc
+      ? Math.round(
+          ((Number(targetAcc.nativeBalance) || 0) +
+            (targetAcc.currency === 'BS' ? validSpentBs : validUsdt)) *
+            100
+        ) / 100
+      : 0;
+    const exceedsSourceBalance = Boolean(
+      sourceAcc && sourceDeductNative > (Number(sourceAcc.nativeBalance) || 0) + 0.009
+    );
+
+    return {
+      validSpentBs,
+      validUsdt,
+      effectiveRate,
+      sourceAcc,
+      targetAcc,
+      sourceDeductNative,
+      sourceNextNative,
+      targetNextNative,
+      exceedsSourceBalance,
+    };
+  }, [
+    usdtSpentBsInput,
+    usdtPurchasedInput,
+    usdtSourceAccountId,
+    usdtTargetAccountId,
+    treasuryAccounts,
+    bcvRate,
+  ]);
+
   return (
     <div className="space-y-6">
       {/* Header Bar */}
@@ -1065,6 +1397,18 @@ export const TreasuryFinanceView: React.FC = () => {
         </div>
 
         <div className="flex flex-wrap items-center gap-2.5">
+          <button
+            type="button"
+            onClick={() => {
+              setCatManagerFeedback(null);
+              setNewCatManagerInput('');
+              setIsCategoriesModalOpen(true);
+            }}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl border border-slate-200 bg-white hover:bg-slate-50 text-xs font-semibold text-slate-700 transition-colors cursor-pointer whitespace-nowrap shrink-0"
+          >
+            <FolderPlus className="w-3.5 h-3.5 text-amber-600" />
+            Categorías ({expenseCategories.length + incomeCategories.length + commitmentCategories.length})
+          </button>
           <button
             type="button"
             onClick={() => openNewAccountModal('EFECTIVO')}
@@ -1444,6 +1788,16 @@ export const TreasuryFinanceView: React.FC = () => {
                             </div>
 
                             <div className="flex items-center gap-0.5 opacity-80 group-hover:opacity-100">
+                              {grp.group === 'BILLETERA_DIVISAS' && (
+                                <button
+                                  type="button"
+                                  onClick={() => openUsdtPurchaseModal(acc.id, quickUsdtCardInput)}
+                                  className="px-2 py-1 rounded-lg bg-amber-100 hover:bg-amber-200 text-amber-900 text-[10px] font-bold cursor-pointer transition-colors"
+                                  title="Ingresar USDT comprados con Bs en esta billetera"
+                                >
+                                  + USDT
+                                </button>
+                              )}
                               <button
                                 type="button"
                                 onClick={() => openEditAccountModal(acc)}
@@ -1467,6 +1821,59 @@ export const TreasuryFinanceView: React.FC = () => {
                           </div>
                         </div>
                       ))}
+                    </div>
+                  )}
+
+                  {grp.group === 'BILLETERA_DIVISAS' && (
+                    <div className="mt-auto pt-3 border-t border-amber-200/80">
+                      <div className="rounded-xl bg-amber-50/90 border border-amber-200/90 p-2.5 space-y-2">
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            <ArrowLeftRight className="w-3.5 h-3.5 text-amber-700 shrink-0" />
+                            <span className="text-[11px] font-bold text-amber-950 truncate">
+                              Ingresar USDT (Compra con Bs)
+                            </span>
+                          </div>
+                          <span className="text-[10px] font-semibold text-amber-700 shrink-0">
+                            Descuenta Tesorería
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <input
+                            type="number"
+                            step="any"
+                            min="0.01"
+                            value={quickUsdtCardInput}
+                            onChange={(e) => setQuickUsdtCardInput(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                e.preventDefault();
+                                openUsdtPurchaseModal(
+                                  grp.accounts.find((a) => a.currency === 'USDT')?.id ||
+                                    grp.accounts[0]?.id,
+                                  quickUsdtCardInput
+                                );
+                              }
+                            }}
+                            placeholder="Ej: 100 USDT"
+                            className="flex-1 min-w-0 px-2.5 py-1.5 rounded-lg border border-amber-300 bg-white text-xs font-mono font-semibold text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-amber-500/30"
+                          />
+                          <button
+                            type="button"
+                            onClick={() =>
+                              openUsdtPurchaseModal(
+                                grp.accounts.find((a) => a.currency === 'USDT')?.id ||
+                                  grp.accounts[0]?.id,
+                                quickUsdtCardInput
+                              )
+                            }
+                            className="px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-600 text-slate-950 text-[11px] font-bold inline-flex items-center gap-1 cursor-pointer transition-colors shrink-0 shadow-xs"
+                          >
+                            <Plus className="w-3.5 h-3.5" />
+                            <span>Ingresar USDT</span>
+                          </button>
+                        </div>
+                      </div>
                     </div>
                   )}
                 </div>
@@ -1521,14 +1928,13 @@ export const TreasuryFinanceView: React.FC = () => {
             {/* Category + Status Filters */}
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="flex flex-wrap items-center gap-1.5">
-                {(
-                  [
-                    { id: 'ALL', label: 'Todos' },
-                    { id: 'GASTOS_FIJOS', label: 'Gastos Fijos' },
-                    { id: 'NOMINA_SUELDOS', label: 'Nómina/Sueldos' },
-                    { id: 'PROVEEDORES', label: 'Proveedores' },
-                  ] as const
-                ).map((tab) => (
+                {[
+                  { id: 'ALL', label: 'Todos' },
+                  ...commitmentCategories.map((c) => ({
+                    id: c.id,
+                    label: getCommitmentCategoryMeta(c.id).shortLabel,
+                  })),
+                ].map((tab) => (
                   <button
                     key={tab.id}
                     type="button"
@@ -1603,7 +2009,7 @@ export const TreasuryFinanceView: React.FC = () => {
 
               <div className="divide-y divide-slate-100">
                 {filteredCommitments.map((cm) => {
-                  const catMeta = COMMITMENT_CATEGORY_META[cm.category];
+                  const catMeta = getCommitmentCategoryMeta(cm.category);
                   const statusInfo = getCommitmentDisplayStatus(cm);
                   const isBsCommitment = cm.paymentCurrency === 'BS';
                   const rateType: TreasuryCommitmentRateType = cm.exchangeRateType || 'BCV';
@@ -2284,22 +2690,64 @@ export const TreasuryFinanceView: React.FC = () => {
                 />
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                 <div>
-                  <label className="block font-semibold text-slate-700 mb-1">
-                    Categoría
-                  </label>
-                  <select
-                    value={cmtCategory}
-                    onChange={(e) =>
-                      setCmtCategory(e.target.value as TreasuryCommitmentCategory)
-                    }
-                    className="w-full px-3 py-2 rounded-xl border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-slate-900/15"
-                  >
-                    <option value="GASTOS_FIJOS">Gastos Fijos</option>
-                    <option value="NOMINA_SUELDOS">Nómina / Sueldos</option>
-                    <option value="PROVEEDORES">Proveedores</option>
-                  </select>
+                  <div className="flex items-center justify-between gap-2 mb-1">
+                    <label className="block font-semibold text-slate-700">
+                      Categoría
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowInlineNewCmtCat((prev) => !prev);
+                        setInlineNewCmtCatName('');
+                      }}
+                      className="text-[11px] font-bold text-amber-700 hover:text-amber-800 inline-flex items-center gap-0.5 cursor-pointer"
+                    >
+                      <Plus className="w-3 h-3" />
+                      <span>{showInlineNewCmtCat ? 'Cancelar' : 'Nueva categoría'}</span>
+                    </button>
+                  </div>
+                  {!showInlineNewCmtCat ? (
+                    <select
+                      value={cmtCategory}
+                      onChange={(e) =>
+                        setCmtCategory(e.target.value as TreasuryCommitmentCategory)
+                      }
+                      className="w-full px-3 py-2 rounded-xl border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-slate-900/15"
+                    >
+                      {commitmentCategories.map((cat) => (
+                        <option key={cat.id} value={cat.id}>
+                          {cat.label}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <div className="flex items-center gap-1.5">
+                      <input
+                        type="text"
+                        value={inlineNewCmtCatName}
+                        onChange={(e) => setInlineNewCmtCatName(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            handleInlineAddCommitmentCategory();
+                          }
+                        }}
+                        placeholder="Ej: Impuestos, Alquiler, Préstamos..."
+                        autoFocus
+                        className="flex-1 min-w-0 px-2.5 py-2 rounded-xl border border-amber-400 text-xs focus:outline-none focus:ring-2 focus:ring-amber-500/40"
+                      />
+                      <button
+                        type="button"
+                        onClick={handleInlineAddCommitmentCategory}
+                        className="px-2.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold cursor-pointer inline-flex items-center gap-1 shrink-0"
+                      >
+                        <Check className="w-3.5 h-3.5" />
+                        Crear
+                      </button>
+                    </div>
+                  )}
                 </div>
 
                 <div>
@@ -2824,13 +3272,15 @@ export const TreasuryFinanceView: React.FC = () => {
         </div>
       )}
 
-      {/* Modal: Register New Expense or Income */}
+      {/* Modal: Register New Expense, Income or USDT Purchase */}
       {isMovementModalOpen && (
         <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-white rounded-2xl border border-slate-200 w-full max-w-lg shadow-2xl overflow-hidden">
             <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between">
               <h3 className="text-base font-bold text-slate-900">
-                Registrar Nuevo Gasto o Ingreso
+                {movType === 'COMPRA_USDT'
+                  ? 'Ingresar USDT (Compra desde Tesorería)'
+                  : 'Registrar Nuevo Gasto o Ingreso'}
               </h3>
               <button
                 type="button"
@@ -2848,316 +3298,880 @@ export const TreasuryFinanceView: React.FC = () => {
                 </div>
               )}
 
-              {/* Toggle Type: GASTO vs INGRESO */}
-              <div className="grid grid-cols-2 gap-2 p-1 rounded-xl bg-slate-100">
+              {/* Toggle Type: GASTO vs INGRESO vs INGRESAR USDT */}
+              <div className="grid grid-cols-3 gap-1.5 p-1 rounded-xl bg-slate-100">
                 <button
                   type="button"
                   onClick={() => {
                     setMovType('GASTO');
                     setMovCategory(expenseCategories[0] || 'Servicios Básicos');
+                    setShowInlineNewMovCat(false);
+                    setInlineNewMovCatName('');
+                    setMovError('');
                   }}
-                  className={`py-2 rounded-lg font-bold flex items-center justify-center gap-1.5 transition-colors cursor-pointer ${
+                  className={`py-2 px-2 rounded-lg font-bold flex items-center justify-center gap-1 transition-colors cursor-pointer ${
                     movType === 'GASTO'
                       ? 'bg-rose-600 text-white shadow-xs'
                       : 'text-slate-600 hover:text-slate-900'
                   }`}
                 >
-                  <ArrowDownRight className="w-4 h-4" />
-                  Registrar Gasto
+                  <ArrowDownRight className="w-3.5 h-3.5 shrink-0" />
+                  <span className="truncate">Gasto</span>
                 </button>
                 <button
                   type="button"
                   onClick={() => {
                     setMovType('INGRESO');
-                    setMovCategory('Ingreso de Ventas / Caja');
+                    setMovCategory(incomeCategories[0] || 'Ingreso de Ventas / Caja');
                     setMovIsSalaryAdvance(false);
                     setMovLinkedCommitmentId('');
+                    setShowInlineNewMovCat(false);
+                    setInlineNewMovCatName('');
+                    setMovError('');
                   }}
-                  className={`py-2 rounded-lg font-bold flex items-center justify-center gap-1.5 transition-colors cursor-pointer ${
+                  className={`py-2 px-2 rounded-lg font-bold flex items-center justify-center gap-1 transition-colors cursor-pointer ${
                     movType === 'INGRESO'
                       ? 'bg-emerald-600 text-white shadow-xs'
                       : 'text-slate-600 hover:text-slate-900'
                   }`}
                 >
-                  <ArrowUpRight className="w-4 h-4" />
-                  Registrar Ingreso
+                  <ArrowUpRight className="w-3.5 h-3.5 shrink-0" />
+                  <span className="truncate">Ingreso</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMovType('COMPRA_USDT');
+                    setMovError('');
+                    if (!usdtTargetAccountId || !usdtSourceAccountId) {
+                      prepareUsdtPurchaseDefaults(treasuryAccounts);
+                    }
+                  }}
+                  className={`py-2 px-2 rounded-lg font-bold flex items-center justify-center gap-1 transition-colors cursor-pointer ${
+                    movType === 'COMPRA_USDT'
+                      ? 'bg-amber-500 text-slate-950 shadow-xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  <ArrowLeftRight className="w-3.5 h-3.5 shrink-0" />
+                  <span className="truncate">Ingresar USDT</span>
                 </button>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div>
-                  <label className="block font-semibold text-slate-700 mb-1">
-                    Cuenta afectada *
-                  </label>
-                  <select
-                    value={movAccountId}
-                    onChange={(e) => handleMovementAccountChange(e.target.value)}
-                    className="w-full px-3 py-2 rounded-xl border border-slate-200 bg-white font-medium focus:outline-none focus:ring-2 focus:ring-slate-900/15"
-                  >
-                    {treasuryAccounts.map((acc) => (
-                      <option key={acc.id} value={acc.id}>
-                        {acc.name} ({formatNativeBalance(acc.currency, acc.nativeBalance)})
-                      </option>
-                    ))}
-                  </select>
-                </div>
+              {movType === 'COMPRA_USDT' ? (
+                <>
+                  <div className="p-3 rounded-xl bg-amber-50 border border-amber-200 text-[11px] text-amber-950 leading-relaxed">
+                    Registra cuántos <strong>Bolívares gastaste</strong>, de <strong>qué cuenta de tesorería</strong> salió el pago y cuántos <strong>USDT compraste</strong>. El monto en Bs se descontará automáticamente de esa cuenta y los USDT se sumarán a tu billetera.
+                  </div>
 
-                <div>
-                  <label className="block font-semibold text-slate-700 mb-1">
-                    Fecha *
-                  </label>
-                  <input
-                    type="date"
-                    value={movDate}
-                    onChange={(e) => setMovDate(e.target.value)}
-                    className="w-full px-3 py-2 rounded-xl border border-slate-200 font-mono focus:outline-none focus:ring-2 focus:ring-slate-900/15"
-                  />
-                </div>
-              </div>
+                  {/* Destination USDT Wallet */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block font-semibold text-slate-700 mb-1">
+                        Billetera USDT destino *
+                      </label>
+                      {usdtWalletAccounts.length === 0 ? (
+                        <button
+                          type="button"
+                          onClick={handleQuickCreateBinanceWallet}
+                          className="w-full px-3 py-2 rounded-xl border border-dashed border-amber-400 bg-amber-50 hover:bg-amber-100 text-amber-900 font-bold flex items-center justify-center gap-1.5 cursor-pointer"
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                          <span>Crear billetera Binance USDT</span>
+                        </button>
+                      ) : (
+                        <select
+                          value={usdtTargetAccountId}
+                          onChange={(e) => {
+                            const nextTargetId = e.target.value;
+                            setUsdtTargetAccountId(nextTargetId);
+                            if (usdtSourceAccountId === nextTargetId) {
+                              const alt = treasuryAccounts.find((a) => a.id !== nextTargetId);
+                              setUsdtSourceAccountId(alt?.id || '');
+                            }
+                            if (movError) setMovError('');
+                          }}
+                          className="w-full px-3 py-2 rounded-xl border border-slate-200 bg-white font-medium focus:outline-none focus:ring-2 focus:ring-amber-500/30"
+                        >
+                          {usdtWalletAccounts.map((acc) => (
+                            <option key={acc.id} value={acc.id}>
+                              {acc.name} ({formatNativeBalance(acc.currency, acc.nativeBalance)})
+                            </option>
+                          ))}
+                        </select>
+                      )}
+                    </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div>
-                  <label className="block font-semibold text-slate-700 mb-1">
-                    Categoría
-                  </label>
-                  {movType === 'GASTO' ? (
+                    <div>
+                      <label className="block font-semibold text-slate-700 mb-1">
+                        Fecha de compra *
+                      </label>
+                      <input
+                        type="date"
+                        value={usdtDate}
+                        onChange={(e) => setUsdtDate(e.target.value)}
+                        className="w-full px-3 py-2 rounded-xl border border-slate-200 font-mono focus:outline-none focus:ring-2 focus:ring-amber-500/30"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Source Account to Deduct From */}
+                  <div>
+                    <label className="block font-semibold text-slate-700 mb-1">
+                      ¿De qué cuenta gastaste el dinero? (Descuenta Tesorería) *
+                    </label>
                     <select
-                      value={movCategory}
+                      value={usdtSourceAccountId}
                       onChange={(e) => {
-                        const nextCat = e.target.value;
-                        setMovCategory(nextCat);
-                        const low = nextCat.toLowerCase();
-                        if ((low.includes('vale') || low.includes('adelanto')) && !movIsSalaryAdvance) {
-                          setMovIsSalaryAdvance(true);
-                          if (!movLinkedCommitmentId && pendingWorkerCommitments.length > 0) {
-                            handleSelectMovSalaryCommitment(pendingWorkerCommitments[0].id);
-                          }
-                        }
+                        setUsdtSourceAccountId(e.target.value);
+                        if (movError) setMovError('');
                       }}
-                      className="w-full px-3 py-2 rounded-xl border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-slate-900/15"
+                      className="w-full px-3 py-2.5 rounded-xl border border-slate-300 bg-white font-semibold text-slate-900 focus:outline-none focus:ring-2 focus:ring-amber-500/30"
                     >
-                      {expenseCategories.map((cat) => (
-                        <option key={cat} value={cat}>
-                          {cat}
+                      <option value="">-- Selecciona la cuenta de donde pagaste --</option>
+                      {usdtSourceCandidates.map((acc) => (
+                        <option key={acc.id} value={acc.id}>
+                          [{ACCOUNT_GROUP_META[acc.group].shortLabel}] {acc.name} — Saldo:{' '}
+                          {formatNativeBalance(acc.currency, acc.nativeBalance)}
                         </option>
                       ))}
                     </select>
-                  ) : (
-                    <input
-                      type="text"
-                      value={movCategory}
-                      onChange={(e) => setMovCategory(e.target.value)}
-                      placeholder="Ej: Ventas del día, Abono cliente, Aporte"
-                      className="w-full px-3 py-2 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-slate-900/15"
-                    />
-                  )}
-                </div>
-
-                <div>
-                  <label className="block font-semibold text-slate-700 mb-1">
-                    Monto ({movInputCurrency}) *
-                  </label>
-                  <div className="flex gap-1.5">
-                    <input
-                      type="number"
-                      step="any"
-                      min="0.01"
-                      value={movAmountInput}
-                      onChange={(e) => setMovAmountInput(e.target.value)}
-                      placeholder="0.00"
-                      className="flex-1 min-w-0 px-3 py-2 rounded-xl border border-slate-200 font-mono text-sm font-bold focus:outline-none focus:ring-2 focus:ring-slate-900/15"
-                    />
-                    <select
-                      value={movInputCurrency}
-                      onChange={(e) =>
-                        setMovInputCurrency(e.target.value as 'USD' | 'BS' | 'USDT')
-                      }
-                      className="px-2.5 py-2 rounded-xl border border-slate-200 bg-white font-mono font-semibold"
-                    >
-                      <option value="USD">USD</option>
-                      <option value="BS">BS</option>
-                      <option value="USDT">USDT</option>
-                    </select>
                   </div>
-                  {selectedMovementPreviewUSD > 0 && (
-                    <p className="text-[10px] text-slate-500 mt-1 font-mono tabular-nums">
-                      Equivalente: {formatUSD(selectedMovementPreviewUSD)} ·{' '}
-                      {formatBs(selectedMovementPreviewUSD * bcvRate)}
-                    </p>
-                  )}
-                </div>
-              </div>
 
-              {movType === 'GASTO' && (() => {
-                const selectedCmt = treasuryCommitments.find(
-                  (c) => c.id === movLinkedCommitmentId
-                );
-                const deductionUSD = selectedCmt
-                  ? Math.min(selectedCmt.amountUSD, selectedMovementPreviewUSD)
-                  : 0;
-                const remainingAfter = selectedCmt
-                  ? Math.max(0, Math.round((selectedCmt.amountUSD - deductionUSD) * 100) / 100)
-                  : 0;
-
-                return (
-                  <div className="p-3.5 rounded-xl bg-indigo-50/70 border border-indigo-200 space-y-2.5">
-                    <label className="flex items-start gap-2 cursor-pointer select-none">
-                      <input
-                        type="checkbox"
-                        checked={movIsSalaryAdvance}
-                        onChange={(e) => {
-                          const checked = e.target.checked;
-                          setMovIsSalaryAdvance(checked);
-                          if (movError) setMovError('');
-                          if (checked) {
-                            if (!movLinkedCommitmentId && pendingWorkerCommitments.length > 0) {
-                              handleSelectMovSalaryCommitment(pendingWorkerCommitments[0].id);
-                            }
-                          } else {
-                            setMovLinkedCommitmentId('');
-                          }
-                        }}
-                        className="mt-0.5 rounded border-indigo-300 text-indigo-600 focus:ring-indigo-500"
-                      />
-                      <div className="min-w-0">
-                        <span className="font-bold text-slate-900 flex items-center gap-1.5">
-                          <UserCheck className="w-3.5 h-3.5 text-indigo-700 shrink-0" />
-                          <span>Descontar como vale al sueldo de un trabajador</span>
+                  {/* Exact Bs Spent & USDT Purchased */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block font-semibold text-slate-700 mb-1">
+                        ¿Cuántos Bolívares gastaste? (Bs.) *
+                      </label>
+                      <div className="relative">
+                        <span className="absolute left-3 top-1/2 -translate-y-1/2 text-[11px] font-mono font-bold text-rose-600">
+                          Bs.
                         </span>
-                        <span className="text-[11px] text-slate-600 block">
-                          Resta este monto de los gastos fijos / nómina por pagar asignados al trabajador.
+                        <input
+                          type="number"
+                          step="any"
+                          min="0.01"
+                          value={usdtSpentBsInput}
+                          onChange={(e) => {
+                            setUsdtSpentBsInput(e.target.value);
+                            if (movError) setMovError('');
+                          }}
+                          placeholder="Ej: 45000.00"
+                          className="w-full pl-10 pr-3 py-2.5 rounded-xl border border-rose-200 bg-rose-50/30 font-mono text-sm font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-rose-500/25"
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block font-semibold text-slate-700 mb-1">
+                        ¿Cuántos USDT compraste? (USDT) *
+                      </label>
+                      <div className="relative">
+                        <input
+                          type="number"
+                          step="any"
+                          min="0.01"
+                          value={usdtPurchasedInput}
+                          onChange={(e) => {
+                            setUsdtPurchasedInput(e.target.value);
+                            if (movError) setMovError('');
+                          }}
+                          placeholder="Ej: 50.00"
+                          className="w-full pl-3 pr-14 py-2.5 rounded-xl border border-emerald-200 bg-emerald-50/30 font-mono text-sm font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500/25"
+                        />
+                        <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[11px] font-mono font-bold text-emerald-700">
+                          USDT
                         </span>
                       </div>
-                    </label>
+                    </div>
+                  </div>
 
-                    {movIsSalaryAdvance && (
-                      <div className="pl-5 space-y-2">
-                        {pendingWorkerCommitments.length === 0 ? (
-                          <p className="text-[11px] text-slate-600 bg-white border border-indigo-200 rounded-lg p-2.5">
-                            No hay sueldos ni gastos fijos pendientes en Planificación de Pagos. Agrega primero el sueldo del trabajador.
-                          </p>
-                        ) : (
-                          <>
-                            <select
-                              value={movLinkedCommitmentId}
-                              onChange={(e) => handleSelectMovSalaryCommitment(e.target.value)}
-                              className="w-full px-3 py-2 rounded-xl border border-indigo-300 bg-white font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500"
-                            >
-                              <option value="">-- Selecciona el sueldo / trabajador --</option>
-                              {pendingWorkerCommitments.map((cm) => (
-                                <option key={cm.id} value={cm.id}>
-                                  [{cm.category === 'NOMINA_SUELDOS' ? 'Nómina/Sueldo' : 'Gasto Fijo'}]{' '}
-                                  {cm.workerName ? `${cm.workerName} · ` : ''}
-                                  {cm.title} — Por pagar: {formatUSD(cm.amountUSD)}
-                                </option>
-                              ))}
-                            </select>
-
-                            {selectedCmt && (
-                              <div className="bg-white border border-indigo-200 rounded-lg px-3 py-2 flex flex-wrap items-center justify-between gap-2 text-[11px]">
-                                <span className="text-slate-600">
-                                  Saldo restante del trabajador tras el vale:
-                                </span>
-                                <span
-                                  className={`font-mono font-bold tabular-nums ${
-                                    remainingAfter <= 0.009
-                                      ? 'text-emerald-700'
-                                      : 'text-indigo-800'
-                                  }`}
-                                >
-                                  {formatUSD(remainingAfter)}
-                                  {remainingAfter <= 0.009 && selectedMovementPreviewUSD > 0
-                                    ? ' (Liquidado)'
-                                    : ''}
-                                </span>
-                              </div>
-                            )}
-                          </>
+                  {/* Live Treasury Impact Preview */}
+                  {(usdtPurchasePreview.validSpentBs > 0 || usdtPurchasePreview.validUsdt > 0) && (
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 p-3.5 space-y-2.5">
+                      <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-slate-200">
+                        <span className="text-[11px] font-bold text-slate-700 uppercase tracking-wide">
+                          Resumen del Movimiento en Tesorería
+                        </span>
+                        {usdtPurchasePreview.effectiveRate > 0 && (
+                          <span className="px-2 py-0.5 rounded-md bg-amber-100 border border-amber-200 text-amber-950 font-mono font-bold text-[11px] tabular-nums">
+                            Tasa real: Bs.{' '}
+                            {usdtPurchasePreview.effectiveRate.toLocaleString('es-VE', {
+                              minimumFractionDigits: 2,
+                              maximumFractionDigits: 2,
+                            })}{' '}
+                            / USDT
+                          </span>
                         )}
                       </div>
-                    )}
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 text-[11px]">
+                        {/* Deduction card */}
+                        <div className="rounded-lg bg-white border border-rose-200 p-2.5 space-y-1">
+                          <p className="text-[10px] font-bold text-rose-700 uppercase">
+                            Se descuenta de:
+                          </p>
+                          <p className="font-bold text-slate-900 truncate">
+                            {usdtPurchasePreview.sourceAcc?.name || 'Selecciona una cuenta'}
+                          </p>
+                          {usdtPurchasePreview.sourceAcc && usdtPurchasePreview.validSpentBs > 0 && (
+                            <>
+                              <p className="font-mono font-bold text-rose-600 tabular-nums">
+                                -{' '}
+                                {usdtPurchasePreview.sourceAcc.currency === 'BS'
+                                  ? formatBs(usdtPurchasePreview.validSpentBs)
+                                  : formatNativeBalance(
+                                      usdtPurchasePreview.sourceAcc.currency,
+                                      usdtPurchasePreview.sourceDeductNative
+                                    )}
+                              </p>
+                              <p className="text-[10px] text-slate-500 font-mono tabular-nums">
+                                Nuevo saldo:{' '}
+                                <span
+                                  className={
+                                    usdtPurchasePreview.sourceNextNative < 0
+                                      ? 'font-bold text-rose-600'
+                                      : 'font-bold text-slate-800'
+                                  }
+                                >
+                                  {formatNativeBalance(
+                                    usdtPurchasePreview.sourceAcc.currency,
+                                    usdtPurchasePreview.sourceNextNative
+                                  )}
+                                </span>
+                              </p>
+                            </>
+                          )}
+                        </div>
+
+                        {/* Credit card */}
+                        <div className="rounded-lg bg-white border border-emerald-200 p-2.5 space-y-1">
+                          <p className="text-[10px] font-bold text-emerald-700 uppercase">
+                            Ingresa a billetera:
+                          </p>
+                          <p className="font-bold text-slate-900 truncate">
+                            {usdtPurchasePreview.targetAcc?.name || 'Selecciona billetera USDT'}
+                          </p>
+                          {usdtPurchasePreview.targetAcc && usdtPurchasePreview.validUsdt > 0 && (
+                            <>
+                              <p className="font-mono font-bold text-emerald-600 tabular-nums">
+                                +{' '}
+                                {usdtPurchasePreview.validUsdt.toLocaleString('es-VE', {
+                                  minimumFractionDigits: 2,
+                                  maximumFractionDigits: 2,
+                                })}{' '}
+                                USDT
+                              </p>
+                              <p className="text-[10px] text-slate-500 font-mono tabular-nums">
+                                Nuevo saldo:{' '}
+                                <span className="font-bold text-emerald-700">
+                                  {formatNativeBalance(
+                                    usdtPurchasePreview.targetAcc.currency,
+                                    usdtPurchasePreview.targetNextNative
+                                  )}
+                                </span>
+                              </p>
+                            </>
+                          )}
+                        </div>
+                      </div>
+
+                      {usdtPurchasePreview.exceedsSourceBalance && usdtPurchasePreview.sourceAcc && (
+                        <div className="flex items-start gap-1.5 text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-2">
+                          <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0 mt-0.5" />
+                          <span>
+                            El gasto ingresado supera el saldo actual de{' '}
+                            <strong>{usdtPurchasePreview.sourceAcc.name}</strong>. Puedes continuar
+                            y la cuenta quedará en saldo negativo hasta que registres ingresos o ajustes su saldo.
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Reference & Notes */}
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block font-semibold text-slate-700 mb-1">
+                        Referencia / Orden P2P
+                      </label>
+                      <input
+                        type="text"
+                        value={usdtReference}
+                        onChange={(e) => setUsdtReference(e.target.value)}
+                        placeholder="Ej: Pago Móvil #4829 / Binance P2P"
+                        className="w-full px-3 py-2 rounded-xl border border-slate-200 font-mono focus:outline-none focus:ring-2 focus:ring-amber-500/30"
+                      />
+                    </div>
+                    <div>
+                      <label className="block font-semibold text-slate-700 mb-1">
+                        Notas (opcional)
+                      </label>
+                      <input
+                        type="text"
+                        value={usdtNotes}
+                        onChange={(e) => setUsdtNotes(e.target.value)}
+                        placeholder="Ej: Compra para pago a proveedor"
+                        className="w-full px-3 py-2 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-amber-500/30"
+                      />
+                    </div>
                   </div>
-                );
-              })()}
 
-              <div>
-                <label className="block font-semibold text-slate-700 mb-1">
-                  Descripción / Concepto *
-                </label>
-                <input
-                  type="text"
-                  value={movDescription}
-                  onChange={(e) => setMovDescription(e.target.value)}
-                  placeholder={
-                    movType === 'INGRESO'
-                      ? 'Ej: Depósito de ventas en efectivo del día'
-                      : 'Ej: Pago servicio eléctrico / Vale de sueldo'
-                  }
-                  className="w-full px-3 py-2 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-slate-900/15"
-                />
-              </div>
+                  <div className="flex justify-end gap-2 pt-2">
+                    <button
+                      type="button"
+                      onClick={() => setIsMovementModalOpen(false)}
+                      className="px-4 py-2 rounded-xl border border-slate-200 text-slate-600 font-semibold hover:bg-slate-50 cursor-pointer"
+                    >
+                      Cancelar
+                    </button>
+                    <button
+                      type="submit"
+                      className="px-4 py-2 rounded-xl bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold cursor-pointer inline-flex items-center gap-1.5"
+                    >
+                      <ArrowLeftRight className="w-3.5 h-3.5" />
+                      <span>Confirmar Ingreso USDT</span>
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block font-semibold text-slate-700 mb-1">
+                        Cuenta afectada *
+                      </label>
+                      <select
+                        value={movAccountId}
+                        onChange={(e) => handleMovementAccountChange(e.target.value)}
+                        className="w-full px-3 py-2 rounded-xl border border-slate-200 bg-white font-medium focus:outline-none focus:ring-2 focus:ring-slate-900/15"
+                      >
+                        {treasuryAccounts.map((acc) => (
+                          <option key={acc.id} value={acc.id}>
+                            {acc.name} ({formatNativeBalance(acc.currency, acc.nativeBalance)})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
 
-              <div className="grid grid-cols-2 gap-3">
-                <div>
-                  <label className="block font-semibold text-slate-700 mb-1">
-                    Referencia
-                  </label>
-                  <input
-                    type="text"
-                    value={movReference}
-                    onChange={(e) => setMovReference(e.target.value)}
-                    placeholder="Opcional"
-                    className="w-full px-3 py-2 rounded-xl border border-slate-200 font-mono focus:outline-none focus:ring-2 focus:ring-slate-900/15"
-                  />
-                </div>
-                <div>
-                  <label className="block font-semibold text-slate-700 mb-1">
-                    {movType === 'INGRESO' ? 'Origen / Cliente' : 'Beneficiario'}
-                  </label>
-                  <input
-                    type="text"
-                    value={movBeneficiary}
-                    onChange={(e) => setMovBeneficiary(e.target.value)}
-                    placeholder="Opcional"
-                    className="w-full px-3 py-2 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-slate-900/15"
-                  />
-                </div>
-              </div>
+                    <div>
+                      <label className="block font-semibold text-slate-700 mb-1">
+                        Fecha *
+                      </label>
+                      <input
+                        type="date"
+                        value={movDate}
+                        onChange={(e) => setMovDate(e.target.value)}
+                        className="w-full px-3 py-2 rounded-xl border border-slate-200 font-mono focus:outline-none focus:ring-2 focus:ring-slate-900/15"
+                      />
+                    </div>
+                  </div>
 
-              {movType === 'GASTO' && (
-                <label className="flex items-center gap-2 cursor-pointer select-none pt-1">
-                  <input
-                    type="checkbox"
-                    checked={movSyncExpense}
-                    onChange={(e) => setMovSyncExpense(e.target.checked)}
-                    className="rounded border-slate-300 text-slate-900 focus:ring-slate-900"
-                  />
-                  <span className="text-slate-700 font-medium">
-                    Sincronizar también con la vista Gastos del Negocio
-                  </span>
-                </label>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <div className="flex items-center justify-between gap-2 mb-1">
+                        <label className="block font-semibold text-slate-700">
+                          Categoría
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setShowInlineNewMovCat((prev) => !prev);
+                            setInlineNewMovCatName('');
+                          }}
+                          className="text-[11px] font-bold text-amber-700 hover:text-amber-800 inline-flex items-center gap-0.5 cursor-pointer"
+                        >
+                          <Plus className="w-3 h-3" />
+                          <span>{showInlineNewMovCat ? 'Cancelar' : 'Nueva categoría'}</span>
+                        </button>
+                      </div>
+                      {showInlineNewMovCat ? (
+                        <div className="flex items-center gap-1.5">
+                          <input
+                            type="text"
+                            value={inlineNewMovCatName}
+                            onChange={(e) => setInlineNewMovCatName(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                e.preventDefault();
+                                handleInlineAddMovementCategory();
+                              }
+                            }}
+                            placeholder={
+                              movType === 'INGRESO'
+                                ? 'Ej: Comisión, Alquiler, Venta Especial...'
+                                : 'Ej: Combustible, Fletes, Herramientas...'
+                            }
+                            autoFocus
+                            className="flex-1 min-w-0 px-2.5 py-2 rounded-xl border border-amber-400 text-xs focus:outline-none focus:ring-2 focus:ring-amber-500/40"
+                          />
+                          <button
+                            type="button"
+                            onClick={handleInlineAddMovementCategory}
+                            className="px-2.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold cursor-pointer inline-flex items-center gap-1 shrink-0"
+                          >
+                            <Check className="w-3.5 h-3.5" />
+                            Crear
+                          </button>
+                        </div>
+                      ) : movType === 'GASTO' ? (
+                        <select
+                          value={movCategory}
+                          onChange={(e) => {
+                            const nextCat = e.target.value;
+                            setMovCategory(nextCat);
+                            const low = nextCat.toLowerCase();
+                            if ((low.includes('vale') || low.includes('adelanto')) && !movIsSalaryAdvance) {
+                              setMovIsSalaryAdvance(true);
+                              if (!movLinkedCommitmentId && pendingWorkerCommitments.length > 0) {
+                                handleSelectMovSalaryCommitment(pendingWorkerCommitments[0].id);
+                              }
+                            }
+                          }}
+                          className="w-full px-3 py-2 rounded-xl border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-slate-900/15"
+                        >
+                          {expenseCategories.map((cat) => (
+                            <option key={cat} value={cat}>
+                              {cat}
+                            </option>
+                          ))}
+                        </select>
+                      ) : (
+                        <select
+                          value={movCategory}
+                          onChange={(e) => setMovCategory(e.target.value)}
+                          className="w-full px-3 py-2 rounded-xl border border-slate-200 bg-white focus:outline-none focus:ring-2 focus:ring-slate-900/15"
+                        >
+                          {incomeCategories.map((cat) => (
+                            <option key={cat} value={cat}>
+                              {cat}
+                            </option>
+                          ))}
+                        </select>
+                      )}
+                    </div>
+
+                    <div>
+                      <label className="block font-semibold text-slate-700 mb-1">
+                        Monto ({movInputCurrency}) *
+                      </label>
+                      <div className="flex gap-1.5">
+                        <input
+                          type="number"
+                          step="any"
+                          min="0.01"
+                          value={movAmountInput}
+                          onChange={(e) => setMovAmountInput(e.target.value)}
+                          placeholder="0.00"
+                          className="flex-1 min-w-0 px-3 py-2 rounded-xl border border-slate-200 font-mono text-sm font-bold focus:outline-none focus:ring-2 focus:ring-slate-900/15"
+                        />
+                        <select
+                          value={movInputCurrency}
+                          onChange={(e) =>
+                            setMovInputCurrency(e.target.value as 'USD' | 'BS' | 'USDT')
+                          }
+                          className="px-2.5 py-2 rounded-xl border border-slate-200 bg-white font-mono font-semibold"
+                        >
+                          <option value="USD">USD</option>
+                          <option value="BS">BS</option>
+                          <option value="USDT">USDT</option>
+                        </select>
+                      </div>
+                      {selectedMovementPreviewUSD > 0 && (
+                        <p className="text-[10px] text-slate-500 mt-1 font-mono tabular-nums">
+                          Equivalente: {formatUSD(selectedMovementPreviewUSD)} ·{' '}
+                          {formatBs(selectedMovementPreviewUSD * bcvRate)}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+
+                  {movType === 'GASTO' && (() => {
+                    const selectedCmt = treasuryCommitments.find(
+                      (c) => c.id === movLinkedCommitmentId
+                    );
+                    const deductionUSD = selectedCmt
+                      ? Math.min(selectedCmt.amountUSD, selectedMovementPreviewUSD)
+                      : 0;
+                    const remainingAfter = selectedCmt
+                      ? Math.max(0, Math.round((selectedCmt.amountUSD - deductionUSD) * 100) / 100)
+                      : 0;
+
+                    return (
+                      <div className="p-3.5 rounded-xl bg-indigo-50/70 border border-indigo-200 space-y-2.5">
+                        <label className="flex items-start gap-2 cursor-pointer select-none">
+                          <input
+                            type="checkbox"
+                            checked={movIsSalaryAdvance}
+                            onChange={(e) => {
+                              const checked = e.target.checked;
+                              setMovIsSalaryAdvance(checked);
+                              if (movError) setMovError('');
+                              if (checked) {
+                                if (!movLinkedCommitmentId && pendingWorkerCommitments.length > 0) {
+                                  handleSelectMovSalaryCommitment(pendingWorkerCommitments[0].id);
+                                }
+                              } else {
+                                setMovLinkedCommitmentId('');
+                              }
+                            }}
+                            className="mt-0.5 rounded border-indigo-300 text-indigo-600 focus:ring-indigo-500"
+                          />
+                          <div className="min-w-0">
+                            <span className="font-bold text-slate-900 flex items-center gap-1.5">
+                              <UserCheck className="w-3.5 h-3.5 text-indigo-700 shrink-0" />
+                              <span>Descontar como vale al sueldo de un trabajador</span>
+                            </span>
+                            <span className="text-[11px] text-slate-600 block">
+                              Resta este monto de los gastos fijos / nómina por pagar asignados al trabajador.
+                            </span>
+                          </div>
+                        </label>
+
+                        {movIsSalaryAdvance && (
+                          <div className="pl-5 space-y-2">
+                            {pendingWorkerCommitments.length === 0 ? (
+                              <p className="text-[11px] text-slate-600 bg-white border border-indigo-200 rounded-lg p-2.5">
+                                No hay sueldos ni gastos fijos pendientes en Planificación de Pagos. Agrega primero el sueldo del trabajador.
+                              </p>
+                            ) : (
+                              <>
+                                <select
+                                  value={movLinkedCommitmentId}
+                                  onChange={(e) => handleSelectMovSalaryCommitment(e.target.value)}
+                                  className="w-full px-3 py-2 rounded-xl border border-indigo-300 bg-white font-medium text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                                >
+                                  <option value="">-- Selecciona el sueldo / trabajador --</option>
+                                  {pendingWorkerCommitments.map((cm) => (
+                                    <option key={cm.id} value={cm.id}>
+                                      [{getCommitmentCategoryMeta(cm.category).shortLabel}]{' '}
+                                      {cm.workerName ? `${cm.workerName} · ` : ''}
+                                      {cm.title} — Por pagar: {formatUSD(cm.amountUSD)}
+                                    </option>
+                                  ))}
+                                </select>
+
+                                {selectedCmt && (
+                                  <div className="bg-white border border-indigo-200 rounded-lg px-3 py-2 flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                                    <span className="text-slate-600">
+                                      Saldo restante del trabajador tras el vale:
+                                    </span>
+                                    <span
+                                      className={`font-mono font-bold tabular-nums ${
+                                        remainingAfter <= 0.009
+                                          ? 'text-emerald-700'
+                                          : 'text-indigo-800'
+                                      }`}
+                                    >
+                                      {formatUSD(remainingAfter)}
+                                      {remainingAfter <= 0.009 && selectedMovementPreviewUSD > 0
+                                        ? ' (Liquidado)'
+                                        : ''}
+                                    </span>
+                                  </div>
+                                )}
+                              </>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
+
+                  <div>
+                    <label className="block font-semibold text-slate-700 mb-1">
+                      Descripción / Concepto *
+                    </label>
+                    <input
+                      type="text"
+                      value={movDescription}
+                      onChange={(e) => setMovDescription(e.target.value)}
+                      placeholder={
+                        movType === 'INGRESO'
+                          ? 'Ej: Depósito de ventas en efectivo del día'
+                          : 'Ej: Pago servicio eléctrico / Vale de sueldo'
+                      }
+                      className="w-full px-3 py-2 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-slate-900/15"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="block font-semibold text-slate-700 mb-1">
+                        Referencia
+                      </label>
+                      <input
+                        type="text"
+                        value={movReference}
+                        onChange={(e) => setMovReference(e.target.value)}
+                        placeholder="Opcional"
+                        className="w-full px-3 py-2 rounded-xl border border-slate-200 font-mono focus:outline-none focus:ring-2 focus:ring-slate-900/15"
+                      />
+                    </div>
+                    <div>
+                      <label className="block font-semibold text-slate-700 mb-1">
+                        {movType === 'INGRESO' ? 'Origen / Cliente' : 'Beneficiario'}
+                      </label>
+                      <input
+                        type="text"
+                        value={movBeneficiary}
+                        onChange={(e) => setMovBeneficiary(e.target.value)}
+                        placeholder="Opcional"
+                        className="w-full px-3 py-2 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-slate-900/15"
+                      />
+                    </div>
+                  </div>
+
+                  {movType === 'GASTO' && (
+                    <label className="flex items-center gap-2 cursor-pointer select-none pt-1">
+                      <input
+                        type="checkbox"
+                        checked={movSyncExpense}
+                        onChange={(e) => setMovSyncExpense(e.target.checked)}
+                        className="rounded border-slate-300 text-slate-900 focus:ring-slate-900"
+                      />
+                      <span className="text-slate-700 font-medium">
+                        Sincronizar también con la vista Gastos del Negocio
+                      </span>
+                    </label>
+                  )}
+
+                  <div className="flex justify-end gap-2 pt-2">
+                    <button
+                      type="button"
+                      onClick={() => setIsMovementModalOpen(false)}
+                      className="px-4 py-2 rounded-xl border border-slate-200 text-slate-600 font-semibold hover:bg-slate-50 cursor-pointer"
+                    >
+                      Cancelar
+                    </button>
+                    <button
+                      type="submit"
+                      className={`px-4 py-2 rounded-xl text-white font-bold cursor-pointer ${
+                        movType === 'INGRESO'
+                          ? 'bg-emerald-600 hover:bg-emerald-700'
+                          : 'bg-slate-900 hover:bg-slate-800'
+                      }`}
+                    >
+                      {movType === 'INGRESO' ? 'Guardar Ingreso' : 'Guardar Gasto'}
+                    </button>
+                  </div>
+                </>
               )}
+            </form>
+          </div>
+        </div>
+      )}
 
-              <div className="flex justify-end gap-2 pt-2">
+      {/* Unified Modal: Gestor de Categorías de Registros y Gastos */}
+      {isCategoriesModalOpen && (
+        <div className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl border border-slate-200 w-full max-w-lg shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
+            <div className="px-5 py-4 border-b border-slate-200 flex items-center justify-between shrink-0 bg-slate-50/70">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-amber-100 text-amber-700 flex items-center justify-center shrink-0">
+                  <FolderPlus className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-slate-900">
+                    Categorías de Registros y Gastos
+                  </h3>
+                  <p className="text-[11px] text-slate-500">
+                    Crea y administra categorías para gastos, ingresos y pagos planificados
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsCategoriesModalOpen(false)}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-200/70 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-5 space-y-4 overflow-y-auto text-xs">
+              {/* Tabs: Gastos | Ingresos / Registros | Pagos Planificados */}
+              <div className="grid grid-cols-3 gap-1.5 p-1 rounded-xl bg-slate-100">
                 <button
                   type="button"
-                  onClick={() => setIsMovementModalOpen(false)}
-                  className="px-4 py-2 rounded-xl border border-slate-200 text-slate-600 font-semibold hover:bg-slate-50 cursor-pointer"
-                >
-                  Cancelar
-                </button>
-                <button
-                  type="submit"
-                  className={`px-4 py-2 rounded-xl text-white font-bold cursor-pointer ${
-                    movType === 'INGRESO'
-                      ? 'bg-emerald-600 hover:bg-emerald-700'
-                      : 'bg-slate-900 hover:bg-slate-800'
+                  onClick={() => {
+                    setCatManagerTab('GASTO');
+                    setCatManagerFeedback(null);
+                  }}
+                  className={`py-2 px-2 rounded-lg font-bold transition-colors cursor-pointer ${
+                    catManagerTab === 'GASTO'
+                      ? 'bg-rose-600 text-white shadow-xs'
+                      : 'text-slate-600 hover:text-slate-900'
                   }`}
                 >
-                  {movType === 'INGRESO' ? 'Guardar Ingreso' : 'Guardar Gasto'}
+                  Gastos ({expenseCategories.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCatManagerTab('INGRESO');
+                    setCatManagerFeedback(null);
+                  }}
+                  className={`py-2 px-2 rounded-lg font-bold transition-colors cursor-pointer ${
+                    catManagerTab === 'INGRESO'
+                      ? 'bg-emerald-600 text-white shadow-xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  Ingresos ({incomeCategories.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setCatManagerTab('COMPROMISO');
+                    setCatManagerFeedback(null);
+                  }}
+                  className={`py-2 px-2 rounded-lg font-bold transition-colors cursor-pointer ${
+                    catManagerTab === 'COMPROMISO'
+                      ? 'bg-slate-900 text-white shadow-xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  Planificados ({commitmentCategories.length})
                 </button>
               </div>
-            </form>
+
+              {/* Add new category form */}
+              <form onSubmit={handleAddCategoryFromManager} className="flex items-center gap-2">
+                <input
+                  type="text"
+                  value={newCatManagerInput}
+                  onChange={(e) => setNewCatManagerInput(e.target.value)}
+                  placeholder={
+                    catManagerTab === 'GASTO'
+                      ? 'Nueva categoría de gasto (ej: Combustible, Fletes, Comida...)'
+                      : catManagerTab === 'INGRESO'
+                        ? 'Nueva categoría de ingreso/registro (ej: Comisiones, Alquiler...)'
+                        : 'Nueva categoría de pago planificado (ej: Impuestos, Seguro...)'
+                  }
+                  className="flex-1 px-3 py-2.5 border border-slate-300 rounded-xl text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-amber-500"
+                />
+                <button
+                  type="submit"
+                  className="px-4 py-2.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs rounded-xl cursor-pointer inline-flex items-center gap-1 shrink-0"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  Agregar
+                </button>
+              </form>
+
+              {catManagerFeedback && (
+                <p className="text-xs font-semibold text-emerald-800 bg-emerald-50 border border-emerald-200 rounded-xl px-3 py-2">
+                  {catManagerFeedback}
+                </p>
+              )}
+
+              {/* Active tab category list */}
+              <div className="max-h-72 overflow-y-auto divide-y divide-slate-100 border border-slate-200 rounded-xl">
+                {catManagerTab === 'GASTO' &&
+                  expenseCategories.map((cat) => {
+                    const isCustom = !defaultExpenseCatSet.has(cat.toLowerCase());
+                    return (
+                      <div
+                        key={cat}
+                        className="px-3.5 py-2.5 flex items-center justify-between gap-2"
+                      >
+                        <div className="min-w-0">
+                          <span className="font-semibold text-slate-800 block truncate">
+                            {cat}
+                          </span>
+                          <span className="text-[10px] text-slate-400">
+                            {isCustom ? 'Categoría personalizada · Disponible en Gastos y Tesorería' : 'Predeterminada'}
+                          </span>
+                        </div>
+                        {isCustom && (
+                          <button
+                            type="button"
+                            onClick={() => deleteExpenseCategory(cat)}
+                            className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg cursor-pointer"
+                            title="Eliminar categoría personalizada"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
+
+                {catManagerTab === 'INGRESO' &&
+                  incomeCategories.map((cat) => {
+                    const isCustom = !defaultIncomeCatSet.has(cat.toLowerCase());
+                    return (
+                      <div
+                        key={cat}
+                        className="px-3.5 py-2.5 flex items-center justify-between gap-2"
+                      >
+                        <div className="min-w-0">
+                          <span className="font-semibold text-slate-800 block truncate">
+                            {cat}
+                          </span>
+                          <span className="text-[10px] text-slate-400">
+                            {isCustom ? 'Categoría personalizada de ingresos/registros' : 'Predeterminada'}
+                          </span>
+                        </div>
+                        {isCustom && (
+                          <button
+                            type="button"
+                            onClick={() => deleteIncomeCategory(cat)}
+                            className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg cursor-pointer"
+                            title="Eliminar categoría personalizada"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
+
+                {catManagerTab === 'COMPROMISO' &&
+                  commitmentCategories.map((cat) => (
+                    <div
+                      key={cat.id}
+                      className="px-3.5 py-2.5 flex items-center justify-between gap-2"
+                    >
+                      <div className="min-w-0">
+                        <span className="font-semibold text-slate-800 block truncate">
+                          {cat.label}
+                        </span>
+                        <span className="text-[10px] text-slate-400">
+                          {cat.isCustom ? 'Categoría personalizada de pagos planificados' : 'Predeterminada'}
+                        </span>
+                      </div>
+                      {cat.isCustom && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            deleteCommitmentCategory(cat.id);
+                            if (commitmentCategoryFilter === cat.id) {
+                              setCommitmentCategoryFilter('ALL');
+                            }
+                          }}
+                          className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg cursor-pointer"
+                          title="Eliminar categoría personalizada"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </div>
+                  ))}
+              </div>
+
+              <div className="flex justify-end pt-1">
+                <button
+                  type="button"
+                  onClick={() => setIsCategoriesModalOpen(false)}
+                  className="px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold rounded-xl cursor-pointer"
+                >
+                  Listo
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}

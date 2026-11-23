@@ -309,7 +309,7 @@ export const ExpensesView: React.FC = () => {
     return treasuryCommitments
       .filter(
         (cm) =>
-          (!cm.isPaid && (cm.category === 'NOMINA_SUELDOS' || cm.category === 'GASTOS_FIJOS')) ||
+          (!cm.isPaid && cm.category !== 'PROVEEDORES') ||
           (editingExpense && cm.id === editingExpense.linkedCommitmentId)
       )
       .sort((a, b) => {
@@ -1259,7 +1259,9 @@ export const ExpensesView: React.FC = () => {
                                   const categoryTag =
                                     cm.category === 'NOMINA_SUELDOS'
                                       ? 'Nómina/Sueldo'
-                                      : 'Gasto Fijo';
+                                      : cm.category === 'GASTOS_FIJOS'
+                                        ? 'Gasto Fijo'
+                                        : cm.category;
                                   const workerTag = cm.workerName?.trim()
                                     ? `${cm.workerName.trim()} · `
                                     : '';

@@ -343,6 +343,8 @@ export interface BusinessSettings {
   warrantyPolicy: string;
   customCategories?: string[];
   customExpenseCategories?: string[];
+  customIncomeCategories?: string[];
+  customCommitmentCategories?: string[];
   customExpensePosBanks?: string[];
 }
 
@@ -516,6 +518,15 @@ export const DEFAULT_EXPENSE_CATEGORIES: string[] = [
   'Otros Gastos',
 ];
 
+export const DEFAULT_INCOME_CATEGORIES: string[] = [
+  'Ingreso de Ventas / Caja',
+  'Cobro de Clientes / Abonos',
+  'Servicios de Taller',
+  'Aporte de Capital / Socios',
+  'Reembolso / Devolución',
+  'Otros Ingresos',
+];
+
 export const DEFAULT_EXPENSE_POS_BANKS: string[] = [
   'Banesco Personal',
   'Provincial',
@@ -578,7 +589,17 @@ export interface TreasuryAccount {
   updatedAt?: string;
 }
 
-export type TreasuryCommitmentCategory = 'GASTOS_FIJOS' | 'NOMINA_SUELDOS' | 'PROVEEDORES';
+export type TreasuryCommitmentCategory =
+  | 'GASTOS_FIJOS'
+  | 'NOMINA_SUELDOS'
+  | 'PROVEEDORES'
+  | (string & {});
+
+export const DEFAULT_COMMITMENT_CATEGORIES: Array<{ id: string; label: string }> = [
+  { id: 'GASTOS_FIJOS', label: 'Gastos Fijos' },
+  { id: 'NOMINA_SUELDOS', label: 'Nómina / Sueldos' },
+  { id: 'PROVEEDORES', label: 'Proveedores' },
+];
 
 export type TreasuryCommitmentPaymentCurrency = 'EFECTIVO_USD' | 'BS';
 
@@ -636,6 +657,7 @@ export interface TreasuryMovement {
   salaryAdvanceCommitmentId?: string; // Compromiso de sueldo/gasto fijo descontado por vale
   salaryAdvanceAppliedUSD?: number; // Monto USD descontado al compromiso por este vale
   debtId?: string; // ID de la deuda vinculada cuando es un abono o pago de deuda
+  linkedMovementId?: string; // ID del movimiento hermano (ej. compra de USDT que descuenta Bs de otra cuenta)
   notes?: string;
   createdAt: string;
   updatedAt?: string;

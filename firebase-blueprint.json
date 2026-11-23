@@ -55,7 +55,9 @@
         "bcvLastUpdated": { "type": "string", "description": "Hora de actualización" },
         "bcvSyncedAtISO": { "type": "string", "description": "Timestamp ISO de última sincronización oficial BCV" },
         "customCategories": { "type": "array", "description": "Categorías personalizadas de inventario" },
-        "customExpenseCategories": { "type": "array", "description": "Categorías personalizadas de gastos del negocio" }
+        "customExpenseCategories": { "type": "array", "description": "Categorías personalizadas de gastos del negocio" },
+        "customIncomeCategories": { "type": "array", "description": "Categorías personalizadas de ingresos y registros de tesorería" },
+        "customCommitmentCategories": { "type": "array", "description": "Categorías personalizadas de compromisos y gastos planificados" }
       },
       "required": ["commercialName", "rif", "phone", "bcvRate"]
     },
@@ -382,6 +384,7 @@
         "salaryAdvanceCommitmentId": { "type": "string", "description": "ID del compromiso de sueldo descontado por vale" },
         "salaryAdvanceAppliedUSD": { "type": "number", "description": "Monto USD descontado del compromiso de sueldo" },
         "debtId": { "type": "string", "description": "ID de la deuda vinculada al pago o abono" },
+        "linkedMovementId": { "type": "string", "description": "ID del movimiento vinculado (ej. compra de USDT descontada de otra cuenta)" },
         "createdAt": { "type": "string", "description": "Fecha de creación ISO" }
       },
       "required": ["id", "movementNumber", "date", "type", "accountId", "description", "amountUSD", "createdAt"]

@@ -243,11 +243,21 @@ export interface ServiceItem {
   notes?: string;
 }
 
+export interface WorkshopServicePreset {
+  id: string;
+  name: string;
+  cost: number; // Costo base preguardado en USD ($)
+  scope?: 'GENERAL' | 'ASIENTO';
+}
+
 export type FuelLevel = 'Vacío' | '1/4' | '1/2' | '3/4' | 'Lleno';
+
+export type ServiceOrderEntryType = 'MOTOCICLETA' | 'ASIENTO';
 
 export interface ServiceOrder {
   id: string;
   orderNumber: string; // e.g., ORD-2026-0045
+  entryType?: ServiceOrderEntryType; // 'MOTOCICLETA' (por defecto) o 'ASIENTO' (solo ingreso de asiento)
   customerId: string;
   customerName: string;
   customerPhone: string;
@@ -255,8 +265,10 @@ export interface ServiceOrder {
   motorcycle: Motorcycle;
   serviceType: WorkshopServiceType;
   fuelLevel: FuelLevel;
-  reportedIssue: string; // Motivo de ingreso / falla reportada
+  reportedIssue: string; // Motivo de ingreso / falla reportada / trabajo por hacerle al asiento
   diagnosis?: string; // Diagnóstico técnico del mecánico/tapicero
+  seatIntakePhoto?: string; // Foto obligatoria de cómo se recibió el asiento (Data URL comprimido)
+  seatDeliveryPhoto?: string; // Foto de cómo se entregó el asiento (Data URL comprimido)
   partsUsed: SaleItem[]; // Repuestos sacados de inventario o agregados (en USD)
   laborCost: number; // Costo total de mano de obra en USD
   servicesList?: ServiceItem[]; // Servicios adicionales y reparaciones detalladas
@@ -352,6 +364,7 @@ export interface BusinessSettings {
   customIncomeCategories?: string[];
   customCommitmentCategories?: string[];
   customExpensePosBanks?: string[];
+  customWorkshopServicePresets?: WorkshopServicePreset[];
 }
 
 export interface Technician {

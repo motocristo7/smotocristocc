@@ -57,7 +57,8 @@
         "customCategories": { "type": "array", "description": "Categorías personalizadas de inventario" },
         "customExpenseCategories": { "type": "array", "description": "Categorías personalizadas de gastos del negocio" },
         "customIncomeCategories": { "type": "array", "description": "Categorías personalizadas de ingresos y registros de tesorería" },
-        "customCommitmentCategories": { "type": "array", "description": "Categorías personalizadas de compromisos y gastos planificados" }
+        "customCommitmentCategories": { "type": "array", "description": "Categorías personalizadas de compromisos y gastos planificados" },
+        "customWorkshopServicePresets": { "type": "array", "description": "Servicios preguardados personalizados de taller y asientos de motos" }
       },
       "required": ["commercialName", "rif", "phone", "bcvRate"]
     },
@@ -118,13 +119,16 @@
       "properties": {
         "id": { "type": "string", "description": "ID de la orden" },
         "orderNumber": { "type": "string", "description": "Número correlativo de orden" },
+        "entryType": { "type": "string", "description": "MOTOCICLETA o ASIENTO" },
         "customerId": { "type": "string", "description": "ID del cliente" },
         "customerName": { "type": "string", "description": "Nombre del cliente" },
         "customerPhone": { "type": "string", "description": "Teléfono del cliente" },
         "customerDocument": { "type": "string", "description": "Cédula o RIF" },
         "serviceType": { "type": "string", "description": "Tipo de servicio (Mecánica, Tapicería, etc.)" },
         "fuelLevel": { "type": "string", "description": "Nivel de gasolina al ingresar" },
-        "reportedIssue": { "type": "string", "description": "Falla o solicitud del cliente" },
+        "reportedIssue": { "type": "string", "description": "Falla o solicitud del cliente / trabajo a realizar" },
+        "seatIntakePhoto": { "type": "string", "description": "Foto comprimida de cómo se recibió el asiento" },
+        "seatDeliveryPhoto": { "type": "string", "description": "Foto comprimida de cómo se entregó el asiento" },
         "totalCost": { "type": "number", "description": "Costo total en USD" },
         "totalCostBs": { "type": "number", "description": "Costo total en Bs." },
         "status": { "type": "string", "description": "CREADA, EN_PROCESO, CULMINADA o ENTREGADA" },
@@ -135,7 +139,7 @@
         "createdAt": { "type": "string", "description": "Fecha de ingreso ISO" },
         "updatedAt": { "type": "string", "description": "Fecha de actualización ISO" }
       },
-      "required": ["id", "orderNumber", "customerName", "customerPhone", "serviceType", "status", "createdAt"]
+      "required": ["id", "orderNumber", "customerName", "serviceType", "status", "createdAt"]
     },
     "OnlineOrder": {
       "title": "OnlineOrder",

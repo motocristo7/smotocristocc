@@ -6411,7 +6411,10 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       if (existingComm.status === 'PENDIENTE' && existingComm.paidAmountUSD <= 0.01) {
         updateServiceCommission(existingComm.id, {
           baseAmountUSD: baseUSD,
-          motorcycleLabel: `${order.motorcycle.brand} ${order.motorcycle.model} (${order.motorcycle.plate})`,
+          motorcycleLabel:
+            order.entryType === 'ASIENTO'
+              ? `Asiento · ${order.motorcycle.model}`
+              : `${order.motorcycle.brand} ${order.motorcycle.model} (${order.motorcycle.plate})`,
           customerName: order.customerName,
           serviceDescription: getOrderServiceDescription(order),
         });
@@ -6474,7 +6477,10 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       technicianId: tech.id,
       technicianName: tech.name,
       technicianPhone: tech.phone,
-      motorcycleLabel: `${order.motorcycle.brand} ${order.motorcycle.model} · ${order.motorcycle.plate}`,
+      motorcycleLabel:
+        order.entryType === 'ASIENTO'
+          ? `Asiento · ${order.motorcycle.model}`
+          : `${order.motorcycle.brand} ${order.motorcycle.model} · ${order.motorcycle.plate}`,
       customerName: order.customerName,
       serviceDescription: getOrderServiceDescription(order),
       baseAmountUSD,

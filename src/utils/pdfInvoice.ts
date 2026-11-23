@@ -1064,36 +1064,57 @@ export async function generateServiceOrderInvoicePDF(
   doc.setFont('helvetica', 'normal');
   doc.text(`${formattedDate} · Tasa BCV: Bs. ${rate.toFixed(2)}`, margin + 21, y + 23);
 
-  // Right: Motocicleta
+  // Right: Motocicleta o Asiento
+  const isSeatOrder = order.entryType === 'ASIENTO';
   const rightInfoX = midX + 3.5;
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(7.5);
-  doc.setTextColor(180, 83, 9);
-  doc.text('FICHA DE LA MOTOCICLETA', rightInfoX, y + 4.5);
+  doc.setTextColor(isSeatOrder ? 109 : 180, isSeatOrder ? 40 : 83, isSeatOrder ? 217 : 9);
+  doc.text(isSeatOrder ? 'FICHA DE INGRESO DE ASIENTO' : 'FICHA DE LA MOTOCICLETA', rightInfoX, y + 4.5);
 
   doc.setFontSize(7.8);
   doc.setTextColor(15, 23, 42);
-  doc.setFont('helvetica', 'bold');
-  doc.text('Moto:', rightInfoX, y + 9.5);
-  doc.setFont('helvetica', 'normal');
-  const motoLabel = `${order.motorcycle.brand} ${order.motorcycle.model}${order.motorcycle.year ? ` (${order.motorcycle.year})` : ''}`;
-  doc.text(doc.splitTextToSize(motoLabel, 66)[0] || '', rightInfoX + 16, y + 9.5);
+  if (isSeatOrder) {
+    doc.setFont('helvetica', 'bold');
+    doc.text('Ingreso:', rightInfoX, y + 9.5);
+    doc.setFont('helvetica', 'normal');
+    doc.text('Asiento de Motocicleta (Tapicería)', rightInfoX + 16, y + 9.5);
 
-  doc.setFont('helvetica', 'bold');
-  doc.text('Placa:', rightInfoX, y + 14);
-  doc.setFont('helvetica', 'bold');
-  doc.text(`${(order.motorcycle.plate || '').toUpperCase()}`, rightInfoX + 16, y + 14);
-  doc.setFont('helvetica', 'normal');
-  doc.text(`· Color: ${order.motorcycle.color || 'N/A'}`, rightInfoX + 36, y + 14);
+    doc.setFont('helvetica', 'bold');
+    doc.text('Modelo:', rightInfoX, y + 14);
+    doc.setFont('helvetica', 'bold');
+    doc.text(doc.splitTextToSize(order.motorcycle.model || 'N/A', 66)[0] || '', rightInfoX + 16, y + 14);
 
-  doc.setFont('helvetica', 'bold');
-  doc.text('Km / Gas:', rightInfoX, y + 18.5);
-  doc.setFont('helvetica', 'normal');
-  doc.text(
-    `${(order.motorcycle.mileage || 0).toLocaleString()} km · Gasolina: ${order.fuelLevel || '1/2'}`,
-    rightInfoX + 16,
-    y + 18.5
-  );
+    doc.setFont('helvetica', 'bold');
+    doc.text('Fotos:', rightInfoX, y + 18.5);
+    doc.setFont('helvetica', 'normal');
+    const photoSummary = `${order.seatIntakePhoto ? 'Recibo ✓' : 'Sin recibo'} · ${
+      order.seatDeliveryPhoto ? 'Entrega ✓' : 'Entrega pendiente'
+    }`;
+    doc.text(photoSummary, rightInfoX + 16, y + 18.5);
+  } else {
+    doc.setFont('helvetica', 'bold');
+    doc.text('Moto:', rightInfoX, y + 9.5);
+    doc.setFont('helvetica', 'normal');
+    const motoLabel = `${order.motorcycle.brand} ${order.motorcycle.model}${order.motorcycle.year ? ` (${order.motorcycle.year})` : ''}`;
+    doc.text(doc.splitTextToSize(motoLabel, 66)[0] || '', rightInfoX + 16, y + 9.5);
+
+    doc.setFont('helvetica', 'bold');
+    doc.text('Placa:', rightInfoX, y + 14);
+    doc.setFont('helvetica', 'bold');
+    doc.text(`${(order.motorcycle.plate || '').toUpperCase()}`, rightInfoX + 16, y + 14);
+    doc.setFont('helvetica', 'normal');
+    doc.text(`· Color: ${order.motorcycle.color || 'N/A'}`, rightInfoX + 36, y + 14);
+
+    doc.setFont('helvetica', 'bold');
+    doc.text('Km / Gas:', rightInfoX, y + 18.5);
+    doc.setFont('helvetica', 'normal');
+    doc.text(
+      `${(order.motorcycle.mileage || 0).toLocaleString()} km · Gasolina: ${order.fuelLevel || '1/2'}`,
+      rightInfoX + 16,
+      y + 18.5
+    );
+  }
 
   doc.setFont('helvetica', 'bold');
   doc.text('Servicio:', rightInfoX, y + 23);
@@ -1103,7 +1124,7 @@ export async function generateServiceOrderInvoicePDF(
 
   y += infoBoxHeight + 5;
 
-  // --- QUÉ SE LE HIZO A LA MOTO (REPORTE Y DIAGNÓSTICO) ---
+  // --- QUÉ SE LE HIZO A LA MOTO / ASIENTO (REPORTE Y DIAGNÓSTICO) ---
   const issueLines: string[] = doc.splitTextToSize(order.reportedIssue || 'Revisión y servicio técnico general.', contentWidth - 8);
   const diagLines: string[] = order.diagnosis
     ? doc.splitTextToSize(order.diagnosis, contentWidth - 8)
@@ -1124,7 +1145,11 @@ export async function generateServiceOrderInvoicePDF(
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(7.8);
   doc.setTextColor(15, 23, 42);
-  doc.text('TRABAJO REALIZADO Y DIAGNÓSTICO DE LA MOTOCICLETA:', margin + 4, workY);
+  doc.text(
+    isSeatOrder ? 'TRABAJO POR HACER / REALIZADO EN EL ASIENTO:' : 'TRABAJO REALIZADO Y DIAGNÓSTICO DE LA MOTOCICLETA:',
+    margin + 4,
+    workY
+  );
 
   workY += 4.2;
   doc.setFont('helvetica', 'bold');

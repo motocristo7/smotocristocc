@@ -349,20 +349,29 @@ export function buildServiceStatusWhatsAppMessage(order: ServiceOrder, settings:
   const trackingLink = `${appOrigin}/?trackPhone=${encodeURIComponent(order.customerPhone)}`;
   const qrImageLink = `${appOrigin}${settings.bankDetails.pagoMovilQrUrl || '/assets/pagomovil_qr.jpeg'}`;
 
+  const isSeatOrder = order.entryType === 'ASIENTO';
   let statusHeader = '';
 
   switch (order.status) {
     case 'CREADA':
-      statusHeader = '📋 *ORDEN DE SERVICIO REGISTRADA (EN ESPERA)*';
+      statusHeader = isSeatOrder
+        ? '📋 *ORDEN DE ASIENTO REGISTRADA (EN ESPERA)*'
+        : '📋 *ORDEN DE SERVICIO REGISTRADA (EN ESPERA)*';
       break;
     case 'EN_PROCESO':
-      statusHeader = '🔧 *TU MOTO ESTÁ EN PROCESO DE SERVICIO*';
+      statusHeader = isSeatOrder
+        ? '✂️ *TU ASIENTO ESTÁ EN PROCESO DE TRABAJO*'
+        : '🔧 *TU MOTO ESTÁ EN PROCESO DE SERVICIO*';
       break;
     case 'CULMINADA':
-      statusHeader = '✅ *¡TRABAJO CULMINADO - LISTA PARA ENTREGA!*';
+      statusHeader = isSeatOrder
+        ? '✅ *¡ASIENTO LISTO PARA ENTREGA!*'
+        : '✅ *¡TRABAJO CULMINADO - LISTA PARA ENTREGA!*';
       break;
     case 'ENTREGADA':
-      statusHeader = '🏁 *VEHÍCULO ENTREGADO AL CLIENTE*';
+      statusHeader = isSeatOrder
+        ? '🏁 *ASIENTO ENTREGADO AL CLIENTE*'
+        : '🏁 *VEHÍCULO ENTREGADO AL CLIENTE*';
       break;
   }
 
@@ -374,16 +383,19 @@ export function buildServiceStatusWhatsAppMessage(order: ServiceOrder, settings:
     ? `\n🔩 *Repuestos e insumos utilizados:*\n` + order.partsUsed.map(p => `▪ ${p.quantity}x ${p.name} (${formatUSD(p.total)} / ${formatBs(p.total * rate)})`).join('\n')
     : '';
 
+  const vehicleBlock = isSeatOrder
+    ? `🪑 *INGRESO DE ASIENTO* · Modelo de Moto: *${moto.model || 'N/A'}*`
+    : `🛵 *MOTO:* ${moto.brand} ${moto.model} · Placa: *${moto.plate.toUpperCase()}*\n🎨 Color: ${moto.color} | 🧭 Km: ${moto.mileage.toLocaleString()} km`;
+
   const message = `🏍️ *${settings.name.toUpperCase()}* 🏍️
 ───────────────────────
 ${statusHeader}
 🔖 *Orden:* #${order.orderNumber}
 👤 Cliente: *${order.customerName}*
-🛵 *MOTO:* ${moto.brand} ${moto.model} · Placa: *${moto.plate.toUpperCase()}*
-🎨 Color: ${moto.color} | 🧭 Km: ${moto.mileage.toLocaleString()} km
+${vehicleBlock}
 🛠️ Tipo de Servicio: *${order.serviceType}*
 ───────────────────────
-📝 *Trabajo Solicitado / Falla:*
+📝 *${isSeatOrder ? 'Trabajo por Hacerle al Asiento' : 'Trabajo Solicitado / Falla'}:*
 ${order.reportedIssue}
 ${order.diagnosis ? `\n🔍 *Diagnóstico Técnico:* ${order.diagnosis}` : ''}
 ${servicesText}
@@ -769,18 +781,21 @@ export function buildTechnicianAssignedOrderWhatsAppMessage(
       ? `\n💼 *Tu Comisión (${commissionRate}%):* *${formatUSD(estimatedCommissionUSD)}* (${formatBs(estimatedCommissionUSD * rate)})`
       : '';
 
+  const isSeatOrder = order.entryType === 'ASIENTO';
+  const techVehicleBlock = isSeatOrder
+    ? `🪑 *Ingreso de Asiento* · Modelo de Moto: *${moto.model || 'N/A'}*`
+    : `🛵 *Moto:* ${moto.brand} ${moto.model}${moto.year ? ` (${moto.year})` : ''}\n🪪 *Placa:* *${moto.plate.toUpperCase()}*\n🎨 Color: ${moto.color || 'N/A'} | 🧭 Km: ${moto.mileage.toLocaleString()} | ⛽ Gas: ${order.fuelLevel}`;
+
   const message = `🔧 *${businessName}* · NUEVA ORDEN ASIGNADA
 ───────────────────────
 Hola *${technician.name}*, se te ha asignado un nuevo trabajo en el taller:
 
 🔖 *Orden:* #${order.orderNumber}
 🛠️ *Tipo de Servicio:* *${order.serviceType}*
-🛵 *Moto:* ${moto.brand} ${moto.model}${moto.year ? ` (${moto.year})` : ''}
-🪪 *Placa:* *${moto.plate.toUpperCase()}*
-🎨 Color: ${moto.color || 'N/A'} | 🧭 Km: ${moto.mileage.toLocaleString()} | ⛽ Gas: ${order.fuelLevel}
+${techVehicleBlock}
 👤 *Cliente:* ${order.customerName} (${order.customerPhone})
 ───────────────────────
-📝 *Falla / Trabajo a Realizar:*
+📝 *${isSeatOrder ? 'Descripción del Trabajo al Asiento' : 'Falla / Trabajo a Realizar'}:*
 ${order.reportedIssue}
 ${order.diagnosis ? `\n🔍 *Diagnóstico Inicial:*\n${order.diagnosis}` : ''}${servicesText}${partsText}
 ───────────────────────

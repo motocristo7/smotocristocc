@@ -3,7 +3,9 @@ import { createPortal } from 'react-dom';
 import { useApp } from '../../context/AppContext';
 import {
   ServiceOrder,
+  ServiceOrderEntryType,
   WorkshopServiceType,
+  WorkshopServicePreset,
   ServiceOrderStatus,
   Motorcycle,
   SaleItem,
@@ -21,6 +23,7 @@ import {
   hasValidWhatsAppPhone,
 } from '../../utils/whatsapp';
 import { downloadServiceOrderPDF } from '../../utils/pdfInvoice';
+import { compressImageFileToDataUrl } from '../../utils/imageUrl';
 import {
   Wrench,
   Plus,
@@ -52,6 +55,11 @@ import {
   Percent,
   Tag,
   ChevronDown,
+  Camera,
+  Image as ImageIcon,
+  Upload,
+  Eye,
+  Loader2,
 } from 'lucide-react';
 
 const normalizeText = (value?: string): string =>
@@ -91,6 +99,7 @@ interface ServiceCustomerSelectorProps {
   value: ServiceCustomerValue;
   onChange: (next: ServiceCustomerValue) => void;
   defaultCity?: string;
+  phoneRequired?: boolean;
 }
 
 const ServiceCustomerSelector: React.FC<ServiceCustomerSelectorProps> = ({
@@ -100,6 +109,7 @@ const ServiceCustomerSelector: React.FC<ServiceCustomerSelectorProps> = ({
   value,
   onChange,
   defaultCity,
+  phoneRequired = true,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [isDropdownOpen, setIsDropdownOpen] = useState(false);
@@ -535,10 +545,12 @@ const ServiceCustomerSelector: React.FC<ServiceCustomerSelectorProps> = ({
           />
         </div>
         <div>
-          <label className="block font-semibold text-slate-700 mb-1">Celular / WhatsApp *</label>
+          <label className="block font-semibold text-slate-700 mb-1">
+            {phoneRequired ? 'Celular / WhatsApp *' : 'Celular / WhatsApp (Opcional)'}
+          </label>
           <input
             type="tel"
-            required
+            required={phoneRequired}
             value={value.customerPhone}
             onChange={(e) => onChange({ ...value, customerPhone: e.target.value })}
             placeholder="Ej. 04141234567"
@@ -590,7 +602,12 @@ interface ServicePartsPickerProps {
   selectedParts: SaleItem[];
   bcvRate: number;
   onAddInventoryPart: (product: Product, qty: number) => void;
-  onAddCustomPart: (name: string, unitPriceUSD: number, qty: number) => void;
+  onAddCustomPart: (
+    name: string,
+    unitPriceUSD: number,
+    qty: number,
+    options?: { saveToInventory?: boolean; initialStock?: number }
+  ) => void;
   validateStock?: boolean;
 }
 
@@ -608,6 +625,8 @@ const ServicePartsPicker: React.FC<ServicePartsPickerProps> = ({
   const [customName, setCustomName] = useState('');
   const [customPrice, setCustomPrice] = useState('');
   const [customQty, setCustomQty] = useState(1);
+  const [customSaveToInventory, setCustomSaveToInventory] = useState(false);
+  const [customInitialStock, setCustomInitialStock] = useState<string>('1');
   const [localError, setLocalError] = useState<string | null>(null);
 
   const selectedQtyMap = useMemo(() => {
@@ -682,7 +701,7 @@ const ServicePartsPicker: React.FC<ServicePartsPickerProps> = ({
     const qty = Math.max(1, Number(customQty) || 1);
 
     if (!trimmedName) {
-      setLocalError('Escribe el nombre del repuesto o insumo no guardado.');
+      setLocalError('Escribe el nombre del repuesto o insumo nuevo.');
       return;
     }
     if (price <= 0) {
@@ -690,10 +709,16 @@ const ServicePartsPicker: React.FC<ServicePartsPickerProps> = ({
       return;
     }
 
-    onAddCustomPart(trimmedName, price, qty);
+    const parsedStock = Math.max(qty, parseInt(customInitialStock, 10) || qty);
+    onAddCustomPart(trimmedName, price, qty, {
+      saveToInventory: customSaveToInventory,
+      initialStock: customSaveToInventory ? parsedStock : undefined,
+    });
     setCustomName('');
     setCustomPrice('');
     setCustomQty(1);
+    setCustomSaveToInventory(false);
+    setCustomInitialStock('1');
   };
 
   return (
@@ -717,7 +742,7 @@ const ServicePartsPicker: React.FC<ServicePartsPickerProps> = ({
                 : 'text-slate-600 hover:text-slate-900'
             }`}
           >
-            Buscar en Almacén ({products.filter((p) => p.stock > 0).length})
+            Del Inventario ({products.filter((p) => p.stock > 0).length})
           </button>
           <button
             type="button"
@@ -731,7 +756,7 @@ const ServicePartsPicker: React.FC<ServicePartsPickerProps> = ({
                 : 'text-slate-600 hover:text-slate-900'
             }`}
           >
-            + Repuesto No Guardado
+            + Crear Repuesto Nuevo
           </button>
         </div>
       </div>
@@ -881,16 +906,16 @@ const ServicePartsPicker: React.FC<ServicePartsPickerProps> = ({
                   className="inline-flex items-center gap-1 px-3 py-1.5 bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold rounded-lg text-[11px] cursor-pointer"
                 >
                   <Plus className="w-3.5 h-3.5" />
-                  <span>Agregar "{partSearch.trim() || 'repuesto'}" como No Guardado</span>
+                  <span>Crear "{partSearch.trim() || 'repuesto'}" como Nuevo</span>
                 </button>
               </div>
             )}
           </div>
         </div>
       ) : (
-        <div className="space-y-2">
+        <div className="space-y-2.5">
           <p className="text-[11px] text-slate-600">
-            Agrega un repuesto o insumo que no está guardado en el inventario del almacén (no descuenta stock).
+            Crea un repuesto o material nuevo en el momento (ej. cuero antiresbalante, espuma, grapas, base) y elige si también deseas guardarlo en el inventario.
           </p>
           <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 items-center">
             <div className="sm:col-span-6">
@@ -898,7 +923,7 @@ const ServicePartsPicker: React.FC<ServicePartsPickerProps> = ({
                 type="text"
                 value={customName}
                 onChange={(e) => setCustomName(e.target.value)}
-                placeholder="Nombre del repuesto (ej. Kit de empacaduras, Rolinera, Tornillo...)"
+                placeholder="Nombre del repuesto o material (ej. Cuero antiresbalante, Espuma...)"
                 className="w-full p-2 rounded-lg border border-slate-300 bg-white text-xs"
               />
             </div>
@@ -926,7 +951,13 @@ const ServicePartsPicker: React.FC<ServicePartsPickerProps> = ({
                 type="number"
                 min={1}
                 value={customQty}
-                onChange={(e) => setCustomQty(Math.max(1, Number(e.target.value) || 1))}
+                onChange={(e) => {
+                  const nextQty = Math.max(1, Number(e.target.value) || 1);
+                  setCustomQty(nextQty);
+                  if ((parseInt(customInitialStock, 10) || 0) < nextQty) {
+                    setCustomInitialStock(String(nextQty));
+                  }
+                }}
                 title="Cantidad"
                 className="w-full p-2 text-center font-mono font-bold rounded-lg border border-slate-300 bg-white text-xs"
               />
@@ -941,6 +972,31 @@ const ServicePartsPicker: React.FC<ServicePartsPickerProps> = ({
                 <span>Agregar</span>
               </button>
             </div>
+          </div>
+
+          <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+            <label className="inline-flex items-center gap-2 text-[11px] font-semibold text-slate-700 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={customSaveToInventory}
+                onChange={(e) => setCustomSaveToInventory(e.target.checked)}
+                className="w-3.5 h-3.5 rounded accent-emerald-600 cursor-pointer"
+              />
+              <span>Guardar también en el inventario para futuras órdenes</span>
+            </label>
+
+            {customSaveToInventory && (
+              <div className="inline-flex items-center gap-1.5 text-[11px] text-emerald-800 bg-emerald-50 border border-emerald-200 px-2.5 py-1 rounded-lg">
+                <span className="font-semibold">Stock inicial:</span>
+                <input
+                  type="number"
+                  min={customQty}
+                  value={customInitialStock}
+                  onChange={(e) => setCustomInitialStock(e.target.value)}
+                  className="w-14 px-1.5 py-0.5 text-center font-mono font-bold bg-white border border-emerald-300 rounded text-xs"
+                />
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -1617,6 +1673,191 @@ const ServiceTechnicianSelector: React.FC<ServiceTechnicianSelectorProps> = ({
   );
 };
 
+interface SeatPhotoUploaderProps {
+  label: string;
+  helperText: string;
+  required?: boolean;
+  value: string;
+  onChange: (dataUrl: string) => void;
+  onPreview?: (src: string, title: string) => void;
+  accent?: 'purple' | 'emerald';
+}
+
+const SeatPhotoUploader: React.FC<SeatPhotoUploaderProps> = ({
+  label,
+  helperText,
+  required = false,
+  value,
+  onChange,
+  onPreview,
+  accent = 'purple',
+}) => {
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const cameraInputRef = useRef<HTMLInputElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleFileSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      setUploadError('Selecciona un archivo de imagen válido (JPG, PNG, WEBP).');
+      return;
+    }
+    setUploadError(null);
+    setIsProcessing(true);
+    try {
+      const compressed = await compressImageFileToDataUrl(file, 720, 0.8);
+      onChange(compressed);
+    } catch (err) {
+      console.warn('Error comprimiendo foto de asiento:', err);
+      setUploadError('No se pudo procesar la foto. Intenta con otra imagen.');
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const borderStyles =
+    accent === 'emerald'
+      ? value
+        ? 'border-emerald-300 bg-emerald-50/40'
+        : 'border-slate-300 bg-slate-50/70'
+      : value
+      ? 'border-purple-300 bg-purple-50/40'
+      : required
+      ? 'border-purple-300 border-dashed bg-purple-50/30'
+      : 'border-slate-300 border-dashed bg-slate-50/70';
+
+  return (
+    <div className={`rounded-xl border-2 p-3.5 transition-colors space-y-2.5 ${borderStyles}`}>
+      <div className="flex items-start justify-between gap-2">
+        <div>
+          <span className="font-bold text-slate-900 text-xs flex items-center gap-1.5">
+            <Camera
+              className={`w-3.5 h-3.5 ${accent === 'emerald' ? 'text-emerald-600' : 'text-purple-600'}`}
+            />
+            <span>{label}</span>
+          </span>
+          <p className="text-[11px] text-slate-500 mt-0.5">{helperText}</p>
+        </div>
+        {required ? (
+          <span className="px-2 py-0.5 rounded bg-rose-100 text-rose-700 font-bold text-[10px] uppercase shrink-0">
+            Obligatoria
+          </span>
+        ) : (
+          <span className="px-2 py-0.5 rounded bg-slate-200/80 text-slate-600 font-semibold text-[10px] uppercase shrink-0">
+            Opcional
+          </span>
+        )}
+      </div>
+
+      {/* Hidden inputs for Camera and Gallery */}
+      <input
+        ref={cameraInputRef}
+        type="file"
+        accept="image/*"
+        capture="environment"
+        onChange={handleFileSelected}
+        className="hidden"
+      />
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/*"
+        onChange={handleFileSelected}
+        className="hidden"
+      />
+
+      {isProcessing ? (
+        <div className="h-36 rounded-lg bg-white border border-slate-200 flex flex-col items-center justify-center gap-2 text-slate-600">
+          <Loader2 className="w-6 h-6 animate-spin text-purple-600" />
+          <span className="text-xs font-semibold">Optimizando foto del asiento...</span>
+        </div>
+      ) : value ? (
+        <div className="space-y-2">
+          <div className="relative group rounded-lg overflow-hidden border border-slate-200 bg-slate-900 h-40">
+            <img
+              src={value}
+              alt={label}
+              onClick={() => onPreview?.(value, label)}
+              className="w-full h-full object-cover cursor-pointer group-hover:opacity-90 transition-opacity"
+            />
+            <button
+              type="button"
+              onClick={() => onPreview?.(value, label)}
+              className="absolute top-2 right-2 px-2 py-1 rounded-md bg-slate-900/80 hover:bg-slate-900 text-white text-[11px] font-semibold inline-flex items-center gap-1 cursor-pointer"
+              title="Ver foto en grande"
+            >
+              <Eye className="w-3.5 h-3.5" />
+              <span>Ver</span>
+            </button>
+          </div>
+          <div className="flex flex-wrap items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => cameraInputRef.current?.click()}
+              className="flex-1 px-2.5 py-1.5 rounded-lg bg-white hover:bg-slate-100 border border-slate-300 text-slate-800 font-semibold text-[11px] inline-flex items-center justify-center gap-1 cursor-pointer"
+            >
+              <Camera className="w-3.5 h-3.5 text-purple-600" />
+              <span>Nueva Foto</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              className="flex-1 px-2.5 py-1.5 rounded-lg bg-white hover:bg-slate-100 border border-slate-300 text-slate-800 font-semibold text-[11px] inline-flex items-center justify-center gap-1 cursor-pointer"
+            >
+              <Upload className="w-3.5 h-3.5 text-slate-600" />
+              <span>Galería</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => onChange('')}
+              className="px-2.5 py-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 border border-rose-200 text-rose-700 font-semibold text-[11px] inline-flex items-center justify-center gap-1 cursor-pointer"
+              title="Eliminar foto"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+            </button>
+          </div>
+        </div>
+      ) : (
+        <div className="h-36 rounded-lg bg-white/90 border border-dashed border-slate-300 flex flex-col items-center justify-center gap-2.5 p-3 text-center">
+          <ImageIcon className="w-7 h-7 text-slate-300" />
+          <div className="flex flex-wrap items-center justify-center gap-2">
+            <button
+              type="button"
+              onClick={() => cameraInputRef.current?.click()}
+              className={`px-3 py-1.5 rounded-lg font-bold text-xs inline-flex items-center gap-1.5 cursor-pointer shadow-2xs transition-colors ${
+                accent === 'emerald'
+                  ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                  : 'bg-purple-600 hover:bg-purple-700 text-white'
+              }`}
+            >
+              <Camera className="w-3.5 h-3.5" />
+              <span>Tomar Foto</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              className="px-3 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-300 font-semibold text-xs inline-flex items-center gap-1.5 cursor-pointer transition-colors"
+            >
+              <Upload className="w-3.5 h-3.5" />
+              <span>Subir Imagen</span>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {uploadError && (
+        <p className="text-[11px] text-rose-700 font-semibold flex items-center gap-1">
+          <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+          <span>{uploadError}</span>
+        </p>
+      )}
+    </div>
+  );
+};
+
 export const ServiceOrdersView: React.FC = () => {
   const {
     serviceOrders,
@@ -1625,19 +1866,28 @@ export const ServiceOrdersView: React.FC = () => {
     updateServiceOrder,
     deleteServiceOrder,
     products,
+    addProduct,
     customers,
     technicians,
     addTechnician,
     updateTechnician,
     settings,
+    updateSettings,
     setWhatsappModalData,
   } = useApp();
 
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [typeFilter, setTypeFilter] = useState<string>('all');
+  const [entryTypeFilter, setEntryTypeFilter] = useState<'all' | ServiceOrderEntryType>('all');
   const [isNewOrderModalOpen, setIsNewOrderModalOpen] = useState(false);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [lightboxPhoto, setLightboxPhoto] = useState<{
+    src: string;
+    title: string;
+    subtitle?: string;
+  } | null>(null);
+  const [uploadingDeliveryOrderId, setUploadingDeliveryOrderId] = useState<string | null>(null);
 
   const rate = settings.bcvRate;
 
@@ -1664,6 +1914,7 @@ export const ServiceOrdersView: React.FC = () => {
 
   // New Order Form state (Venezuela)
   const initialOrderForm = {
+    entryType: 'MOTOCICLETA' as ServiceOrderEntryType,
     customerId: '',
     customerName: '',
     customerPhone: '',
@@ -1680,6 +1931,8 @@ export const ServiceOrdersView: React.FC = () => {
     serviceType: 'Mecánica General' as WorkshopServiceType,
     reportedIssue: '',
     diagnosis: '',
+    seatIntakePhoto: '',
+    seatDeliveryPhoto: '',
     assignedTechnician: '',
     assignedTechnicianId: '',
     assignedTechnicianPhone: '',
@@ -1704,6 +1957,7 @@ export const ServiceOrdersView: React.FC = () => {
   const [editForm, setEditForm] = useState({
     id: '',
     orderNumber: '',
+    entryType: 'MOTOCICLETA' as ServiceOrderEntryType,
     customerId: '',
     customerName: '',
     customerPhone: '',
@@ -1720,6 +1974,8 @@ export const ServiceOrdersView: React.FC = () => {
     serviceType: 'Mecánica General' as WorkshopServiceType,
     reportedIssue: '',
     diagnosis: '',
+    seatIntakePhoto: '',
+    seatDeliveryPhoto: '',
     assignedTechnician: '',
     assignedTechnicianId: '',
     assignedTechnicianPhone: '',
@@ -1736,15 +1992,27 @@ export const ServiceOrdersView: React.FC = () => {
   const [newServiceCost, setNewServiceCost] = useState<string>('');
   const [newServiceTech, setNewServiceTech] = useState('');
   const [newServiceTechId, setNewServiceTechId] = useState('');
+  const [newServiceSavePreset, setNewServiceSavePreset] = useState(false);
 
   // Edit Services controls
   const [editServiceName, setEditServiceName] = useState('');
   const [editServiceCost, setEditServiceCost] = useState<string>('');
   const [editServiceTech, setEditServiceTech] = useState('');
   const [editServiceTechId, setEditServiceTechId] = useState('');
+  const [editServiceSavePreset, setEditServiceSavePreset] = useState(false);
+
+  // Built-in presets for Seat / Upholstery orders
+  const SEAT_SERVICE_PRESETS: Array<{ name: string; cost: number }> = [
+    { name: 'Tapicería Completa de Asiento (Cuero Antiresbalante)', cost: 30 },
+    { name: 'Cambio / Relleno de Espuma de Asiento', cost: 15 },
+    { name: 'Instalación de Forro de Asiento', cost: 15 },
+    { name: 'Costura Personalizada / Bordado', cost: 10 },
+    { name: 'Reparación de Base / Carcasa de Asiento', cost: 12 },
+    { name: 'Rebaje o Modificación Ergonómica de Asiento', cost: 18 },
+  ];
 
   // Presets of common workshop services in Venezuela
-  const WORKSHOP_SERVICE_PRESETS = [
+  const WORKSHOP_SERVICE_PRESETS: Array<{ name: string; cost: number }> = [
     { name: 'Cambio de Aceite y Filtro', cost: 5 },
     { name: 'Sincronización y Limpieza de Carburador', cost: 15 },
     { name: 'Mantenimiento y Graduación de Frenos', cost: 10 },
@@ -1756,6 +2024,58 @@ export const ServiceOrdersView: React.FC = () => {
     { name: 'Cambio de Kit de Arrastre (Cadena/Corona/Piñón)', cost: 10 },
     { name: 'Cambio de Guayas de Embrague / Acelerador', cost: 6 },
   ];
+
+  const customServicePresets: WorkshopServicePreset[] = useMemo(
+    () => (Array.isArray(settings.customWorkshopServicePresets) ? settings.customWorkshopServicePresets : []),
+    [settings.customWorkshopServicePresets]
+  );
+
+  const handleSaveWorkshopServicePreset = (
+    name: string,
+    cost: number,
+    scope: 'GENERAL' | 'ASIENTO'
+  ) => {
+    const cleanName = name.trim();
+    if (!cleanName || cost <= 0) return;
+    const norm = normalizeText(cleanName);
+    const existing = customServicePresets.find(
+      (p) => normalizeText(p.name) === norm && (p.scope || 'GENERAL') === scope
+    );
+    const nextList: WorkshopServicePreset[] = existing
+      ? customServicePresets.map((p) => (p.id === existing.id ? { ...p, name: cleanName, cost } : p))
+      : [
+          ...customServicePresets,
+          {
+            id: `preset-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+            name: cleanName,
+            cost,
+            scope,
+          },
+        ];
+    updateSettings({ customWorkshopServicePresets: nextList }).catch((err) =>
+      console.warn('Error guardando servicio preguardado:', err)
+    );
+  };
+
+  const handleDeleteWorkshopServicePreset = (presetId: string) => {
+    const nextList = customServicePresets.filter((p) => p.id !== presetId);
+    updateSettings({ customWorkshopServicePresets: nextList }).catch((err) =>
+      console.warn('Error eliminando servicio preguardado:', err)
+    );
+  };
+
+  const getPresetsForEntryType = (entryType: ServiceOrderEntryType) => {
+    const isSeat = entryType === 'ASIENTO';
+    const basePresets = isSeat ? SEAT_SERVICE_PRESETS : WORKSHOP_SERVICE_PRESETS;
+    const scopedCustom = customServicePresets.filter((p) =>
+      isSeat ? p.scope === 'ASIENTO' || !p.scope : p.scope !== 'ASIENTO'
+    );
+    const otherCustom = customServicePresets.filter((p) => !scopedCustom.includes(p));
+    return {
+      customPresets: [...scopedCustom, ...otherCustom],
+      builtInPresets: basePresets,
+    };
+  };
 
   const serviceTypes: WorkshopServiceType[] = [
     'Mecánica General',
@@ -1770,6 +2090,8 @@ export const ServiceOrdersView: React.FC = () => {
     return serviceOrders.filter((order) => {
       if (statusFilter !== 'all' && order.status !== statusFilter) return false;
       if (typeFilter !== 'all' && order.serviceType !== typeFilter) return false;
+      const orderEntryType: ServiceOrderEntryType = order.entryType || 'MOTOCICLETA';
+      if (entryTypeFilter !== 'all' && orderEntryType !== entryTypeFilter) return false;
 
       if (searchTerm.trim()) {
         const q = searchTerm.toLowerCase();
@@ -1778,13 +2100,29 @@ export const ServiceOrdersView: React.FC = () => {
           order.customerName.toLowerCase().includes(q) ||
           order.customerPhone.includes(q) ||
           order.motorcycle.plate.toLowerCase().includes(q) ||
-          order.motorcycle.model.toLowerCase().includes(q)
+          order.motorcycle.model.toLowerCase().includes(q) ||
+          (orderEntryType === 'ASIENTO' && 'asiento'.includes(q))
         );
       }
 
       return true;
     });
-  }, [serviceOrders, statusFilter, typeFilter, searchTerm]);
+  }, [serviceOrders, statusFilter, typeFilter, entryTypeFilter, searchTerm]);
+
+  const handleQuickUploadSeatDeliveryPhoto = async (order: ServiceOrder, file?: File) => {
+    if (!file || !file.type.startsWith('image/')) return;
+    setUploadingDeliveryOrderId(order.id);
+    try {
+      const compressed = await compressImageFileToDataUrl(file, 720, 0.8);
+      updateServiceOrder(order.id, { seatDeliveryPhoto: compressed });
+      setEditSuccessMessage(`¡Foto de entrega guardada en la orden #${order.orderNumber}!`);
+      setTimeout(() => setEditSuccessMessage(null), 4000);
+    } catch (err) {
+      console.warn('Error guardando foto de entrega del asiento:', err);
+    } finally {
+      setUploadingDeliveryOrderId(null);
+    }
+  };
 
   const handleUpdateStatus = (order: ServiceOrder, newStatus: ServiceOrderStatus) => {
     const updated = updateServiceOrderStatus(order.id, newStatus);
@@ -1968,8 +2306,14 @@ export const ServiceOrdersView: React.FC = () => {
     setTimeout(() => setEditSuccessMessage(null), 4000);
   };
 
-  const handleOpenNewOrderModal = () => {
-    setOrderForm(initialOrderForm);
+  const handleOpenNewOrderModal = (entryType: ServiceOrderEntryType = 'MOTOCICLETA') => {
+    setOrderForm({
+      ...initialOrderForm,
+      entryType,
+      serviceType: entryType === 'ASIENTO' ? 'Tapicería y Asientos' : 'Mecánica General',
+      laborCostUSD: entryType === 'ASIENTO' ? 0 : 15,
+      estimatedDelivery: entryType === 'ASIENTO' ? '' : 'Hoy 6:00 PM',
+    });
     setNewCustomerMode(
       customers.some((c) => normalizeText(c.name) !== 'cliente mostrador') ? 'existing' : 'new'
     );
@@ -1979,6 +2323,16 @@ export const ServiceOrdersView: React.FC = () => {
     setNewServiceTechId('');
     setNewOrderError(null);
     setIsNewOrderModalOpen(true);
+  };
+
+  const handleSwitchNewOrderEntryType = (nextType: ServiceOrderEntryType) => {
+    setNewOrderError(null);
+    setOrderForm((prev) => ({
+      ...prev,
+      entryType: nextType,
+      serviceType: nextType === 'ASIENTO' ? 'Tapicería y Asientos' : prev.serviceType === 'Tapicería y Asientos' ? 'Mecánica General' : prev.serviceType,
+      laborCostUSD: nextType === 'ASIENTO' && prev.laborCostUSD === 15 ? 0 : nextType === 'MOTOCICLETA' && prev.laborCostUSD === 0 ? 15 : prev.laborCostUSD,
+    }));
   };
 
   const handleAddInventoryPartToNewOrder = (prod: Product, qty: number) => {
@@ -2008,16 +2362,53 @@ export const ServiceOrdersView: React.FC = () => {
     });
   };
 
-  const handleAddCustomPartToNewOrder = (name: string, unitPriceUSD: number, qty: number) => {
+  const handleAddCustomPartToNewOrder = (
+    name: string,
+    unitPriceUSD: number,
+    qty: number,
+    options?: { saveToInventory?: boolean; initialStock?: number }
+  ) => {
     setNewOrderError(null);
-    const item: SaleItem = {
-      sku: `REP-EXT-${Date.now().toString().slice(-4)}`,
-      name,
-      category: 'Accesorios',
-      quantity: qty,
-      unitPrice: unitPriceUSD,
-      total: unitPriceUSD * qty,
-    };
+    const defaultCategory = orderForm.entryType === 'ASIENTO' ? 'Tapicería' : 'Accesorios';
+    let item: SaleItem;
+
+    if (options?.saveToInventory) {
+      const created = addProduct({
+        sku: `REP-${Date.now().toString().slice(-6)}`,
+        name,
+        category: defaultCategory,
+        description:
+          orderForm.entryType === 'ASIENTO'
+            ? 'Material / repuesto de asiento creado desde Órdenes de Taller'
+            : 'Repuesto creado desde Órdenes de Taller',
+        costPrice: 0,
+        salePrice: unitPriceUSD,
+        stock: Math.max(qty, options.initialStock || qty),
+        minStock: 1,
+        brand: 'Genérico',
+        compatibility: orderForm.model.trim() || 'Universal',
+        imageUrl: '',
+      });
+      item = {
+        productId: created.id,
+        sku: created.sku,
+        name: created.name,
+        category: created.category,
+        quantity: qty,
+        unitPrice: unitPriceUSD,
+        total: unitPriceUSD * qty,
+      };
+    } else {
+      item = {
+        sku: `REP-EXT-${Date.now().toString().slice(-4)}`,
+        name,
+        category: defaultCategory,
+        quantity: qty,
+        unitPrice: unitPriceUSD,
+        total: unitPriceUSD * qty,
+      };
+    }
+
     setOrderForm((prev) => ({
       ...prev,
       selectedParts: [...prev.selectedParts, item],
@@ -2070,8 +2461,9 @@ export const ServiceOrdersView: React.FC = () => {
     }));
   };
 
-  const handleAddServiceToNewOrder = (name?: string, cost?: number) => {
+  const handleAddServiceToNewOrder = (name?: string, cost?: number, forceSavePreset?: boolean) => {
     setNewOrderError(null);
+    const isManualEntry = name === undefined;
     const sName = (name || newServiceName).trim();
     const sCost = cost !== undefined ? cost : parseFloat(String(newServiceCost)) || 0;
 
@@ -2082,6 +2474,14 @@ export const ServiceOrdersView: React.FC = () => {
     if (sCost <= 0) {
       setNewOrderError('Ingresa el costo del servicio en USD.');
       return;
+    }
+
+    if (forceSavePreset || (isManualEntry && newServiceSavePreset)) {
+      handleSaveWorkshopServicePreset(
+        sName,
+        sCost,
+        orderForm.entryType === 'ASIENTO' ? 'ASIENTO' : 'GENERAL'
+      );
     }
 
     const pickedTech = resolveTechnicianForOrder({
@@ -2107,15 +2507,18 @@ export const ServiceOrdersView: React.FC = () => {
       };
     });
 
-    setNewServiceName('');
-    setNewServiceCost('');
+    if (isManualEntry) {
+      setNewServiceName('');
+      setNewServiceCost('');
+      setNewServiceSavePreset(false);
+    }
   };
 
   const handleRemoveServiceFromNewOrder = (index: number) => {
     setOrderForm((prev) => {
       const nextServices = prev.servicesList.filter((_, i) => i !== index);
       const totalLabor =
-        nextServices.length > 0 ? nextServices.reduce((sum, s) => sum + s.cost, 0) : prev.laborCostUSD;
+        nextServices.length > 0 ? nextServices.reduce((sum, s) => sum + s.cost, 0) : 0;
       return {
         ...prev,
         servicesList: nextServices,
@@ -2157,7 +2560,28 @@ export const ServiceOrdersView: React.FC = () => {
 
   const handleCreateOrder = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!orderForm.customerName.trim() || !orderForm.customerPhone.trim() || !orderForm.plate.trim()) {
+    const isSeat = orderForm.entryType === 'ASIENTO';
+
+    if (isSeat) {
+      if (!orderForm.customerName.trim()) {
+        setNewOrderError('Por favor selecciona o ingresa el nombre del cliente.');
+        return;
+      }
+      if (!orderForm.model.trim()) {
+        setNewOrderError('Por favor ingresa el modelo de la moto del asiento.');
+        return;
+      }
+      if (!orderForm.seatIntakePhoto) {
+        setNewOrderError(
+          'La foto de cómo se recibió el asiento es obligatoria para crear la orden.'
+        );
+        return;
+      }
+      if (!orderForm.reportedIssue.trim()) {
+        setNewOrderError('Por favor ingresa la descripción del trabajo por hacerle al asiento.');
+        return;
+      }
+    } else if (!orderForm.customerName.trim() || !orderForm.customerPhone.trim() || !orderForm.plate.trim()) {
       setNewOrderError('Por favor completa nombre del cliente, teléfono de WhatsApp y placa de la moto.');
       return;
     }
@@ -2179,40 +2603,63 @@ export const ServiceOrdersView: React.FC = () => {
     const laborTotalUSD =
       orderForm.servicesList.length > 0
         ? orderForm.servicesList.reduce((sum, s) => sum + s.cost, 0)
-        : Number(orderForm.laborCostUSD);
+        : Number(orderForm.laborCostUSD) || 0;
     const totalCostUSD = partsTotalUSD + laborTotalUSD;
 
-    const motorcycle: Motorcycle = {
-      plate: orderForm.plate.toUpperCase().trim(),
-      brand: orderForm.brand.trim() || 'Bera',
-      model: orderForm.model.trim() || 'SBR 150',
-      year: Number(orderForm.year),
-      color: orderForm.color.trim() || 'Negro',
-      mileage: Number(orderForm.mileage),
-    };
+    const motorcycle: Motorcycle = isSeat
+      ? {
+          plate: 'ASIENTO',
+          brand: '',
+          model: orderForm.model.trim(),
+          year: 0,
+          color: '',
+          mileage: 0,
+        }
+      : {
+          plate: orderForm.plate.toUpperCase().trim(),
+          brand: orderForm.brand.trim() || 'Bera',
+          model: orderForm.model.trim() || 'SBR 150',
+          year: Number(orderForm.year),
+          color: orderForm.color.trim() || 'Negro',
+          mileage: Number(orderForm.mileage),
+        };
 
+    const firstServiceWithTech = orderForm.servicesList.find(
+      (s) => Boolean(s.technicianId) || Boolean((s.technician || '').trim())
+    );
     const assignedTechRecord = resolveTechnicianForOrder({
-      assignedTechnicianId: orderForm.assignedTechnicianId,
-      assignedTechnician: orderForm.assignedTechnician,
+      assignedTechnicianId: orderForm.assignedTechnicianId || firstServiceWithTech?.technicianId,
+      assignedTechnician: orderForm.assignedTechnician || firstServiceWithTech?.technician,
       assignedTechnicianPhone: orderForm.assignedTechnicianPhone,
     });
 
-    const resolvedTechName = assignedTechRecord?.name || orderForm.assignedTechnician.trim();
-    const resolvedTechId = assignedTechRecord?.id || orderForm.assignedTechnicianId || undefined;
+    const resolvedTechName =
+      assignedTechRecord?.name ||
+      orderForm.assignedTechnician.trim() ||
+      firstServiceWithTech?.technician ||
+      '';
+    const resolvedTechId =
+      assignedTechRecord?.id ||
+      orderForm.assignedTechnicianId ||
+      firstServiceWithTech?.technicianId ||
+      undefined;
     const resolvedTechPhone = assignedTechRecord?.phone || orderForm.assignedTechnicianPhone || undefined;
 
     const newOrder = createServiceOrder({
+      entryType: orderForm.entryType,
       customerId: orderForm.customerId || '',
       customerName: orderForm.customerName.trim(),
-      customerPhone: orderForm.customerPhone.trim(),
+      customerPhone: orderForm.customerPhone.trim() || 'N/A',
       customerDocument: orderForm.customerDocument.trim() || undefined,
       customerCity: orderForm.customerCity.trim() || undefined,
       customerAddress: orderForm.customerAddress.trim() || undefined,
       motorcycle,
-      serviceType: orderForm.serviceType,
+      serviceType: isSeat ? 'Tapicería y Asientos' : orderForm.serviceType,
       fuelLevel: orderForm.fuelLevel,
       reportedIssue: orderForm.reportedIssue.trim(),
       diagnosis: orderForm.diagnosis.trim() || undefined,
+      seatIntakePhoto: isSeat ? orderForm.seatIntakePhoto : undefined,
+      seatDeliveryPhoto: isSeat && orderForm.seatDeliveryPhoto ? orderForm.seatDeliveryPhoto : undefined,
       partsUsed: orderForm.selectedParts,
       servicesList: orderForm.servicesList.length > 0 ? orderForm.servicesList : undefined,
       laborCost: laborTotalUSD,
@@ -2221,7 +2668,7 @@ export const ServiceOrdersView: React.FC = () => {
       assignedTechnician: resolvedTechName || undefined,
       assignedTechnicianId: resolvedTechId,
       assignedTechnicianPhone: resolvedTechPhone,
-      estimatedDelivery: orderForm.estimatedDelivery,
+      estimatedDelivery: orderForm.estimatedDelivery.trim() || undefined,
     });
 
     const shouldNotifyTech = Boolean(orderForm.notifyTechnicianOnCreate && resolvedTechName);
@@ -2231,12 +2678,18 @@ export const ServiceOrdersView: React.FC = () => {
 
     if (!existedBefore) {
       setEditSuccessMessage(
-        `¡Orden #${newOrder.orderNumber} creada! Cliente "${newOrder.customerName}" guardado en la base de datos de clientes.`
+        isSeat
+          ? `¡Orden de Asiento #${newOrder.orderNumber} creada! Cliente "${newOrder.customerName}" guardado en la base de datos.`
+          : `¡Orden #${newOrder.orderNumber} creada! Cliente "${newOrder.customerName}" guardado en la base de datos de clientes.`
       );
       setTimeout(() => setEditSuccessMessage(null), 5000);
+    } else if (isSeat) {
+      setEditSuccessMessage(`¡Orden de Asiento #${newOrder.orderNumber} creada con éxito!`);
+      setTimeout(() => setEditSuccessMessage(null), 4500);
     }
 
     // Build notifications for Client AND Assigned Technician
+    const canNotifyClient = hasValidWhatsAppPhone(newOrder.customerPhone);
     const customerNotif = buildServiceStatusWhatsAppMessage(newOrder, settings);
     const techPayload = shouldNotifyTech
       ? buildTechnicianAssignedOrderWhatsAppMessage(
@@ -2251,27 +2704,38 @@ export const ServiceOrdersView: React.FC = () => {
         )
       : null;
 
-    setWhatsappModalData({
-      title: `Orden ${newOrder.orderNumber} Creada · Notificar a Cliente`,
-      message: customerNotif.message,
-      url: customerNotif.url,
-      phone: newOrder.customerPhone,
-      recipientName: newOrder.customerName,
-      primaryLabel: '1. Cliente',
-      ...(techPayload
-        ? {
-            secondaryNotification: {
-              label: '2. Técnico Asignado',
-              title: `Orden ${newOrder.orderNumber} · Notificar al Técnico`,
-              message: techPayload.message,
-              url: techPayload.url,
-              phone: resolvedTechPhone || '',
-              recipientName: resolvedTechName,
-              isTechnician: true,
-            },
-          }
-        : {}),
-    });
+    if (canNotifyClient || !isSeat) {
+      setWhatsappModalData({
+        title: `Orden ${newOrder.orderNumber} Creada · Notificar a Cliente`,
+        message: customerNotif.message,
+        url: customerNotif.url,
+        phone: newOrder.customerPhone,
+        recipientName: newOrder.customerName,
+        primaryLabel: '1. Cliente',
+        ...(techPayload
+          ? {
+              secondaryNotification: {
+                label: '2. Técnico Asignado',
+                title: `Orden ${newOrder.orderNumber} · Notificar al Técnico`,
+                message: techPayload.message,
+                url: techPayload.url,
+                phone: resolvedTechPhone || '',
+                recipientName: resolvedTechName,
+                isTechnician: true,
+              },
+            }
+          : {}),
+      });
+    } else if (techPayload) {
+      setWhatsappModalData({
+        title: `Orden ${newOrder.orderNumber} · Notificar al Técnico`,
+        message: techPayload.message,
+        url: techPayload.url,
+        phone: resolvedTechPhone || '',
+        recipientName: resolvedTechName,
+        isTechnician: true,
+      });
+    }
   };
 
   const handleOpenEditModal = (order: ServiceOrder) => {
@@ -2322,9 +2786,10 @@ export const ServiceOrdersView: React.FC = () => {
     setEditForm({
       id: order.id,
       orderNumber: order.orderNumber,
+      entryType: order.entryType || 'MOTOCICLETA',
       customerId: matchedCustomer?.id || order.customerId || '',
       customerName: order.customerName,
-      customerPhone: order.customerPhone,
+      customerPhone: order.customerPhone === 'N/A' ? '' : order.customerPhone,
       customerDocument: order.customerDocument || matchedCustomer?.documentId || '',
       customerCity: matchedCustomer?.city || '',
       customerAddress: matchedCustomer?.address || '',
@@ -2338,6 +2803,8 @@ export const ServiceOrdersView: React.FC = () => {
       serviceType: order.serviceType,
       reportedIssue: order.reportedIssue,
       diagnosis: order.diagnosis || '',
+      seatIntakePhoto: order.seatIntakePhoto || '',
+      seatDeliveryPhoto: order.seatDeliveryPhoto || '',
       assignedTechnician: matchedTech?.name || order.assignedTechnician || '',
       assignedTechnicianId: matchedTech?.id || order.assignedTechnicianId || '',
       assignedTechnicianPhone: matchedTech?.phone || order.assignedTechnicianPhone || '',
@@ -2384,16 +2851,53 @@ export const ServiceOrdersView: React.FC = () => {
     });
   };
 
-  const handleAddCustomPartToEditOrder = (name: string, unitPriceUSD: number, qty: number) => {
+  const handleAddCustomPartToEditOrder = (
+    name: string,
+    unitPriceUSD: number,
+    qty: number,
+    options?: { saveToInventory?: boolean; initialStock?: number }
+  ) => {
     setEditOrderError(null);
-    const item: SaleItem = {
-      sku: `REP-EXT-${Date.now().toString().slice(-4)}`,
-      name,
-      category: 'Accesorios',
-      quantity: qty,
-      unitPrice: unitPriceUSD,
-      total: unitPriceUSD * qty,
-    };
+    const defaultCategory = editForm.entryType === 'ASIENTO' ? 'Tapicería' : 'Accesorios';
+    let item: SaleItem;
+
+    if (options?.saveToInventory) {
+      const created = addProduct({
+        sku: `REP-${Date.now().toString().slice(-6)}`,
+        name,
+        category: defaultCategory,
+        description:
+          editForm.entryType === 'ASIENTO'
+            ? 'Material / repuesto de asiento creado desde Órdenes de Taller'
+            : 'Repuesto creado desde Órdenes de Taller',
+        costPrice: 0,
+        salePrice: unitPriceUSD,
+        stock: Math.max(qty, options.initialStock || qty),
+        minStock: 1,
+        brand: 'Genérico',
+        compatibility: editForm.model.trim() || 'Universal',
+        imageUrl: '',
+      });
+      item = {
+        productId: created.id,
+        sku: created.sku,
+        name: created.name,
+        category: created.category,
+        quantity: qty,
+        unitPrice: unitPriceUSD,
+        total: unitPriceUSD * qty,
+      };
+    } else {
+      item = {
+        sku: `REP-EXT-${Date.now().toString().slice(-4)}`,
+        name,
+        category: defaultCategory,
+        quantity: qty,
+        unitPrice: unitPriceUSD,
+        total: unitPriceUSD * qty,
+      };
+    }
+
     setEditForm((prev) => ({
       ...prev,
       selectedParts: [...prev.selectedParts, item],
@@ -2437,8 +2941,9 @@ export const ServiceOrdersView: React.FC = () => {
     }));
   };
 
-  const handleAddServiceToEdit = (name?: string, cost?: number) => {
+  const handleAddServiceToEdit = (name?: string, cost?: number, forceSavePreset?: boolean) => {
     setEditOrderError(null);
+    const isManualEntry = name === undefined;
     const sName = (name || editServiceName).trim();
     const sCost = cost !== undefined ? cost : parseFloat(String(editServiceCost)) || 0;
 
@@ -2449,6 +2954,14 @@ export const ServiceOrdersView: React.FC = () => {
     if (sCost <= 0) {
       setEditOrderError('Ingresa el costo del servicio en USD.');
       return;
+    }
+
+    if (forceSavePreset || (isManualEntry && editServiceSavePreset)) {
+      handleSaveWorkshopServicePreset(
+        sName,
+        sCost,
+        editForm.entryType === 'ASIENTO' ? 'ASIENTO' : 'GENERAL'
+      );
     }
 
     const pickedTech = resolveTechnicianForOrder({
@@ -2474,8 +2987,11 @@ export const ServiceOrdersView: React.FC = () => {
       };
     });
 
-    setEditServiceName('');
-    setEditServiceCost('');
+    if (isManualEntry) {
+      setEditServiceName('');
+      setEditServiceCost('');
+      setEditServiceSavePreset(false);
+    }
   };
 
   const handleRemoveServiceFromEdit = (index: number) => {
@@ -2522,7 +3038,21 @@ export const ServiceOrdersView: React.FC = () => {
   };
 
   const handleSaveEditOrder = (notifyWhatsApp: boolean) => {
-    if (!editForm.customerName.trim() || !editForm.customerPhone.trim() || !editForm.plate.trim()) {
+    const isSeat = editForm.entryType === 'ASIENTO';
+    if (isSeat) {
+      if (!editForm.customerName.trim() || !editForm.model.trim()) {
+        setEditOrderError('Por favor completa el nombre del cliente y el modelo de la moto.');
+        return;
+      }
+      if (!editForm.seatIntakePhoto) {
+        setEditOrderError('La foto de cómo se recibió el asiento es obligatoria.');
+        return;
+      }
+      if (!editForm.reportedIssue.trim()) {
+        setEditOrderError('Por favor ingresa la descripción del trabajo por hacerle al asiento.');
+        return;
+      }
+    } else if (!editForm.customerName.trim() || !editForm.customerPhone.trim() || !editForm.plate.trim()) {
       setEditOrderError('Por favor completa nombre del cliente, teléfono de WhatsApp y placa de la moto.');
       return;
     }
@@ -2549,14 +3079,23 @@ export const ServiceOrdersView: React.FC = () => {
     const currentRate = settings.bcvRate;
     const totalCostBs = totalCostUSD * currentRate;
 
-    const motorcycle: Motorcycle = {
-      plate: editForm.plate.toUpperCase().trim(),
-      brand: editForm.brand.trim() || 'Bera',
-      model: editForm.model.trim() || 'SBR 150',
-      year: Number(editForm.year),
-      color: editForm.color.trim() || 'Negro',
-      mileage: Number(editForm.mileage),
-    };
+    const motorcycle: Motorcycle = isSeat
+      ? {
+          plate: 'ASIENTO',
+          brand: '',
+          model: editForm.model.trim(),
+          year: 0,
+          color: '',
+          mileage: 0,
+        }
+      : {
+          plate: editForm.plate.toUpperCase().trim(),
+          brand: editForm.brand.trim() || 'Bera',
+          model: editForm.model.trim() || 'SBR 150',
+          year: Number(editForm.year),
+          color: editForm.color.trim() || 'Negro',
+          mileage: Number(editForm.mileage),
+        };
 
     const assignedTechRecord = resolveTechnicianForOrder({
       assignedTechnicianId: editForm.assignedTechnicianId,
@@ -2565,9 +3104,10 @@ export const ServiceOrdersView: React.FC = () => {
     });
 
     const updated = updateServiceOrder(editForm.id, {
+      entryType: editForm.entryType,
       customerId: editForm.customerId || '',
       customerName: editForm.customerName.trim(),
-      customerPhone: editForm.customerPhone.trim(),
+      customerPhone: editForm.customerPhone.trim() || 'N/A',
       customerDocument: editForm.customerDocument.trim() || undefined,
       customerCity: editForm.customerCity.trim() || undefined,
       customerAddress: editForm.customerAddress.trim() || undefined,
@@ -2576,6 +3116,8 @@ export const ServiceOrdersView: React.FC = () => {
       fuelLevel: editForm.fuelLevel,
       reportedIssue: editForm.reportedIssue.trim(),
       diagnosis: editForm.diagnosis.trim() || undefined,
+      seatIntakePhoto: isSeat ? editForm.seatIntakePhoto : undefined,
+      seatDeliveryPhoto: isSeat ? editForm.seatDeliveryPhoto || undefined : undefined,
       status: editForm.status,
       assignedTechnician: assignedTechRecord?.name || editForm.assignedTechnician.trim() || undefined,
       assignedTechnicianId: assignedTechRecord?.id || editForm.assignedTechnicianId || undefined,
@@ -2640,13 +3182,23 @@ export const ServiceOrdersView: React.FC = () => {
           </p>
         </div>
 
-        <button
-          onClick={handleOpenNewOrderModal}
-          className="px-4 py-2.5 bg-slate-900 hover:bg-slate-800 text-white font-semibold text-xs rounded-xl shadow-xs transition-colors flex items-center gap-1.5 cursor-pointer self-start sm:self-auto"
-        >
-          <Plus className="w-4 h-4 text-amber-400" />
-          <span>Ingresar Motocicleta al Taller</span>
-        </button>
+        <div className="flex flex-wrap items-center gap-2.5 self-start sm:self-auto">
+          <button
+            onClick={() => handleOpenNewOrderModal('MOTOCICLETA')}
+            className="px-4 py-2.5 bg-slate-900 hover:bg-slate-800 text-white font-semibold text-xs rounded-xl shadow-xs transition-colors flex items-center gap-1.5 cursor-pointer"
+          >
+            <Plus className="w-4 h-4 text-amber-400" />
+            <span>Ingresar Motocicleta al Taller</span>
+          </button>
+
+          <button
+            onClick={() => handleOpenNewOrderModal('ASIENTO')}
+            className="px-4 py-2.5 bg-purple-700 hover:bg-purple-800 text-white font-semibold text-xs rounded-xl shadow-xs transition-colors flex items-center gap-1.5 cursor-pointer"
+          >
+            <Scissors className="w-4 h-4 text-purple-200" />
+            <span>Ingresar Asiento</span>
+          </button>
+        </div>
       </div>
 
       {/* Success Notification Toast */}
@@ -2679,7 +3231,17 @@ export const ServiceOrdersView: React.FC = () => {
             />
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <select
+              value={entryTypeFilter}
+              onChange={(e) => setEntryTypeFilter(e.target.value as 'all' | ServiceOrderEntryType)}
+              className="text-xs p-2 rounded-lg border border-slate-200 bg-slate-50 font-semibold text-slate-800"
+            >
+              <option value="all">Motocicletas y Asientos</option>
+              <option value="MOTOCICLETA">Solo Motocicletas</option>
+              <option value="ASIENTO">Solo Asientos</option>
+            </select>
+
             <select
               value={statusFilter}
               onChange={(e) => setStatusFilter(e.target.value)}
@@ -2719,13 +3281,22 @@ export const ServiceOrdersView: React.FC = () => {
                 <p className="text-slate-400 max-w-sm mx-auto">
                   Las órdenes por defecto han sido eliminadas. Las nuevas órdenes que registres quedarán guardadas permanentemente en el servidor.
                 </p>
-                <button
-                  onClick={handleOpenNewOrderModal}
-                  className="inline-flex items-center gap-2 px-4 py-2 bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold rounded-lg text-xs transition-colors shadow-xs cursor-pointer"
-                >
-                  <Plus className="w-4 h-4" />
-                  <span>Crear Primera Orden de Servicio</span>
-                </button>
+                <div className="flex flex-wrap items-center justify-center gap-2.5 pt-1">
+                  <button
+                    onClick={() => handleOpenNewOrderModal('MOTOCICLETA')}
+                    className="inline-flex items-center gap-2 px-4 py-2 bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold rounded-lg text-xs transition-colors shadow-xs cursor-pointer"
+                  >
+                    <Plus className="w-4 h-4" />
+                    <span>Ingresar Motocicleta</span>
+                  </button>
+                  <button
+                    onClick={() => handleOpenNewOrderModal('ASIENTO')}
+                    className="inline-flex items-center gap-2 px-4 py-2 bg-purple-700 hover:bg-purple-800 text-white font-bold rounded-lg text-xs transition-colors shadow-xs cursor-pointer"
+                  >
+                    <Scissors className="w-4 h-4" />
+                    <span>Ingresar Asiento</span>
+                  </button>
+                </div>
               </div>
             ) : (
               'No se encontraron órdenes de servicio con los filtros aplicados.'
@@ -2733,29 +3304,42 @@ export const ServiceOrdersView: React.FC = () => {
           </div>
         ) : (
           filteredOrders.map((order) => {
-            const isUpholstery = order.serviceType === 'Tapicería y Asientos';
+            const isSeatOrder = order.entryType === 'ASIENTO';
+            const isUpholstery = isSeatOrder || order.serviceType === 'Tapicería y Asientos';
             const orderRate = order.bcvRate || rate;
             const totalBs = order.totalCostBs || order.totalCost * orderRate;
 
             return (
               <div
                 key={order.id}
-                className="bg-white rounded-xl border border-slate-200 p-5 shadow-2xs hover:border-slate-300 transition-colors"
+                className={`bg-white rounded-xl border p-5 shadow-2xs transition-colors ${
+                  isSeatOrder
+                    ? 'border-purple-200 hover:border-purple-300'
+                    : 'border-slate-200 hover:border-slate-300'
+                }`}
               >
                 <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-4 border-b border-slate-100">
-                  {/* Left: Plate & Customer */}
+                  {/* Left: Plate / Seat Badge & Customer */}
                   <div className="flex items-start gap-3">
                     <div className={`w-10 h-10 rounded-xl flex items-center justify-center shrink-0 ${isUpholstery ? 'bg-purple-100 text-purple-700' : 'bg-amber-100 text-amber-700'}`}>
                       {isUpholstery ? <Scissors className="w-5 h-5" /> : <Wrench className="w-5 h-5" />}
                     </div>
 
                     <div>
-                      <div className="flex items-center gap-2">
-                        <span className="font-mono font-bold text-sm bg-slate-900 text-white px-2 py-0.5 rounded">
-                          {order.motorcycle.plate}
-                        </span>
+                      <div className="flex flex-wrap items-center gap-2">
+                        {isSeatOrder ? (
+                          <span className="font-mono font-bold text-xs bg-purple-700 text-white px-2.5 py-0.5 rounded uppercase tracking-wide">
+                            ASIENTO
+                          </span>
+                        ) : (
+                          <span className="font-mono font-bold text-sm bg-slate-900 text-white px-2 py-0.5 rounded">
+                            {order.motorcycle.plate}
+                          </span>
+                        )}
                         <span className="font-bold text-slate-900 text-sm">
-                          {order.motorcycle.brand} {order.motorcycle.model} ({order.motorcycle.year})
+                          {isSeatOrder
+                            ? `Modelo: ${order.motorcycle.model}`
+                            : `${order.motorcycle.brand} ${order.motorcycle.model}${order.motorcycle.year ? ` (${order.motorcycle.year})` : ''}`}
                         </span>
                         <span className="text-slate-400">·</span>
                         <span className="text-xs text-slate-500 font-mono">{order.orderNumber}</span>
@@ -2763,10 +3347,14 @@ export const ServiceOrdersView: React.FC = () => {
 
                       <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 mt-1">
                         <span className="font-semibold text-slate-700">{order.customerName}</span>
+                        {order.customerPhone && order.customerPhone !== 'N/A' && (
+                          <>
+                            <span>·</span>
+                            <span className="font-mono">{order.customerPhone}</span>
+                          </>
+                        )}
                         <span>·</span>
-                        <span className="font-mono">{order.customerPhone}</span>
-                        <span>·</span>
-                        <span>Tipo: <strong className="text-slate-700">{order.serviceType}</strong></span>
+                        <span>Tipo: <strong className={isSeatOrder ? 'text-purple-700' : 'text-slate-700'}>{order.serviceType}</strong></span>
                       </div>
                     </div>
                   </div>
@@ -2940,22 +3528,35 @@ export const ServiceOrdersView: React.FC = () => {
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4 pt-4 text-xs">
                   <div>
                     <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
-                      Motivo / Falla Reportada
+                      {isSeatOrder ? 'Descripción del Trabajo al Asiento' : 'Motivo / Falla Reportada'}
                     </span>
                     <p className="text-slate-800 font-medium mt-0.5">{order.reportedIssue}</p>
                     {order.diagnosis && (
                       <p className="text-slate-600 mt-1 italic">
-                        <strong className="not-italic text-slate-700">Diag: </strong>{order.diagnosis}
+                        <strong className="not-italic text-slate-700">Obs: </strong>{order.diagnosis}
                       </p>
                     )}
                   </div>
 
                   <div>
                     <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
-                      Datos Técnicos & Moto
+                      {isSeatOrder ? 'Datos del Asiento' : 'Datos Técnicos & Moto'}
                     </span>
-                    <p className="text-slate-600 mt-0.5">Color: {order.motorcycle.color} · Gas: {order.fuelLevel}</p>
-                    <p className="text-slate-600">Km: {order.motorcycle.mileage.toLocaleString()} km</p>
+                    {isSeatOrder ? (
+                      <>
+                        <p className="text-slate-700 mt-0.5 font-semibold">
+                          Modelo de Moto: <span className="text-slate-950">{order.motorcycle.model}</span>
+                        </p>
+                        {order.estimatedDelivery && (
+                          <p className="text-slate-600 mt-0.5">Entrega estimada: {order.estimatedDelivery}</p>
+                        )}
+                      </>
+                    ) : (
+                      <>
+                        <p className="text-slate-600 mt-0.5">Color: {order.motorcycle.color} · Gas: {order.fuelLevel}</p>
+                        <p className="text-slate-600">Km: {order.motorcycle.mileage.toLocaleString()} km</p>
+                      </>
+                    )}
                     <p className="text-slate-600 mt-0.5 font-medium">
                       Técnico: <strong className="text-slate-900">{order.assignedTechnician || 'Por asignar'}</strong>
                       {(() => {
@@ -2994,6 +3595,121 @@ export const ServiceOrdersView: React.FC = () => {
                     </div>
                   </div>
                 </div>
+
+                {/* Seat Photos Strip (Intake & Delivery) */}
+                {(isSeatOrder || order.seatIntakePhoto || order.seatDeliveryPhoto) && (
+                  <div className="mt-4 pt-3.5 border-t border-purple-100">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-[11px] font-bold text-purple-800 uppercase tracking-wider flex items-center gap-1.5">
+                        <Camera className="w-3.5 h-3.5" />
+                        <span>Registro Fotográfico del Asiento (Recibido vs. Entregado)</span>
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      {/* Foto de Recibo */}
+                      <div className="rounded-xl border border-purple-200 bg-purple-50/40 p-2.5 flex items-center gap-3">
+                        {order.seatIntakePhoto ? (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setLightboxPhoto({
+                                src: order.seatIntakePhoto!,
+                                title: `Foto de Recibo · Asiento (${order.motorcycle.model})`,
+                                subtitle: `Orden #${order.orderNumber} · Cliente: ${order.customerName}`,
+                              })
+                            }
+                            className="relative w-24 h-20 rounded-lg overflow-hidden border border-purple-200 bg-slate-900 shrink-0 group cursor-pointer"
+                            title="Clic para ampliar foto de cómo se recibió"
+                          >
+                            <img
+                              src={order.seatIntakePhoto}
+                              alt="Asiento recibido"
+                              className="w-full h-full object-cover group-hover:scale-105 transition-transform"
+                            />
+                            <span className="absolute inset-0 bg-slate-900/0 group-hover:bg-slate-900/40 transition-colors flex items-center justify-center">
+                              <Eye className="w-5 h-5 text-white opacity-0 group-hover:opacity-100 transition-opacity" />
+                            </span>
+                          </button>
+                        ) : (
+                          <div className="w-24 h-20 rounded-lg border border-dashed border-slate-300 bg-white flex items-center justify-center shrink-0">
+                            <ImageIcon className="w-5 h-5 text-slate-300" />
+                          </div>
+                        )}
+                        <div className="min-w-0 flex-1 text-xs">
+                          <span className="font-bold text-slate-900 block">Cómo se Recibió</span>
+                          <span className="text-[11px] text-slate-500 block mt-0.5">
+                            {order.seatIntakePhoto
+                              ? 'Foto de entrada registrada. Toca la imagen para ver en grande.'
+                              : 'Sin foto de ingreso.'}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Foto de Entrega */}
+                      <div className="rounded-xl border border-emerald-200 bg-emerald-50/40 p-2.5 flex items-center gap-3">
+                        {uploadingDeliveryOrderId === order.id ? (
+                          <div className="w-24 h-20 rounded-lg border border-emerald-200 bg-white flex flex-col items-center justify-center gap-1 shrink-0 text-emerald-700">
+                            <Loader2 className="w-5 h-5 animate-spin" />
+                            <span className="text-[10px] font-semibold">Subiendo...</span>
+                          </div>
+                        ) : order.seatDeliveryPhoto ? (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setLightboxPhoto({
+                                src: order.seatDeliveryPhoto!,
+                                title: `Foto de Entrega · Asiento (${order.motorcycle.model})`,
+                                subtitle: `Orden #${order.orderNumber} · Cliente: ${order.customerName}`,
+                              })
+                            }
+                            className="relative w-24 h-20 rounded-lg overflow-hidden border border-emerald-300 bg-slate-900 shrink-0 group cursor-pointer"
+                            title="Clic para ampliar foto de cómo se entregó"
+                          >
+                            <img
+                              src={order.seatDeliveryPhoto}
+                              alt="Asiento entregado"
+                              className="w-full h-full object-cover group-hover:scale-105 transition-transform"
+                            />
+                            <span className="absolute inset-0 bg-slate-900/0 group-hover:bg-slate-900/40 transition-colors flex items-center justify-center">
+                              <Eye className="w-5 h-5 text-white opacity-0 group-hover:opacity-100 transition-opacity" />
+                            </span>
+                          </button>
+                        ) : (
+                          <div className="w-24 h-20 rounded-lg border border-dashed border-emerald-300 bg-white flex items-center justify-center shrink-0">
+                            <Camera className="w-5 h-5 text-emerald-400" />
+                          </div>
+                        )}
+                        <div className="min-w-0 flex-1 text-xs space-y-1.5">
+                          <div>
+                            <span className="font-bold text-slate-900 block">Cómo se Entregó</span>
+                            <span className="text-[11px] text-slate-500 block">
+                              {order.seatDeliveryPhoto
+                                ? 'Foto de entrega guardada.'
+                                : 'Pendiente por subir foto del asiento terminado.'}
+                            </span>
+                          </div>
+                          <label className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-[11px] cursor-pointer transition-colors shadow-2xs">
+                            <Camera className="w-3.5 h-3.5" />
+                            <span>
+                              {order.seatDeliveryPhoto ? 'Cambiar foto de entrega' : 'Subir foto de entrega'}
+                            </span>
+                            <input
+                              type="file"
+                              accept="image/*"
+                              capture="environment"
+                              className="hidden"
+                              onChange={(e) => {
+                                const file = e.target.files?.[0];
+                                e.target.value = '';
+                                handleQuickUploadSeatDeliveryPhoto(order, file);
+                              }}
+                            />
+                          </label>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
 
                 {/* Items & Services Breakdown Row */}
                 {(order.partsUsed.length > 0 || (order.servicesList && order.servicesList.length > 0)) && (
@@ -3046,26 +3762,64 @@ export const ServiceOrdersView: React.FC = () => {
         )}
       </div>
 
-      {/* Modal: Ingresar Nueva Orden de Taller */}
+      {/* Modal: Ingresar Nueva Orden de Taller (Motocicleta o Asiento) */}
       {isNewOrderModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
           <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-3xl overflow-hidden flex flex-col max-h-[90vh]">
-            <div className="p-4 sm:p-5 bg-slate-900 text-white flex items-center justify-between">
+            <div
+              className={`p-4 sm:p-5 text-white flex items-center justify-between ${
+                orderForm.entryType === 'ASIENTO' ? 'bg-purple-900' : 'bg-slate-900'
+              }`}
+            >
               <div className="flex items-center gap-2">
-                <Wrench className="w-5 h-5 text-amber-400" />
+                {orderForm.entryType === 'ASIENTO' ? (
+                  <Scissors className="w-5 h-5 text-purple-200" />
+                ) : (
+                  <Wrench className="w-5 h-5 text-amber-400" />
+                )}
                 <h3 className="font-bold text-sm font-display">
-                  Ingreso de Motocicleta al Taller (Venezuela)
+                  {orderForm.entryType === 'ASIENTO'
+                    ? 'Ingreso de Asiento al Taller (Tapicería)'
+                    : 'Ingreso de Motocicleta al Taller (Venezuela)'}
                 </h3>
               </div>
               <button
                 onClick={() => setIsNewOrderModalOpen(false)}
-                className="p-1 text-slate-400 hover:text-white"
+                className="p-1 text-slate-300 hover:text-white cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
             <form onSubmit={handleCreateOrder} className="p-6 overflow-y-auto space-y-5 text-xs">
+              {/* Entry Type Switcher (Motocicleta vs Asiento) */}
+              <div className="grid grid-cols-2 gap-2 p-1.5 bg-slate-100 rounded-xl border border-slate-200">
+                <button
+                  type="button"
+                  onClick={() => handleSwitchNewOrderEntryType('MOTOCICLETA')}
+                  className={`py-2 px-3 rounded-lg font-bold text-xs flex items-center justify-center gap-2 transition-colors cursor-pointer ${
+                    orderForm.entryType === 'MOTOCICLETA'
+                      ? 'bg-slate-900 text-white shadow-xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  <Wrench className={`w-4 h-4 ${orderForm.entryType === 'MOTOCICLETA' ? 'text-amber-400' : ''}`} />
+                  <span>Ingresar Motocicleta</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleSwitchNewOrderEntryType('ASIENTO')}
+                  className={`py-2 px-3 rounded-lg font-bold text-xs flex items-center justify-center gap-2 transition-colors cursor-pointer ${
+                    orderForm.entryType === 'ASIENTO'
+                      ? 'bg-purple-700 text-white shadow-xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  <Scissors className={`w-4 h-4 ${orderForm.entryType === 'ASIENTO' ? 'text-purple-200' : ''}`} />
+                  <span>Ingresar Asiento</span>
+                </button>
+              </div>
+
               {newOrderError && (
                 <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 flex items-center justify-between gap-2 text-xs font-medium">
                   <div className="flex items-center gap-2">
@@ -3089,6 +3843,7 @@ export const ServiceOrdersView: React.FC = () => {
                   mode={newCustomerMode}
                   onModeChange={setNewCustomerMode}
                   defaultCity={settings.city}
+                  phoneRequired={orderForm.entryType !== 'ASIENTO'}
                   value={{
                     customerId: orderForm.customerId,
                     customerName: orderForm.customerName,
@@ -3111,6 +3866,92 @@ export const ServiceOrdersView: React.FC = () => {
                 />
               </div>
 
+              {orderForm.entryType === 'ASIENTO' ? (
+                <>
+                  {/* Seat-only streamlined form */}
+                  <div className="space-y-4 pb-4 border-b border-slate-200">
+                    <div>
+                      <label className="block font-bold text-slate-800 mb-1">
+                        Modelo de la Moto *
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        value={orderForm.model}
+                        onChange={(e) => setOrderForm({ ...orderForm, model: e.target.value })}
+                        placeholder="Ej. Bera SBR 150, Empire Horse, Yamaha FZ, TX 200..."
+                        className="w-full p-2.5 rounded-lg border border-purple-200 bg-purple-50/30 focus:bg-white focus:outline-hidden focus:border-purple-500 text-sm font-semibold text-slate-900"
+                      />
+                    </div>
+
+                    {/* Seat Photos (Intake mandatory, Delivery optional) */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                      <SeatPhotoUploader
+                        label="Foto de cómo se recibió el asiento *"
+                        helperText="Obligatoria para crear la orden de asiento."
+                        required={true}
+                        accent="purple"
+                        value={orderForm.seatIntakePhoto}
+                        onChange={(dataUrl) => {
+                          setNewOrderError(null);
+                          setOrderForm((prev) => ({ ...prev, seatIntakePhoto: dataUrl }));
+                        }}
+                        onPreview={(src, title) => setLightboxPhoto({ src, title })}
+                      />
+                      <SeatPhotoUploader
+                        label="Foto de cómo se entregó el asiento"
+                        helperText="Puedes subirla ahora o cuando entregues el asiento."
+                        required={false}
+                        accent="emerald"
+                        value={orderForm.seatDeliveryPhoto}
+                        onChange={(dataUrl) =>
+                          setOrderForm((prev) => ({ ...prev, seatDeliveryPhoto: dataUrl }))
+                        }
+                        onPreview={(src, title) => setLightboxPhoto({ src, title })}
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block font-bold text-slate-800 mb-1">
+                        Descripción del trabajo por hacerle *
+                      </label>
+                      <textarea
+                        rows={3}
+                        required
+                        value={orderForm.reportedIssue}
+                        onChange={(e) => setOrderForm({ ...orderForm, reportedIssue: e.target.value })}
+                        placeholder="Ej. Retapizado completo en cuero antiresbalante negro con costura roja, cambio de espuma delantera..."
+                        className="w-full p-2.5 rounded-lg border border-slate-200 bg-slate-50 focus:bg-white focus:outline-hidden focus:border-purple-500 text-xs"
+                      />
+                    </div>
+
+                    {/* Main optional technician for the seat order */}
+                    <div className="pt-1">
+                      <ServiceTechnicianSelector
+                        technicians={technicians}
+                        selectedId={orderForm.assignedTechnicianId}
+                        selectedName={orderForm.assignedTechnician}
+                        selectedPhone={orderForm.assignedTechnicianPhone}
+                        onChange={(next) => {
+                          setOrderForm((prev) => ({
+                            ...prev,
+                            assignedTechnicianId: next.id,
+                            assignedTechnician: next.name,
+                            assignedTechnicianPhone: next.phone,
+                          }));
+                          setNewServiceTech(next.name);
+                          setNewServiceTechId(next.id);
+                        }}
+                        onOpenCreateTech={(prefill) =>
+                          handleOpenCreateTechModal({ kind: 'create-order' }, prefill)
+                        }
+                        onOpenEditTech={(tech) => handleOpenEditTechModal(tech, 'create')}
+                      />
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <>
               {/* Motorcycle Section */}
               <div className="space-y-3 pb-3 border-b border-slate-200">
                 <h4 className="font-bold text-slate-900 uppercase tracking-wider text-[11px] flex items-center gap-1.5">
@@ -3270,8 +4111,10 @@ export const ServiceOrdersView: React.FC = () => {
                   />
                 </div>
               </div>
+                </>
+              )}
 
-              {/* Spare parts: Search Warehouse OR Add Custom Unsaved Part */}
+              {/* Spare parts: Search Warehouse OR Create New Part (shared for Motocicleta & Asiento) */}
               <div className="space-y-3 pb-3 border-b border-slate-200">
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                   <h4 className="font-bold text-slate-900 uppercase tracking-wider text-[11px] flex items-center gap-1.5">
@@ -3318,26 +4161,81 @@ export const ServiceOrdersView: React.FC = () => {
                   </span>
                 </div>
 
-                {/* Quick Presets */}
-                <div className="flex flex-wrap gap-1.5">
-                  {WORKSHOP_SERVICE_PRESETS.map((preset, prIdx) => (
-                    <button
-                      key={prIdx}
-                      type="button"
-                      onClick={() => handleAddServiceToNewOrder(preset.name, preset.cost)}
-                      className="inline-flex items-center gap-1 px-2 py-1 bg-white hover:bg-amber-50 text-slate-700 hover:text-amber-900 border border-slate-200 hover:border-amber-300 rounded-lg text-[11px] transition-colors cursor-pointer font-medium"
-                    >
-                      <Plus className="w-3 h-3 text-amber-500" />
-                      <span>{preset.name}</span>
-                      <strong className="text-amber-700 font-mono">(${preset.cost})</strong>
-                    </button>
-                  ))}
-                </div>
+                {/* Quick Presets (Saved custom + built-in presets for Seat / Workshop) */}
+                {(() => {
+                  const { customPresets, builtInPresets } = getPresetsForEntryType(orderForm.entryType);
+                  const isSeat = orderForm.entryType === 'ASIENTO';
+                  return (
+                    <div className="space-y-2">
+                      {customPresets.length > 0 && (
+                        <div className="space-y-1">
+                          <span className="text-[10px] uppercase font-bold text-purple-600 block">
+                            Mis Servicios Preguardados (1 Clic para Agregar):
+                          </span>
+                          <div className="flex flex-wrap gap-1.5">
+                            {customPresets.map((preset) => (
+                              <div
+                                key={preset.id}
+                                className="inline-flex items-center bg-purple-50 border border-purple-200 rounded-lg overflow-hidden text-[11px]"
+                              >
+                                <button
+                                  type="button"
+                                  onClick={() => handleAddServiceToNewOrder(preset.name, preset.cost)}
+                                  className="inline-flex items-center gap-1 px-2 py-1 text-purple-900 hover:bg-purple-100 transition-colors cursor-pointer font-medium"
+                                >
+                                  <Plus className="w-3 h-3 text-purple-600" />
+                                  <span>{preset.name}</span>
+                                  <strong className="text-purple-700 font-mono">(${preset.cost})</strong>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeleteWorkshopServicePreset(preset.id)}
+                                  className="px-1.5 py-1 text-purple-400 hover:text-rose-600 hover:bg-rose-50 border-l border-purple-200 transition-colors cursor-pointer"
+                                  title="Eliminar de servicios preguardados"
+                                >
+                                  <X className="w-3 h-3" />
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      <div className="space-y-1">
+                        <span className="text-[10px] uppercase font-bold text-slate-400 block">
+                          {isSeat
+                            ? 'Servicios Preguardados de Asientos / Tapicería (1 Clic para Agregar):'
+                            : 'Servicios Frecuentes de Taller (1 Clic para Agregar):'}
+                        </span>
+                        <div className="flex flex-wrap gap-1.5">
+                          {builtInPresets.map((preset, prIdx) => (
+                            <button
+                              key={prIdx}
+                              type="button"
+                              onClick={() => handleAddServiceToNewOrder(preset.name, preset.cost)}
+                              className={`inline-flex items-center gap-1 px-2 py-1 bg-white border rounded-lg text-[11px] transition-colors cursor-pointer font-medium ${
+                                isSeat
+                                  ? 'hover:bg-purple-50 text-slate-700 hover:text-purple-900 border-slate-200 hover:border-purple-300'
+                                  : 'hover:bg-amber-50 text-slate-700 hover:text-amber-900 border-slate-200 hover:border-amber-300'
+                              }`}
+                            >
+                              <Plus className={`w-3 h-3 ${isSeat ? 'text-purple-500' : 'text-amber-500'}`} />
+                              <span>{preset.name}</span>
+                              <strong className={`font-mono ${isSeat ? 'text-purple-700' : 'text-amber-700'}`}>
+                                (${preset.cost})
+                              </strong>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()}
 
                 {/* Custom Service Adder with Searchable Technician Picker */}
                 <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 space-y-2">
                   <span className="font-semibold text-slate-700 text-[11px] block">
-                    Agregar Servicio con Buscador de Técnico Registrado:
+                    Crear y Agregar Nuevo Servicio con Técnico Asignado:
                   </span>
                   <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 items-center">
                     <div className="sm:col-span-4">
@@ -3345,7 +4243,11 @@ export const ServiceOrdersView: React.FC = () => {
                         type="text"
                         value={newServiceName}
                         onChange={(e) => setNewServiceName(e.target.value)}
-                        placeholder="Descripción del trabajo..."
+                        placeholder={
+                          orderForm.entryType === 'ASIENTO'
+                            ? 'Ej. Tapizado con costura doble, espuma gel...'
+                            : 'Descripción del trabajo...'
+                        }
                         className="w-full p-2 rounded-lg border border-slate-300 bg-white text-xs"
                       />
                     </div>
@@ -3391,6 +4293,15 @@ export const ServiceOrdersView: React.FC = () => {
                       </button>
                     </div>
                   </div>
+                  <label className="inline-flex items-center gap-2 text-[11px] font-medium text-slate-600 cursor-pointer select-none pt-0.5">
+                    <input
+                      type="checkbox"
+                      checked={newServiceSavePreset}
+                      onChange={(e) => setNewServiceSavePreset(e.target.checked)}
+                      className="w-3.5 h-3.5 rounded accent-purple-600 cursor-pointer"
+                    />
+                    <span>Guardar también en servicios preguardados para futuras órdenes</span>
+                  </label>
                 </div>
 
                 {orderForm.servicesList.length > 0 && (
@@ -3467,13 +4378,15 @@ export const ServiceOrdersView: React.FC = () => {
                     <label className="block font-semibold text-slate-700 mb-1">
                       {orderForm.servicesList.length > 0
                         ? 'Total Mano de Obra ($ USD) (Calculado por servicios)'
+                        : orderForm.entryType === 'ASIENTO'
+                        ? 'Mano de Obra ($ USD) (Opcional si no agregas servicios)'
                         : 'Mano de Obra ($ USD) *'}
                     </label>
                     <input
                       type="number"
                       step="any"
                       min="0"
-                      required
+                      required={orderForm.entryType !== 'ASIENTO'}
                       readOnly={orderForm.servicesList.length > 0}
                       value={
                         orderForm.servicesList.length > 0
@@ -3541,7 +4454,7 @@ export const ServiceOrdersView: React.FC = () => {
                       orderForm.selectedParts.reduce((s, p) => s + p.total, 0) +
                         (orderForm.servicesList.length > 0
                           ? orderForm.servicesList.reduce((s, srv) => s + srv.cost, 0)
-                          : Number(orderForm.laborCostUSD))
+                          : Number(orderForm.laborCostUSD) || 0)
                     )}
                   </span>
                   <span className="text-xs font-semibold text-emerald-700 font-mono">
@@ -3549,7 +4462,7 @@ export const ServiceOrdersView: React.FC = () => {
                       (orderForm.selectedParts.reduce((s, p) => s + p.total, 0) +
                         (orderForm.servicesList.length > 0
                           ? orderForm.servicesList.reduce((s, srv) => s + srv.cost, 0)
-                          : Number(orderForm.laborCostUSD))) *
+                          : Number(orderForm.laborCostUSD) || 0)) *
                         rate
                     )}
                   </span>
@@ -3565,9 +4478,15 @@ export const ServiceOrdersView: React.FC = () => {
                   </button>
                   <button
                     type="submit"
-                    className="px-5 py-2 bg-amber-500 hover:bg-amber-600 text-slate-950 font-bold text-xs rounded-lg shadow-sm cursor-pointer"
+                    className={`px-5 py-2 font-bold text-xs rounded-lg shadow-sm cursor-pointer ${
+                      orderForm.entryType === 'ASIENTO'
+                        ? 'bg-purple-700 hover:bg-purple-800 text-white'
+                        : 'bg-amber-500 hover:bg-amber-600 text-slate-950'
+                    }`}
                   >
-                    Guardar Orden y Notificar
+                    {orderForm.entryType === 'ASIENTO'
+                      ? 'Crear Orden de Asiento'
+                      : 'Guardar Orden y Notificar'}
                   </button>
                 </div>
               </div>
@@ -3581,29 +4500,39 @@ export const ServiceOrdersView: React.FC = () => {
         <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-900/70 backdrop-blur-xs overflow-y-auto">
           <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-4xl overflow-hidden flex flex-col max-h-[92vh] my-auto animate-in fade-in zoom-in-95">
             {/* Modal Header */}
-            <div className="p-4 sm:p-5 bg-slate-900 text-white flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className={`p-4 sm:p-5 text-white flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${editForm.entryType === 'ASIENTO' ? 'bg-purple-900' : 'bg-slate-900'}`}>
               <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-xl bg-amber-500/20 border border-amber-500/30 flex items-center justify-center text-amber-400 shrink-0">
-                  <Edit3 className="w-5 h-5" />
+                <div className={`w-10 h-10 rounded-xl border flex items-center justify-center shrink-0 ${editForm.entryType === 'ASIENTO' ? 'bg-purple-500/20 border-purple-400/40 text-purple-200' : 'bg-amber-500/20 border-amber-500/30 text-amber-400'}`}>
+                  {editForm.entryType === 'ASIENTO' ? <Scissors className="w-5 h-5" /> : <Edit3 className="w-5 h-5" />}
                 </div>
                 <div>
                   <div className="flex items-center gap-2">
                     <h3 className="font-bold text-base font-display">
                       Editar Orden #{editForm.orderNumber}
                     </h3>
-                    <span className="font-mono font-bold text-xs bg-amber-500 text-slate-950 px-2 py-0.5 rounded">
-                      {editForm.plate || 'SIN PLACA'}
-                    </span>
+                    {editForm.entryType === 'ASIENTO' ? (
+                      <span className="font-mono font-bold text-xs bg-purple-200 text-purple-950 px-2 py-0.5 rounded uppercase">
+                        ASIENTO
+                      </span>
+                    ) : (
+                      <span className="font-mono font-bold text-xs bg-amber-500 text-slate-950 px-2 py-0.5 rounded">
+                        {editForm.plate || 'SIN PLACA'}
+                      </span>
+                    )}
                   </div>
-                  <p className="text-xs text-slate-400 mt-0.5">
-                    Cliente: <strong>{editForm.customerName}</strong> ({editForm.customerPhone}) · {editForm.brand} {editForm.model}
+                  <p className="text-xs text-slate-300 mt-0.5">
+                    Cliente: <strong>{editForm.customerName}</strong>
+                    {editForm.customerPhone ? ` (${editForm.customerPhone})` : ''} ·{' '}
+                    {editForm.entryType === 'ASIENTO'
+                      ? `Asiento de ${editForm.model}`
+                      : `${editForm.brand} ${editForm.model}`}
                   </p>
                 </div>
               </div>
 
               <div className="flex items-center gap-2 self-end sm:self-auto">
-                <div className="flex items-center gap-1.5 bg-slate-800 px-2.5 py-1.5 rounded-lg border border-slate-700">
-                  <span className="text-[11px] text-slate-400">Estado:</span>
+                <div className="flex items-center gap-1.5 bg-slate-950/40 px-2.5 py-1.5 rounded-lg border border-white/15">
+                  <span className="text-[11px] text-slate-300">Estado:</span>
                   <select
                     value={editForm.status}
                     onChange={(e) => setEditForm({ ...editForm, status: e.target.value as ServiceOrderStatus })}
@@ -3619,7 +4548,7 @@ export const ServiceOrdersView: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => setIsEditModalOpen(false)}
-                  className="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 cursor-pointer"
+                  className="p-1.5 text-slate-300 hover:text-white rounded-lg hover:bg-white/10 cursor-pointer"
                   title="Cerrar ventana"
                 >
                   <X className="w-5 h-5" />
@@ -3642,6 +4571,62 @@ export const ServiceOrdersView: React.FC = () => {
                   >
                     <X className="w-3.5 h-3.5" />
                   </button>
+                </div>
+              )}
+
+              {/* SECTION 0 (Only for ASIENTO): Fotos del Asiento (Recibido y Entregado) */}
+              {editForm.entryType === 'ASIENTO' && (
+                <div className="space-y-3 pt-1">
+                  <div className="flex items-center gap-2">
+                    <div className="w-7 h-7 rounded-lg bg-purple-100 text-purple-700 flex items-center justify-center">
+                      <Camera className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <h4 className="font-bold text-slate-900 text-sm">
+                        Fotos del Asiento (Recibido y Entregado)
+                      </h4>
+                      <p className="text-[11px] text-slate-500">
+                        Actualiza o sube la foto de cómo se entregó el asiento terminado.
+                      </p>
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+                    <SeatPhotoUploader
+                      label="Foto de cómo se recibió el asiento *"
+                      helperText="Obligatoria en órdenes de asiento."
+                      required={true}
+                      accent="purple"
+                      value={editForm.seatIntakePhoto}
+                      onChange={(dataUrl) => {
+                        setEditOrderError(null);
+                        setEditForm((prev) => ({ ...prev, seatIntakePhoto: dataUrl }));
+                      }}
+                      onPreview={(src, title) =>
+                        setLightboxPhoto({
+                          src,
+                          title,
+                          subtitle: `Orden #${editForm.orderNumber} · ${editForm.customerName}`,
+                        })
+                      }
+                    />
+                    <SeatPhotoUploader
+                      label="Foto de cómo se entregó el asiento"
+                      helperText="Sube la foto del trabajo terminado al entregar."
+                      required={false}
+                      accent="emerald"
+                      value={editForm.seatDeliveryPhoto}
+                      onChange={(dataUrl) =>
+                        setEditForm((prev) => ({ ...prev, seatDeliveryPhoto: dataUrl }))
+                      }
+                      onPreview={(src, title) =>
+                        setLightboxPhoto({
+                          src,
+                          title,
+                          subtitle: `Orden #${editForm.orderNumber} · ${editForm.customerName}`,
+                        })
+                      }
+                    />
+                  </div>
                 </div>
               )}
 
@@ -3721,31 +4706,81 @@ export const ServiceOrdersView: React.FC = () => {
                   </div>
                 </div>
 
-                {/* Quick Presets Strip */}
-                <div className="space-y-1.5">
-                  <span className="text-[10px] uppercase font-bold text-slate-400 block">
-                    Servicios Frecuentes (1 Clic para Agregar):
-                  </span>
-                  <div className="flex flex-wrap gap-1.5">
-                    {WORKSHOP_SERVICE_PRESETS.map((preset, prIdx) => (
-                      <button
-                        key={prIdx}
-                        type="button"
-                        onClick={() => handleAddServiceToEdit(preset.name, preset.cost)}
-                        className="inline-flex items-center gap-1 px-2.5 py-1 bg-white hover:bg-amber-50 text-slate-700 hover:text-amber-900 border border-slate-200 hover:border-amber-300 rounded-lg text-xs transition-colors cursor-pointer shadow-2xs font-medium"
-                      >
-                        <Plus className="w-3 h-3 text-amber-500" />
-                        <span>{preset.name}</span>
-                        <strong className="text-amber-700 font-mono ml-0.5">(${preset.cost})</strong>
-                      </button>
-                    ))}
-                  </div>
-                </div>
+                {/* Quick Presets Strip (Custom pre-saved + built-in presets for Seat / Workshop) */}
+                {(() => {
+                  const { customPresets, builtInPresets } = getPresetsForEntryType(editForm.entryType);
+                  const isSeat = editForm.entryType === 'ASIENTO';
+                  return (
+                    <div className="space-y-2.5">
+                      {customPresets.length > 0 && (
+                        <div className="space-y-1.5">
+                          <span className="text-[10px] uppercase font-bold text-purple-600 block">
+                            Mis Servicios Preguardados (1 Clic para Agregar):
+                          </span>
+                          <div className="flex flex-wrap gap-1.5">
+                            {customPresets.map((preset) => (
+                              <div
+                                key={preset.id}
+                                className="inline-flex items-center bg-purple-50 border border-purple-200 rounded-lg overflow-hidden text-xs shadow-2xs"
+                              >
+                                <button
+                                  type="button"
+                                  onClick={() => handleAddServiceToEdit(preset.name, preset.cost)}
+                                  className="inline-flex items-center gap-1 px-2.5 py-1 text-purple-900 hover:bg-purple-100 transition-colors cursor-pointer font-medium"
+                                >
+                                  <Plus className="w-3 h-3 text-purple-600" />
+                                  <span>{preset.name}</span>
+                                  <strong className="text-purple-700 font-mono ml-0.5">(${preset.cost})</strong>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeleteWorkshopServicePreset(preset.id)}
+                                  className="px-1.5 py-1 text-purple-400 hover:text-rose-600 hover:bg-rose-50 border-l border-purple-200 transition-colors cursor-pointer"
+                                  title="Eliminar de servicios preguardados"
+                                >
+                                  <X className="w-3 h-3" />
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      <div className="space-y-1.5">
+                        <span className="text-[10px] uppercase font-bold text-slate-400 block">
+                          {isSeat
+                            ? 'Servicios Preguardados de Asientos / Tapicería (1 Clic para Agregar):'
+                            : 'Servicios Frecuentes de Taller (1 Clic para Agregar):'}
+                        </span>
+                        <div className="flex flex-wrap gap-1.5">
+                          {builtInPresets.map((preset, prIdx) => (
+                            <button
+                              key={prIdx}
+                              type="button"
+                              onClick={() => handleAddServiceToEdit(preset.name, preset.cost)}
+                              className={`inline-flex items-center gap-1 px-2.5 py-1 bg-white border rounded-lg text-xs transition-colors cursor-pointer shadow-2xs font-medium ${
+                                isSeat
+                                  ? 'hover:bg-purple-50 text-slate-700 hover:text-purple-900 border-slate-200 hover:border-purple-300'
+                                  : 'hover:bg-amber-50 text-slate-700 hover:text-amber-900 border-slate-200 hover:border-amber-300'
+                              }`}
+                            >
+                              <Plus className={`w-3 h-3 ${isSeat ? 'text-purple-500' : 'text-amber-500'}`} />
+                              <span>{preset.name}</span>
+                              <strong className={`font-mono ml-0.5 ${isSeat ? 'text-purple-700' : 'text-amber-700'}`}>
+                                (${preset.cost})
+                              </strong>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()}
 
                 {/* Custom Service Adder Input */}
                 <div className="bg-slate-50 border border-slate-200 rounded-xl p-3.5 space-y-2">
                   <span className="font-semibold text-slate-700 text-xs block">
-                    Agregar Otro Servicio / Mano de Obra Personalizada:
+                    Crear y Agregar Nuevo Servicio / Mano de Obra con Técnico Asignado:
                   </span>
                   <div className="grid grid-cols-1 sm:grid-cols-12 gap-2 items-center">
                     <div className="sm:col-span-4">
@@ -3753,7 +4788,11 @@ export const ServiceOrdersView: React.FC = () => {
                         type="text"
                         value={editServiceName}
                         onChange={(e) => setEditServiceName(e.target.value)}
-                        placeholder="Descripción del trabajo (ej. Rectificación de disco, Pintura...)"
+                        placeholder={
+                          editForm.entryType === 'ASIENTO'
+                            ? 'Ej. Retapizado especial, cambio de espuma, costura...'
+                            : 'Descripción del trabajo (ej. Rectificación de disco, Pintura...)'
+                        }
                         className="w-full p-2 rounded-lg border border-slate-300 bg-white text-xs"
                       />
                     </div>
@@ -3799,6 +4838,15 @@ export const ServiceOrdersView: React.FC = () => {
                       </button>
                     </div>
                   </div>
+                  <label className="inline-flex items-center gap-2 text-[11px] font-medium text-slate-600 cursor-pointer select-none pt-0.5">
+                    <input
+                      type="checkbox"
+                      checked={editServiceSavePreset}
+                      onChange={(e) => setEditServiceSavePreset(e.target.checked)}
+                      className="w-3.5 h-3.5 rounded accent-purple-600 cursor-pointer"
+                    />
+                    <span>Guardar también en servicios preguardados para futuras órdenes</span>
+                  </label>
                 </div>
 
                 {/* List of Services in Order */}
@@ -3906,6 +4954,7 @@ export const ServiceOrdersView: React.FC = () => {
                   mode={editCustomerMode}
                   onModeChange={setEditCustomerMode}
                   defaultCity={settings.city}
+                  phoneRequired={editForm.entryType !== 'ASIENTO'}
                   value={{
                     customerId: editForm.customerId,
                     customerName: editForm.customerName,
@@ -3927,75 +4976,91 @@ export const ServiceOrdersView: React.FC = () => {
                   }
                 />
 
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                {editForm.entryType === 'ASIENTO' ? (
                   <div>
-                    <label className="block font-semibold text-slate-700 mb-1">Placa *</label>
+                    <label className="block font-semibold text-slate-700 mb-1">Modelo de la Moto *</label>
                     <input
                       type="text"
                       required
-                      value={editForm.plate}
-                      onChange={(e) => setEditForm({ ...editForm, plate: e.target.value.toUpperCase() })}
-                      className="w-full p-2.5 rounded-lg border border-slate-200 bg-slate-50 font-mono font-bold text-xs"
-                    />
-                  </div>
-                  <div>
-                    <label className="block font-semibold text-slate-700 mb-1">Marca</label>
-                    <input
-                      type="text"
-                      value={editForm.brand}
-                      onChange={(e) => setEditForm({ ...editForm, brand: e.target.value })}
-                      className="w-full p-2.5 rounded-lg border border-slate-200 bg-slate-50 text-xs"
-                    />
-                  </div>
-                  <div>
-                    <label className="block font-semibold text-slate-700 mb-1">Modelo</label>
-                    <input
-                      type="text"
                       value={editForm.model}
                       onChange={(e) => setEditForm({ ...editForm, model: e.target.value })}
-                      className="w-full p-2.5 rounded-lg border border-slate-200 bg-slate-50 text-xs"
+                      placeholder="Ej. Bera SBR 150, Empire Horse..."
+                      className="w-full p-2.5 rounded-lg border border-purple-200 bg-purple-50/30 focus:bg-white focus:outline-hidden focus:border-purple-500 text-xs font-semibold"
                     />
                   </div>
-                  <div>
-                    <label className="block font-semibold text-slate-700 mb-1">Kilometraje</label>
-                    <input
-                      type="number"
-                      value={editForm.mileage}
-                      onChange={(e) => setEditForm({ ...editForm, mileage: Number(e.target.value) })}
-                      className="w-full p-2.5 rounded-lg border border-slate-200 bg-slate-50 font-mono text-xs"
-                    />
-                  </div>
-                </div>
+                ) : (
+                  <>
+                    <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                      <div>
+                        <label className="block font-semibold text-slate-700 mb-1">Placa *</label>
+                        <input
+                          type="text"
+                          required
+                          value={editForm.plate}
+                          onChange={(e) => setEditForm({ ...editForm, plate: e.target.value.toUpperCase() })}
+                          className="w-full p-2.5 rounded-lg border border-slate-200 bg-slate-50 font-mono font-bold text-xs"
+                        />
+                      </div>
+                      <div>
+                        <label className="block font-semibold text-slate-700 mb-1">Marca</label>
+                        <input
+                          type="text"
+                          value={editForm.brand}
+                          onChange={(e) => setEditForm({ ...editForm, brand: e.target.value })}
+                          className="w-full p-2.5 rounded-lg border border-slate-200 bg-slate-50 text-xs"
+                        />
+                      </div>
+                      <div>
+                        <label className="block font-semibold text-slate-700 mb-1">Modelo</label>
+                        <input
+                          type="text"
+                          value={editForm.model}
+                          onChange={(e) => setEditForm({ ...editForm, model: e.target.value })}
+                          className="w-full p-2.5 rounded-lg border border-slate-200 bg-slate-50 text-xs"
+                        />
+                      </div>
+                      <div>
+                        <label className="block font-semibold text-slate-700 mb-1">Kilometraje</label>
+                        <input
+                          type="number"
+                          value={editForm.mileage}
+                          onChange={(e) => setEditForm({ ...editForm, mileage: Number(e.target.value) })}
+                          className="w-full p-2.5 rounded-lg border border-slate-200 bg-slate-50 font-mono text-xs"
+                        />
+                      </div>
+                    </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div>
-                    <label className="block font-semibold text-slate-700 mb-1">Color de la Moto</label>
-                    <input
-                      type="text"
-                      value={editForm.color}
-                      onChange={(e) => setEditForm({ ...editForm, color: e.target.value })}
-                      placeholder="Ej. Azul Eléctrico"
-                      className="w-full p-2.5 rounded-lg border border-slate-200 bg-slate-50 text-xs"
-                    />
-                  </div>
-                  <div>
-                    <label className="block font-semibold text-slate-700 mb-1 flex items-center gap-1">
-                      <Fuel className="w-3.5 h-3.5 text-amber-600" />
-                      <span>Nivel de Gasolina</span>
-                    </label>
-                    <select
-                      value={editForm.fuelLevel}
-                      onChange={(e) => setEditForm({ ...editForm, fuelLevel: e.target.value as FuelLevel })}
-                      className="w-full p-2.5 rounded-lg border border-slate-200 bg-slate-50 font-medium text-xs"
-                    >
-                      {FUEL_LEVEL_OPTIONS.map((opt) => (
-                        <option key={opt.value} value={opt.value}>
-                          {opt.label}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div>
+                        <label className="block font-semibold text-slate-700 mb-1">Color de la Moto</label>
+                        <input
+                          type="text"
+                          value={editForm.color}
+                          onChange={(e) => setEditForm({ ...editForm, color: e.target.value })}
+                          placeholder="Ej. Azul Eléctrico"
+                          className="w-full p-2.5 rounded-lg border border-slate-200 bg-slate-50 text-xs"
+                        />
+                      </div>
+                      <div>
+                        <label className="block font-semibold text-slate-700 mb-1 flex items-center gap-1">
+                          <Fuel className="w-3.5 h-3.5 text-amber-600" />
+                          <span>Nivel de Gasolina</span>
+                        </label>
+                        <select
+                          value={editForm.fuelLevel}
+                          onChange={(e) => setEditForm({ ...editForm, fuelLevel: e.target.value as FuelLevel })}
+                          className="w-full p-2.5 rounded-lg border border-slate-200 bg-slate-50 font-medium text-xs"
+                        >
+                          {FUEL_LEVEL_OPTIONS.map((opt) => (
+                            <option key={opt.value} value={opt.value}>
+                              {opt.label}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+                  </>
+                )}
 
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                   <div>
@@ -4047,7 +5112,11 @@ export const ServiceOrdersView: React.FC = () => {
                 </div>
 
                 <div>
-                  <label className="block font-semibold text-slate-700 mb-1">Falla / Motivo de Ingreso</label>
+                  <label className="block font-semibold text-slate-700 mb-1">
+                    {editForm.entryType === 'ASIENTO'
+                      ? 'Descripción del Trabajo por Hacerle al Asiento *'
+                      : 'Falla / Motivo de Ingreso'}
+                  </label>
                   <textarea
                     rows={2}
                     value={editForm.reportedIssue}
@@ -4262,6 +5331,43 @@ export const ServiceOrdersView: React.FC = () => {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Vista Ampliada de Foto del Asiento */}
+      {lightboxPhoto && (
+        <div
+          onClick={() => setLightboxPhoto(null)}
+          className="fixed inset-0 z-[70] flex items-center justify-center p-4 bg-slate-950/85 backdrop-blur-xs"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="bg-slate-900 rounded-2xl border border-slate-700 shadow-2xl max-w-3xl w-full overflow-hidden flex flex-col max-h-[90vh]"
+          >
+            <div className="px-4 py-3 bg-slate-950 border-b border-slate-800 flex items-center justify-between gap-3">
+              <div className="min-w-0">
+                <h4 className="font-bold text-white text-sm truncate">{lightboxPhoto.title}</h4>
+                {lightboxPhoto.subtitle && (
+                  <p className="text-xs text-slate-400 truncate">{lightboxPhoto.subtitle}</p>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() => setLightboxPhoto(null)}
+                className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 cursor-pointer shrink-0"
+                title="Cerrar vista ampliada"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-3 bg-slate-950 flex items-center justify-center overflow-auto">
+              <img
+                src={lightboxPhoto.src}
+                alt={lightboxPhoto.title}
+                className="max-h-[75vh] w-auto object-contain rounded-lg"
+              />
+            </div>
           </div>
         </div>
       )}

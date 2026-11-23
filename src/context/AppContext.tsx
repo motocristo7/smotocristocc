@@ -25,6 +25,7 @@ import {
   SalePaymentType,
   SalePaymentSplit,
   isSaleWithCredit,
+  PaymentCurrencyMode,
   CreditPaymentRecord,
   Supplier,
   PurchaseOrder,
@@ -291,6 +292,8 @@ interface AppContextType {
     creditDays?: number;
     creditDueDate?: string;
     creditPaidAmount?: number;
+    creditPaidAmountBs?: number;
+    creditInitialPaymentCurrency?: PaymentCurrencyMode;
     creditStatus?: 'PENDIENTE' | 'PAGADO';
     mercadolibreCommissionUSD?: number;
     mercadolibreCommissionRate?: number;
@@ -305,6 +308,8 @@ interface AppContextType {
     saleId: string,
     payment: {
       amountUSD: number;
+      amountBs?: number;
+      currencyMode?: PaymentCurrencyMode;
       paymentMethod: any;
       pagoMovilAccount?: PagoMovilAccountOption;
       reference?: string;
@@ -4457,6 +4462,8 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     creditDays?: number;
     creditDueDate?: string;
     creditPaidAmount?: number;
+    creditPaidAmountBs?: number;
+    creditInitialPaymentCurrency?: PaymentCurrencyMode;
     creditStatus?: 'PENDIENTE' | 'PAGADO';
     mercadolibreCommissionUSD?: number;
     mercadolibreCommissionRate?: number;
@@ -4633,11 +4640,19 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
         };
       }
     } else if (collectedUSD > 0) {
+      const explicitCollectedBs = Number(saleData.creditPaidAmountBs);
+      const collectedBs =
+        (resolvedPaymentType === 'CREDITO' || resolvedPaymentType === 'APARTADO') &&
+        !Number.isNaN(explicitCollectedBs) &&
+        explicitCollectedBs > 0
+          ? Math.round(explicitCollectedBs * 100) / 100
+          : Math.round(collectedUSD * rate * 100) / 100;
       const treasuryIncome = recordAutomaticSaleIncomeInTreasury({
         saleId,
         invoiceNumber: invoiceNum,
         customerName: customer.name || saleData.customerName,
         amountUSD: collectedUSD,
+        amountBs: collectedBs,
         bcvRate: rate,
         paymentMethod: saleData.paymentMethod,
         pagoMovilAccount: resolvedPagoMovilAccount,
@@ -4660,6 +4675,23 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       isMixto &&
       Array.isArray(resolvedPaymentSplits) &&
       resolvedPaymentSplits.some((sp) => sp.splitType === 'CREDITO' && sp.amountUSD > 0);
+
+    const isDeferredSingle = resolvedPaymentType === 'CREDITO' || resolvedPaymentType === 'APARTADO';
+    const resolvedInitialPaidBs =
+      isDeferredSingle && collectedUSD > 0
+        ? !Number.isNaN(Number(saleData.creditPaidAmountBs)) && Number(saleData.creditPaidAmountBs) > 0
+          ? Math.round(Number(saleData.creditPaidAmountBs) * 100) / 100
+          : Math.round(collectedUSD * rate * 100) / 100
+        : undefined;
+    const resolvedInitialCurrency: PaymentCurrencyMode | undefined =
+      isDeferredSingle && collectedUSD > 0
+        ? saleData.creditInitialPaymentCurrency ||
+          (resolvedPaymentMethod === 'Pago Móvil' ||
+          resolvedPaymentMethod === 'Punto de Venta (Bs)' ||
+          resolvedPaymentMethod === 'Transferencia Bancaria Bs'
+            ? 'BS'
+            : 'USD')
+        : undefined;
 
     const newSale: Sale = {
       ...saleData,
@@ -4699,6 +4731,8 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
         resolvedPaymentType === 'CREDITO' || resolvedPaymentType === 'APARTADO' || mixtoHasCredit
           ? (saleData.creditPaidAmount ?? 0)
           : saleData.creditPaidAmount,
+      creditPaidAmountBs: resolvedInitialPaidBs,
+      creditInitialPaymentCurrency: resolvedInitialCurrency,
       creditStatus:
         resolvedPaymentType === 'CREDITO' || resolvedPaymentType === 'APARTADO' || mixtoHasCredit
           ? (saleData.creditStatus || 'PENDIENTE')
@@ -5295,6 +5329,8 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     saleId: string,
     payment: {
       amountUSD: number;
+      amountBs?: number;
+      currencyMode?: PaymentCurrencyMode;
       paymentMethod: any;
       pagoMovilAccount?: PagoMovilAccountOption;
       reference?: string;
@@ -5306,21 +5342,37 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     if (!existingSale) return null;
 
     const currentPaid = existingSale.creditPaidAmount || 0;
-    const newPaid = Math.round((currentPaid + payment.amountUSD) * 100) / 100;
-    const isPaidFull = newPaid >= existingSale.total - 0.01;
+    const cleanUSD = Math.round((Number(payment.amountUSD) || 0) * 100) / 100;
+    const explicitBs = Number(payment.amountBs);
+    const cleanBs =
+      !Number.isNaN(explicitBs) && explicitBs > 0
+        ? Math.round(explicitBs * 100) / 100
+        : Math.round(cleanUSD * rate * 100) / 100;
+    const rawNewPaid = Math.round((currentPaid + cleanUSD) * 100) / 100;
+    const isPaidFull = rawNewPaid >= existingSale.total - 0.02;
+    const newPaid = isPaidFull ? Math.min(existingSale.total, Math.max(rawNewPaid, existingSale.total)) : rawNewPaid;
 
     const resolvedPagoMovilAccount: PagoMovilAccountOption | undefined =
       payment.paymentMethod === 'Pago Móvil'
         ? payment.pagoMovilAccount || 'BANESCO_PERSONAL'
         : undefined;
 
+    const resolvedCurrencyMode: PaymentCurrencyMode =
+      payment.currencyMode ||
+      (payment.paymentMethod === 'Pago Móvil' ||
+      payment.paymentMethod === 'Punto de Venta (Bs)' ||
+      payment.paymentMethod === 'Transferencia Bancaria Bs'
+        ? 'BS'
+        : 'USD');
+
     const treasuryIncome =
-      payment.amountUSD > 0
+      cleanUSD > 0
         ? recordAutomaticSaleIncomeInTreasury({
             saleId: existingSale.id,
             invoiceNumber: existingSale.invoiceNumber,
             customerName: existingSale.customerName,
-            amountUSD: payment.amountUSD,
+            amountUSD: cleanUSD,
+            amountBs: cleanBs,
             bcvRate: rate,
             paymentMethod: payment.paymentMethod,
             pagoMovilAccount: resolvedPagoMovilAccount,
@@ -5333,8 +5385,10 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     const paymentRecord: CreditPaymentRecord = {
       id: `pay-${Date.now()}`,
       date: new Date().toISOString(),
-      amountUSD: payment.amountUSD,
-      amountBs: payment.amountUSD * rate,
+      amountUSD: cleanUSD,
+      amountBs: cleanBs,
+      currencyMode: resolvedCurrencyMode,
+      bcvRate: rate,
       paymentMethod: payment.paymentMethod,
       pagoMovilAccount: resolvedPagoMovilAccount,
       treasuryAccountId: treasuryIncome?.account.id,

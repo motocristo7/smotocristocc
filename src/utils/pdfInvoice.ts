@@ -485,6 +485,25 @@ export function generateInvoicePDF(
   // "Y quiero que los datos para el pago y el monto le llegue solo a los clientes que estan comprando a credito con una nota de credito, a los que compran decontado les llegue solo la factura de compra."
   if (isApartado) {
     // SISTEMA DE APARTADO: Reserva, abono inicial, saldo para retirar y datos bancarios
+    const paidUSD = sale.creditPaidAmount || 0;
+    const paidBs =
+      sale.creditPayments && sale.creditPayments.length > 0
+        ? paidUSD * rate
+        : sale.creditPaidAmountBs || paidUSD * rate;
+    const initialIsBs =
+      (!sale.creditPayments || sale.creditPayments.length === 0) &&
+      (sale.creditInitialPaymentCurrency === 'BS' ||
+        (!sale.creditInitialPaymentCurrency &&
+          (sale.paymentMethod === 'Pago Móvil' ||
+            sale.paymentMethod === 'Punto de Venta (Bs)' ||
+            sale.paymentMethod === 'Transferencia Bancaria Bs')));
+    const abonoPdfText =
+      paidUSD > 0
+        ? initialIsBs
+          ? ` | Abono: -${formatBs(paidBs)} (${formatUSD(paidUSD)})`
+          : ` | Abono: -${formatUSD(paidUSD)} (${formatBs(paidBs)})`
+        : '';
+
     ensureSpace(34);
     const boxHeight = 28;
     doc.setFillColor(238, 242, 255); // indigo-50
@@ -498,13 +517,13 @@ export function generateInvoicePDF(
     doc.text('CONDICIONES DEL SISTEMA DE APARTADO Y DATOS DE PAGO:', margin + 4, y + 5);
 
     doc.setFont('helvetica', 'normal');
-    doc.setFontSize(7.5);
+    doc.setFontSize(7.2);
     doc.setTextColor(49, 46, 129); // indigo-900
     doc.text(`• Plazo de Reserva: ${sale.creditDays || 15} días  ·  Retirar antes: ${sale.creditDueDate || 'A convenir'}`, margin + 4, y + 9.5);
-    doc.text(`• Total Apartado: ${formatUSD(sale.total)}${sale.creditPaidAmount ? ` | Abono Reserva: -${formatUSD(sale.creditPaidAmount)}` : ''}`, margin + 4, y + 14);
+    doc.text(`• Total: ${formatUSD(sale.total)}${abonoPdfText}`, margin + 4, y + 14);
 
     doc.setFont('helvetica', 'bold');
-    doc.setFontSize(8.5);
+    doc.setFontSize(8.2);
     doc.setTextColor(67, 56, 202); // indigo-700
     doc.text(`• SALDO PARA RETIRAR: ${formatUSD(pendingBalanceUSD)} (${formatBs(pendingBalanceBs)} a tasa BCV)`, margin + 4, y + 19);
 
@@ -524,6 +543,25 @@ export function generateInvoicePDF(
     y += boxHeight + 6;
   } else if (isCredit) {
     // VENTA A CRÉDITO: SÍ se muestran los datos para el pago, nota de crédito y saldo pendiente
+    const paidUSD = sale.creditPaidAmount || 0;
+    const paidBs =
+      sale.creditPayments && sale.creditPayments.length > 0
+        ? paidUSD * rate
+        : sale.creditPaidAmountBs || paidUSD * rate;
+    const initialIsBs =
+      (!sale.creditPayments || sale.creditPayments.length === 0) &&
+      (sale.creditInitialPaymentCurrency === 'BS' ||
+        (!sale.creditInitialPaymentCurrency &&
+          (sale.paymentMethod === 'Pago Móvil' ||
+            sale.paymentMethod === 'Punto de Venta (Bs)' ||
+            sale.paymentMethod === 'Transferencia Bancaria Bs')));
+    const abonoPdfText =
+      paidUSD > 0
+        ? initialIsBs
+          ? ` | Abono: -${formatBs(paidBs)} (${formatUSD(paidUSD)})`
+          : ` | Abono: -${formatUSD(paidUSD)} (${formatBs(paidBs)})`
+        : '';
+
     ensureSpace(34);
     const boxHeight = 28;
     doc.setFillColor(254, 243, 199); // amber-100/50
@@ -539,13 +577,13 @@ export function generateInvoicePDF(
 
     // Left Col: Financials & Balance
     doc.setFont('helvetica', 'normal');
-    doc.setFontSize(7.5);
+    doc.setFontSize(7.2);
     doc.setTextColor(120, 53, 15);
     doc.text(`• Plazo de Crédito: ${sale.creditDays || 15} días  ·  Fecha Límite: ${sale.creditDueDate || 'A convenir'}`, margin + 4, y + 9.5);
-    doc.text(`• Total Venta: ${formatUSD(sale.total)}${sale.creditPaidAmount ? ` | Abono: -${formatUSD(sale.creditPaidAmount)}` : ''}`, margin + 4, y + 14);
+    doc.text(`• Total: ${formatUSD(sale.total)}${abonoPdfText}`, margin + 4, y + 14);
 
     doc.setFont('helvetica', 'bold');
-    doc.setFontSize(8.5);
+    doc.setFontSize(8.2);
     doc.setTextColor(180, 83, 9);
     doc.text(`• SALDO PENDIENTE: ${formatUSD(pendingBalanceUSD)} (${formatBs(pendingBalanceBs)} a tasa BCV)`, margin + 4, y + 19);
 

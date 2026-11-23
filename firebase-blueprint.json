@@ -101,6 +101,10 @@
         "treasuryMovementId": { "type": "string", "description": "ID del movimiento de ingreso generado en Tesorería" },
         "paymentSplits": { "type": "array", "description": "Desglose de formas de pago, condición por parte (CONTADO o CREDITO), montos y cuentas destino cuando paymentType es MIXTO" },
         "paymentType": { "type": "string", "description": "CONTADO, MIXTO, CREDITO, APARTADO o MERCADOLIBRE" },
+        "creditPaidAmount": { "type": "number", "description": "Monto abonado acumulado en USD" },
+        "creditPaidAmountBs": { "type": "number", "description": "Monto exacto en Bs. del abono inicial (o su equivalente BCV)" },
+        "creditInitialPaymentCurrency": { "type": "string", "description": "Moneda en la que se registró el abono inicial: BS o USD" },
+        "creditPayments": { "type": "array", "description": "Historial de abonos parciales en Bs o Divisas con sus equivalentes BCV" },
         "creditStatus": { "type": "string", "description": "PENDIENTE, PAGADO o ANULADO" },
         "createdAt": { "type": "string", "description": "Fecha de creación ISO" },
         "source": { "type": "string", "description": "POS o TIENDA_ONLINE" }

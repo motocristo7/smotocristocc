@@ -128,6 +128,21 @@ export function buildInvoiceWhatsAppMessage(sale: Sale, settings: BusinessSettin
 
   if (isApartado) {
     // Sistema de Apartado: Comprobante con abono inicial, saldo para retirar y datos para futuros abonos
+    const paidUSD = sale.creditPaidAmount || 0;
+    const paidBs = sale.creditPaidAmountBs || paidUSD * rate;
+    const initialIsBs =
+      sale.creditInitialPaymentCurrency === 'BS' ||
+      (!sale.creditInitialPaymentCurrency &&
+        (sale.paymentMethod === 'Pago Móvil' ||
+          sale.paymentMethod === 'Punto de Venta (Bs)' ||
+          sale.paymentMethod === 'Transferencia Bancaria Bs'));
+    const abonoLine =
+      paidUSD > 0
+        ? initialIsBs
+          ? `💵 Abono Inicial / Reserva: *${formatBs(paidBs)}* (Equiv. *${formatUSD(paidUSD)}* BCV)\n`
+          : `💵 Abono Inicial / Reserva: *${formatUSD(paidUSD)}* (Equiv. *${formatBs(paidBs)}* BCV)\n`
+        : '';
+
     message = `🔒 *COMPROBANTE DE APARTADO #${sale.invoiceNumber}* - *${businessName}*
 
 🛒 *Mercancía Apartada:*
@@ -136,7 +151,7 @@ ${itemsText}
 💰 *Total del Apartado:* *${formatUSD(sale.total)}* | *${formatBs(sale.totalBs || sale.total * rate)}*
 📌 Condición: *SISTEMA DE APARTADO* (${sale.creditDays || 15} días para retirar)
 ⏳ Fecha Límite de Retiro: *${sale.creditDueDate || 'A convenir'}*
-${(sale.creditPaidAmount || 0) > 0 ? `💵 Abono Inicial / Reserva: ${formatUSD(sale.creditPaidAmount || 0)}\n` : ''}⚠️ *Saldo Restante para Retirar:* *${formatUSD(pendingBalanceUSD)}* | *${formatBs(pendingBalanceBs)}* (Tasa BCV: ${rate.toFixed(2)})
+${abonoLine}⚠️ *Saldo Restante para Retirar:* *${formatUSD(pendingBalanceUSD)}* | *${formatBs(pendingBalanceBs)}* (Tasa BCV: ${rate.toFixed(2)})
 
 📲 *Datos para abonos / liquidación:*
 🏦 Banco: ${settings.bankDetails.pagoMovilBank || '0134 - Banesco'}
@@ -147,6 +162,21 @@ ${(sale.creditPaidAmount || 0) > 0 ? `💵 Abono Inicial / Reserva: ${formatUSD(
 📎 Le adjuntamos su Comprobante de Apartado en PDF.${storePromoFooter}`;
   } else if (isCredit) {
     // Venta a Crédito: Nota de Crédito con saldo pendiente y datos para el pago
+    const paidUSD = sale.creditPaidAmount || 0;
+    const paidBs = sale.creditPaidAmountBs || paidUSD * rate;
+    const initialIsBs =
+      sale.creditInitialPaymentCurrency === 'BS' ||
+      (!sale.creditInitialPaymentCurrency &&
+        (sale.paymentMethod === 'Pago Móvil' ||
+          sale.paymentMethod === 'Punto de Venta (Bs)' ||
+          sale.paymentMethod === 'Transferencia Bancaria Bs'));
+    const abonoLine =
+      paidUSD > 0
+        ? initialIsBs
+          ? `💵 Abono Inicial: *${formatBs(paidBs)}* (Equiv. *${formatUSD(paidUSD)}* BCV)\n`
+          : `💵 Abono Inicial: *${formatUSD(paidUSD)}* (Equiv. *${formatBs(paidBs)}* BCV)\n`
+        : '';
+
     message = `📋 *NOTA DE CRÉDITO #${sale.invoiceNumber}* - *${businessName}*
 
 🛒 *Detalle de compra:*
@@ -155,7 +185,7 @@ ${itemsText}
 💰 *Monto Total:* *${formatUSD(sale.total)}* | *${formatBs(sale.totalBs || sale.total * rate)}*
 📌 Condición: *A CRÉDITO* (${sale.creditDays || 15} días)
 ⏳ Fecha de Vencimiento: *${sale.creditDueDate || 'A convenir'}*
-${(sale.creditPaidAmount || 0) > 0 ? `💵 Abono Inicial: ${formatUSD(sale.creditPaidAmount || 0)}\n` : ''}⚠️ *Saldo Pendiente por Pagar:* *${formatUSD(pendingBalanceUSD)}* | *${formatBs(pendingBalanceBs)}* (Tasa BCV: ${rate.toFixed(2)})
+${abonoLine}⚠️ *Saldo Pendiente por Pagar:* *${formatUSD(pendingBalanceUSD)}* | *${formatBs(pendingBalanceBs)}* (Tasa BCV: ${rate.toFixed(2)})
 
 📲 *Datos para el pago:*
 🏦 Banco: ${settings.bankDetails.pagoMovilBank || '0134 - Banesco'}
@@ -549,17 +579,28 @@ export function buildCreditPaymentReceiptWhatsAppMessage(
       ? `\n\n📲 *Datos para sus próximos abonos:*\n🏦 *Banco:* ${settings.bankDetails.pagoMovilBank || '0134 - Banesco'}\n📱 *Pago Móvil:* ${settings.bankDetails.pagoMovilPhone || '0412-2242450'}\n🆔 *C.I. / RIF:* ${settings.bankDetails.pagoMovilId || 'V-19996141'}`
       : '';
 
+  const paidBs = payment.amountBs || payment.amountUSD * (payment.bcvRate || rate);
+  const paidInBs =
+    payment.currencyMode === 'BS' ||
+    (!payment.currencyMode &&
+      (payment.paymentMethod === 'Pago Móvil' ||
+        payment.paymentMethod === 'Punto de Venta (Bs)' ||
+        payment.paymentMethod === 'Transferencia Bancaria Bs'));
+  const paidTodayDisplay = paidInBs
+    ? `*${formatBs(paidBs)}* (Equiv. *${formatUSD(payment.amountUSD)}* BCV)`
+    : `*${formatUSD(payment.amountUSD)}* (Equiv. *${formatBs(paidBs)}* BCV)`;
+
   const message = `✅ *COMPROBANTE DE ABONO RECIBIDO* - *${businessName}*
 ───────────────────────
 Hola estimado(a) *${sale.customerName}*, hemos aplicado exitosamente su abono en su cuenta:
 
 📋 *${isApartado ? 'Comprobante de Apartado' : 'Factura'}:* #${sale.invoiceNumber}
 📅 *Fecha del Abono:* ${dateStr}
-💵 *MONTO ABONADO HOY:* *${formatUSD(payment.amountUSD)}* | *${formatBs(payment.amountBs || payment.amountUSD * rate)}*
+💵 *MONTO ABONADO HOY:* ${paidTodayDisplay}
 💳 *Método:* ${payment.paymentMethod}
 ${payment.reference ? `🔖 *Referencia:* ${payment.reference}\n` : ''}${payment.notes ? `📝 *Nota:* ${payment.notes}\n` : ''}───────────────────────
-📊 *Total de la ${isApartado ? 'nota' : 'factura'}:* ${formatUSD(sale.total)}
-✅ *Total abonado acumulado:* ${formatUSD(totalPaidAfterUSD)}
+📊 *Total de la ${isApartado ? 'nota' : 'factura'}:* ${formatUSD(sale.total)} (${formatBs(sale.total * rate)})
+✅ *Total abonado acumulado:* ${formatUSD(totalPaidAfterUSD)} (${formatBs(totalPaidAfterUSD * rate)})
 ${balanceSection}${consolidatedDebtLine}
 _(Calculado a Tasa Oficial BCV: Bs. ${rate.toFixed(2)})_${paymentAccountsBlock}
 

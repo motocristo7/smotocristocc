@@ -1,6 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { useApp } from '../../context/AppContext';
-import { Sale, PaymentMethod, PagoMovilAccountOption, Customer, CreditPaymentRecord, isSaleWithCredit } from '../../types';
+import { Sale, Customer, CreditPaymentRecord, isSaleWithCredit } from '../../types';
 import {
   formatUSD,
   formatBs,
@@ -9,6 +9,7 @@ import {
   buildCreditPaymentReceiptWhatsAppMessage,
 } from '../../utils/whatsapp';
 import { downloadInvoicePDF } from '../../utils/pdfInvoice';
+import { RecordCreditPaymentModal } from '../modals/RecordCreditPaymentModal';
 import {
   Clock,
   AlertTriangle,
@@ -45,7 +46,6 @@ export const AccountsReceivableView: React.FC = () => {
     customers,
     settings,
     updateSale,
-    recordCreditPayment,
     deleteSale,
     voidSale,
     reactivateSale,
@@ -63,15 +63,8 @@ export const AccountsReceivableView: React.FC = () => {
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'OVERDUE' | 'NEAR_DUE' | 'PAID' | 'VOIDED'>('ALL');
   const [expandedCustomerId, setExpandedCustomerId] = useState<string | null>(null);
 
-  // Modal para registrar abono
+  // Modal para registrar abono (en Bolívares o Divisas)
   const [paymentModalSale, setPaymentModalSale] = useState<Sale | null>(null);
-  const [paymentAmountUSD, setPaymentAmountUSD] = useState<number | ''>('');
-  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('Pago Móvil');
-  const [pagoMovilAccount, setPagoMovilAccount] =
-    useState<PagoMovilAccountOption>('BANESCO_PERSONAL');
-  const [paymentRef, setPaymentRef] = useState('');
-  const [paymentNotes, setPaymentNotes] = useState('');
-  const [sendWhatsAppOnPayment, setSendWhatsAppOnPayment] = useState(true);
 
   // Modal para ANULAR cuenta por cobrar
   const [voidModalSale, setVoidModalSale] = useState<Sale | null>(null);
@@ -360,12 +353,6 @@ export const AccountsReceivableView: React.FC = () => {
   const handleOpenPaymentModal = (sale: Sale, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
     setPaymentModalSale(sale);
-    const pending = Math.max(0, sale.total - (sale.creditPaidAmount || 0));
-    setPaymentAmountUSD(pending);
-    setPaymentMethod('Pago Móvil');
-    setPaymentRef('');
-    setPaymentNotes('');
-    setSendWhatsAppOnPayment(true);
   };
 
   const handleSendPaymentReceiptWhatsApp = (
@@ -389,35 +376,6 @@ export const AccountsReceivableView: React.FC = () => {
       recipientName: sale.customerName,
       sale,
     });
-  };
-
-  const handleSavePayment = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!paymentModalSale) return;
-    const amount = Number(paymentAmountUSD);
-    if (isNaN(amount) || amount <= 0) {
-      showToast('Ingresa un monto válido para el abono', 'error');
-      return;
-    }
-
-    const result = recordCreditPayment(paymentModalSale.id, {
-      amountUSD: amount,
-      paymentMethod,
-      pagoMovilAccount: paymentMethod === 'Pago Móvil' ? pagoMovilAccount : undefined,
-      reference: paymentRef.trim() || undefined,
-      notes: paymentNotes.trim() || undefined,
-    });
-
-    showToast(`¡Abono de ${formatUSD(amount)} registrado con éxito!`);
-    setPaymentModalSale(null);
-
-    if (result && sendWhatsAppOnPayment) {
-      handleSendPaymentReceiptWhatsApp(
-        result.updatedSale,
-        result.paymentRecord,
-        result.totalCustomerDebtAfterUSD
-      );
-    }
   };
 
   // Void single sale handler
@@ -1303,38 +1261,52 @@ export const AccountsReceivableView: React.FC = () => {
                                       <History className="w-3 h-3" />
                                       <span>Historial de Abonos Realizados:</span>
                                     </span>
-                                      <div className="space-y-0.5 mt-1">
-                                        {sale.creditPayments.map((p) => (
-                                          <div
-                                            key={p.id}
-                                            className="text-[11px] text-slate-600 flex items-center justify-between gap-2 bg-emerald-50/60 px-2 py-1 rounded border border-emerald-100"
-                                          >
-                                            <span className="truncate">
-                                              {new Date(p.date).toLocaleDateString('es-VE')} · {p.paymentMethod}
-                                              {p.reference ? ` (Ref: ${p.reference})` : ''}
-                                            </span>
-                                            <div className="flex items-center gap-1.5 shrink-0">
-                                              <span className="font-mono font-bold text-emerald-800">
-                                                +{formatUSD(p.amountUSD)}
+                                      <div className="space-y-1 mt-1">
+                                        {sale.creditPayments.map((p) => {
+                                          const pBs = p.amountBs || p.amountUSD * (p.bcvRate || sale.bcvRate || rate);
+                                          const isBsPaid =
+                                            p.currencyMode === 'BS' ||
+                                            (!p.currencyMode &&
+                                              (p.paymentMethod === 'Pago Móvil' ||
+                                                p.paymentMethod === 'Punto de Venta (Bs)' ||
+                                                p.paymentMethod === 'Transferencia Bancaria Bs'));
+                                          return (
+                                            <div
+                                              key={p.id}
+                                              className="text-[11px] text-slate-600 flex items-center justify-between gap-2 bg-emerald-50/60 px-2 py-1 rounded border border-emerald-100"
+                                            >
+                                              <span className="truncate">
+                                                {new Date(p.date).toLocaleDateString('es-VE')} · {p.paymentMethod}
+                                                {p.reference ? ` (Ref: ${p.reference})` : ''}
                                               </span>
-                                              <button
-                                                type="button"
-                                                onClick={(e) =>
-                                                  handleSendPaymentReceiptWhatsApp(
-                                                    sale,
-                                                    p,
-                                                    cr.totalDebtUSD,
-                                                    e
-                                                  )
-                                                }
-                                                className="p-1 text-emerald-700 hover:bg-emerald-100 rounded transition-colors cursor-pointer"
-                                                title="Notificar este abono y saldo actual al WhatsApp del cliente"
-                                              >
-                                                <MessageSquare className="w-3 h-3" />
-                                              </button>
+                                              <div className="flex items-center gap-1.5 shrink-0">
+                                                <div className="text-right font-mono leading-tight">
+                                                  <span className="font-bold text-emerald-800 block">
+                                                    {isBsPaid ? `+${formatBs(pBs)}` : `+${formatUSD(p.amountUSD)}`}
+                                                  </span>
+                                                  <span className="text-[10px] text-slate-500 block">
+                                                    {isBsPaid ? `Equiv. ${formatUSD(p.amountUSD)}` : formatBs(pBs)}
+                                                  </span>
+                                                </div>
+                                                <button
+                                                  type="button"
+                                                  onClick={(e) =>
+                                                    handleSendPaymentReceiptWhatsApp(
+                                                      sale,
+                                                      p,
+                                                      cr.totalDebtUSD,
+                                                      e
+                                                    )
+                                                  }
+                                                  className="p-1 text-emerald-700 hover:bg-emerald-100 rounded transition-colors cursor-pointer"
+                                                  title="Notificar este abono y saldo actual al WhatsApp del cliente"
+                                                >
+                                                  <MessageSquare className="w-3 h-3" />
+                                                </button>
+                                              </div>
                                             </div>
-                                          </div>
-                                        ))}
+                                          );
+                                        })}
                                       </div>
                                   </div>
                                 )}
@@ -1351,9 +1323,20 @@ export const AccountsReceivableView: React.FC = () => {
 
                                 <div className="flex justify-between text-xs text-emerald-700">
                                   <span>Monto ya abonado:</span>
-                                  <span className="font-mono font-bold">
-                                    {formatUSD(sale.creditPaidAmount || 0)}
-                                  </span>
+                                  <div className="text-right font-mono">
+                                    <span className="font-bold block">
+                                      {formatUSD(sale.creditPaidAmount || 0)}
+                                    </span>
+                                    {(sale.creditPaidAmount || 0) > 0 && (
+                                      <span className="text-[10px] text-emerald-700/80 block">
+                                        {formatBs(
+                                          sale.creditPayments && sale.creditPayments.length > 0
+                                            ? (sale.creditPaidAmount || 0) * rate
+                                            : sale.creditPaidAmountBs || (sale.creditPaidAmount || 0) * (sale.bcvRate || rate)
+                                        )}
+                                      </span>
+                                    )}
+                                  </div>
                                 </div>
 
                                 <div className="pt-1.5 border-t border-amber-300 flex justify-between items-baseline">
@@ -1462,224 +1445,27 @@ export const AccountsReceivableView: React.FC = () => {
         </div>
       )}
 
-      {/* Modal: Registrar Abono a Factura */}
+      {/* Modal: Registrar Abono a Factura / Apartado (Bolívares o Divisas) */}
       {paymentModalSale && (
-        <div className="fixed inset-0 bg-slate-950/70 backdrop-blur-xs z-50 flex items-center justify-center p-4 overflow-y-auto">
-          <div className="bg-white rounded-2xl max-w-md w-full border border-slate-200 shadow-2xl overflow-hidden animate-in fade-in zoom-in-95">
-            <div className="bg-amber-600 px-5 py-4 text-white flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <DollarSign className="w-5 h-5 text-amber-200" />
-                <div>
-                  <h3 className="font-bold text-sm">Registrar Abono o Pago</h3>
-                  <span className="text-[11px] text-amber-100 font-mono">Factura #{paymentModalSale.invoiceNumber}</span>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => setPaymentModalSale(null)}
-                className="p-1 text-white/80 hover:text-white rounded-lg cursor-pointer"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            <form onSubmit={handleSavePayment} className="p-5 space-y-4 text-xs">
-              <div className="p-3 bg-amber-50 rounded-xl border border-amber-200 text-amber-950 space-y-1">
-                <div className="flex justify-between">
-                  <span>Cliente:</span>
-                  <span className="font-bold">{paymentModalSale.customerName}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span>Total Factura:</span>
-                  <span className="font-mono">{formatUSD(paymentModalSale.total)}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span>Abono acumulado:</span>
-                  <span className="font-mono">{formatUSD(paymentModalSale.creditPaidAmount || 0)}</span>
-                </div>
-                <div className="flex justify-between pt-1 border-t border-amber-200 font-bold text-amber-900">
-                  <span>Saldo Restante Pendiente:</span>
-                  <span className="font-mono text-sm">
-                    {formatUSD(Math.max(0, paymentModalSale.total - (paymentModalSale.creditPaidAmount || 0)))}
-                  </span>
-                </div>
-              </div>
-
-              <div>
-                <div className="flex items-center justify-between mb-1">
-                  <label className="block text-xs font-bold text-slate-700">
-                    Monto del Abono ($ USD) *
-                  </label>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const full = Math.max(0, paymentModalSale.total - (paymentModalSale.creditPaidAmount || 0));
-                      setPaymentAmountUSD(full);
-                    }}
-                    className="text-[10px] text-amber-700 font-bold hover:underline cursor-pointer"
-                  >
-                    Pagar Saldo Completo
-                  </button>
-                </div>
-                <input
-                  type="number"
-                  step="0.01"
-                  min="0.01"
-                  max={Math.max(0, paymentModalSale.total - (paymentModalSale.creditPaidAmount || 0))}
-                  required
-                  value={paymentAmountUSD}
-                  onChange={(e) => setPaymentAmountUSD(e.target.value === '' ? '' : Number(e.target.value))}
-                  className="w-full p-2.5 rounded-xl border border-slate-300 font-mono font-bold text-sm bg-slate-50 focus:bg-white"
-                  autoFocus
-                />
-                <span className="text-[10px] text-emerald-700 font-mono block mt-1">
-                  Equivalente: {paymentAmountUSD ? formatBs(Number(paymentAmountUSD) * rate) : 'Bs. 0,00'} a tasa BCV ({rate.toFixed(2)})
-                </span>
-                {(() => {
-                  const currentPending = Math.max(
-                    0,
-                    paymentModalSale.total - (paymentModalSale.creditPaidAmount || 0)
-                  );
-                  const abono = Number(paymentAmountUSD) || 0;
-                  const newRemaining = Math.max(0, Math.round((currentPending - abono) * 100) / 100);
-                  return (
-                    <div className="mt-2 p-2.5 rounded-xl bg-slate-900 text-white flex items-center justify-between text-[11px]">
-                      <span className="text-slate-300 font-medium">
-                        Saldo restante tras aplicar abono:
-                      </span>
-                      <div className="text-right font-mono font-bold">
-                        <span className={newRemaining <= 0.01 ? 'text-emerald-400' : 'text-amber-400'}>
-                          {formatUSD(newRemaining)}
-                        </span>
-                        <span className="text-[10px] text-slate-300 block font-normal">
-                          {formatBs(newRemaining * rate)}
-                        </span>
-                      </div>
-                    </div>
-                  );
-                })()}
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  Método de Pago *
-                </label>
-                <select
-                  value={paymentMethod}
-                  onChange={(e) => setPaymentMethod(e.target.value as PaymentMethod)}
-                  className="w-full p-2.5 rounded-xl border border-slate-300 bg-slate-50 font-medium"
-                >
-                  <option value="Pago Móvil">Pago Móvil</option>
-                  <option value="Dólares Efectivo (USD)">Dólares Efectivo (USD)</option>
-                  <option value="Transferencia Bancaria Bs">Transferencia Bs</option>
-                  <option value="Punto de Venta (Bs)">Punto de Venta (Bs)</option>
-                  <option value="Binance Pay (USDT)">Binance Pay (USDT)</option>
-                </select>
-              </div>
-
-              {paymentMethod === 'Pago Móvil' && (
-                <div className="p-2.5 rounded-xl bg-blue-50/80 border border-blue-200 space-y-2">
-                  <label className="block text-[11px] font-bold text-blue-950">
-                    ¿A qué cuenta cae el Pago Móvil? *
-                  </label>
-                  <div className="grid grid-cols-2 gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setPagoMovilAccount('BANESCO_PERSONAL')}
-                      className={`px-2.5 py-2 rounded-lg border text-xs font-bold transition-all cursor-pointer ${
-                        pagoMovilAccount === 'BANESCO_PERSONAL'
-                          ? 'bg-slate-900 border-slate-900 text-white'
-                          : 'bg-white border-blue-200 text-slate-700 hover:bg-blue-100/60'
-                      }`}
-                    >
-                      Banesco Personal
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setPagoMovilAccount('PROVINCIAL')}
-                      className={`px-2.5 py-2 rounded-lg border text-xs font-bold transition-all cursor-pointer ${
-                        pagoMovilAccount === 'PROVINCIAL'
-                          ? 'bg-slate-900 border-slate-900 text-white'
-                          : 'bg-white border-blue-200 text-slate-700 hover:bg-blue-100/60'
-                      }`}
-                    >
-                      Provincial
-                    </button>
-                  </div>
-                  <p className="text-[10px] text-blue-800">
-                    Se registrará automáticamente como ingreso en{' '}
-                    <strong>
-                      {pagoMovilAccount === 'PROVINCIAL' ? 'Provincial (Bs)' : 'Banesco Personal (Bs)'}
-                    </strong>{' '}
-                    en Tesorería.
-                  </p>
-                </div>
-              )}
-
-              {paymentMethod === 'Punto de Venta (Bs)' && (
-                <div className="px-3 py-2 rounded-xl bg-emerald-50 border border-emerald-200 text-[11px] text-emerald-900">
-                  Ingreso automático a <strong>Banesco SMCC (Bs)</strong> en Tesorería y Liquidez Disponible.
-                </div>
-              )}
-
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  N° de Referencia / Comprobante (Opcional)
-                </label>
-                <input
-                  type="text"
-                  value={paymentRef}
-                  onChange={(e) => setPaymentRef(e.target.value)}
-                  placeholder="Ej. 12948271"
-                  className="w-full p-2.5 rounded-xl border border-slate-300 bg-slate-50 font-mono"
-                />
-              </div>
-
-              <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  Notas / Observaciones
-                </label>
-                <input
-                  type="text"
-                  value={paymentNotes}
-                  onChange={(e) => setPaymentNotes(e.target.value)}
-                  placeholder="Ej. Abono 1 de 2 / Recibido en mostrador"
-                  className="w-full p-2.5 rounded-xl border border-slate-300 bg-slate-50"
-                />
-              </div>
-
-              <label className="flex items-center gap-2 p-2.5 bg-emerald-50 border border-emerald-200 rounded-xl cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={sendWhatsAppOnPayment}
-                  onChange={(e) => setSendWhatsAppOnPayment(e.target.checked)}
-                  className="rounded border-emerald-400 text-emerald-600 focus:ring-emerald-500 cursor-pointer w-4 h-4"
-                />
-                <span className="text-[11px] font-semibold text-emerald-950 flex items-center gap-1.5">
-                  <MessageSquare className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-                  <span>Enviar comprobante del abono y saldo actual al WhatsApp del cliente</span>
-                </span>
-              </label>
-
-              <div className="pt-2 flex items-center justify-end gap-2 border-t border-slate-200">
-                <button
-                  type="button"
-                  onClick={() => setPaymentModalSale(null)}
-                  className="px-4 py-2 font-semibold text-slate-700 hover:bg-slate-100 rounded-xl cursor-pointer"
-                >
-                  Cancelar
-                </button>
-                <button
-                  type="submit"
-                  className="px-5 py-2.5 bg-amber-600 hover:bg-amber-700 text-white font-bold rounded-xl shadow-xs cursor-pointer flex items-center gap-1.5"
-                >
-                  <CheckCircle2 className="w-4 h-4" />
-                  <span>Registrar Abono y Notificar</span>
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
+        <RecordCreditPaymentModal
+          sale={paymentModalSale}
+          onClose={() => setPaymentModalSale(null)}
+          onSuccess={(result, sendWhatsApp) => {
+            const p = result.paymentRecord;
+            const summary =
+              p.currencyMode === 'BS'
+                ? `${formatBs(p.amountBs)} (Equiv. ${formatUSD(p.amountUSD)})`
+                : `${formatUSD(p.amountUSD)} (${formatBs(p.amountBs)})`;
+            showToast(`¡Abono de ${summary} registrado con éxito!`);
+            if (sendWhatsApp) {
+              handleSendPaymentReceiptWhatsApp(
+                result.updatedSale,
+                result.paymentRecord,
+                result.totalCustomerDebtAfterUSD
+              );
+            }
+          }}
+        />
       )}
 
       {/* Modal: ANULAR Cuenta por Cobrar */}

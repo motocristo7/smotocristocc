@@ -531,21 +531,32 @@ export const CustomerPendingAccountsModal: React.FC<CustomerPendingAccountsModal
                               </button>
                               {isExpanded && (
                                 <div className="mt-2 space-y-1.5 text-xs text-slate-600 pl-2 border-l border-slate-200">
-                                  {payments.map((p) => (
-                                    <div
-                                      key={p.id}
-                                      className="flex flex-wrap items-center justify-between gap-2"
-                                    >
-                                      <span>
-                                        {new Date(p.date).toLocaleDateString('es-VE')} ·{' '}
-                                        {p.paymentMethod}
-                                        {p.reference ? ` (Ref: ${p.reference})` : ''}
-                                      </span>
-                                      <span className="font-mono tabular-nums font-semibold text-emerald-700">
-                                        {formatUSD(p.amountUSD)}
-                                      </span>
-                                    </div>
-                                  ))}
+                                  {payments.map((p) => {
+                                    const pBs = p.amountBs || p.amountUSD * (p.bcvRate || sale.bcvRate || settings.bcvRate);
+                                    const pIsBs =
+                                      p.currencyMode === 'BS' ||
+                                      (!p.currencyMode &&
+                                        (p.paymentMethod === 'Pago Móvil' ||
+                                          p.paymentMethod === 'Punto de Venta (Bs)' ||
+                                          p.paymentMethod === 'Transferencia Bancaria Bs'));
+                                    return (
+                                      <div
+                                        key={p.id}
+                                        className="flex flex-wrap items-center justify-between gap-2"
+                                      >
+                                        <span>
+                                          {new Date(p.date).toLocaleDateString('es-VE')} ·{' '}
+                                          {p.paymentMethod}
+                                          {p.reference ? ` (Ref: ${p.reference})` : ''}
+                                        </span>
+                                        <span className="font-mono tabular-nums font-semibold text-emerald-700 text-right">
+                                          {pIsBs
+                                            ? `${formatBs(pBs)} (Equiv. ${formatUSD(p.amountUSD)})`
+                                            : `${formatUSD(p.amountUSD)} (${formatBs(pBs)})`}
+                                        </span>
+                                      </div>
+                                    );
+                                  })}
                                 </div>
                               )}
                             </div>

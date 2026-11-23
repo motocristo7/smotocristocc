@@ -5,10 +5,12 @@ import {
   formatUSD,
   formatBs,
   buildInvoiceWhatsAppMessage,
+  buildCreditPaymentReceiptWhatsAppMessage,
   hasValidWhatsAppPhone,
   getPublicAppOrigin,
 } from '../../utils/whatsapp';
 import { downloadInvoicePDF } from '../../utils/pdfInvoice';
+import { RecordCreditPaymentModal } from './RecordCreditPaymentModal';
 import {
   X,
   Printer,
@@ -22,6 +24,7 @@ import {
   ExternalLink,
   Phone,
   Eye,
+  DollarSign,
 } from 'lucide-react';
 
 export const InvoiceModal: React.FC = () => {
@@ -37,6 +40,7 @@ export const InvoiceModal: React.FC = () => {
   const [showPhoneBar, setShowPhoneBar] = useState(false);
   const [manualPhone, setManualPhone] = useState('');
   const [whatsappNotice, setWhatsappNotice] = useState<string | null>(null);
+  const [showAddAbonoModal, setShowAddAbonoModal] = useState(false);
   const phoneBarRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -44,6 +48,7 @@ export const InvoiceModal: React.FC = () => {
     setShowPhoneBar(false);
     setManualPhone('');
     setWhatsappNotice(null);
+    setShowAddAbonoModal(false);
   }, [selectedInvoice?.id]);
 
   useEffect(() => {
@@ -304,49 +309,156 @@ export const InvoiceModal: React.FC = () => {
                     </span>
                   </div>
 
-                  <div className="flex justify-between text-slate-600">
-                    <span>{selectedInvoice.paymentType === 'APARTADO' ? 'Abonado / Reserva:' : 'Abonado:'}</span>
-                    <span className="font-mono font-bold text-slate-800">
-                      {formatUSD(selectedInvoice.creditPaidAmount || 0)}
-                    </span>
-                  </div>
+                  {(() => {
+                    const paidUSD = selectedInvoice.creditPaidAmount || 0;
+                    const payments = selectedInvoice.creditPayments || [];
+                    const subsequentSumUSD = payments.reduce((sum, p) => sum + (Number(p.amountUSD) || 0), 0);
+                    const initialUSD = Math.max(0, Math.round((paidUSD - subsequentSumUSD) * 100) / 100);
+                    const initialBs =
+                      selectedInvoice.creditPaidAmountBs || Math.round(initialUSD * rate * 100) / 100;
+                    const initialIsBs =
+                      selectedInvoice.creditInitialPaymentCurrency === 'BS' ||
+                      (!selectedInvoice.creditInitialPaymentCurrency &&
+                        (selectedInvoice.paymentMethod === 'Pago Móvil' ||
+                          selectedInvoice.paymentMethod === 'Punto de Venta (Bs)' ||
+                          selectedInvoice.paymentMethod === 'Transferencia Bancaria Bs'));
+                    const remainingUSD = Math.max(0, selectedInvoice.total - paidUSD);
+                    const remainingBs = remainingUSD * rate;
+                    const totalPaidBs =
+                      payments.length === 0 && selectedInvoice.creditPaidAmountBs
+                        ? selectedInvoice.creditPaidAmountBs
+                        : paidUSD * rate;
 
-                  <div
-                    className={`flex justify-between font-bold border-t pt-1 ${
-                      selectedInvoice.paymentType === 'APARTADO'
-                        ? 'text-indigo-950 border-indigo-200/80'
-                        : 'text-amber-950 border-amber-200/80'
-                    }`}
-                  >
-                    <span>
-                      {selectedInvoice.paymentType === 'APARTADO' ? 'Saldo para retirar:' : 'Saldo pendiente:'}
-                    </span>
-                    <span className="font-mono text-rose-700">
-                      {formatUSD(Math.max(0, selectedInvoice.total - (selectedInvoice.creditPaidAmount || 0)))}
-                    </span>
-                  </div>
+                    return (
+                      <>
+                        <div className="flex justify-between items-start text-slate-600">
+                          <span>
+                            {selectedInvoice.paymentType === 'APARTADO'
+                              ? 'Abonado / Reserva:'
+                              : 'Abonado:'}
+                          </span>
+                          <div className="text-right font-mono leading-tight">
+                            {payments.length === 0 && initialUSD > 0 && initialIsBs ? (
+                              <>
+                                <span className="font-bold text-slate-900 block">
+                                  {formatBs(initialBs)}
+                                </span>
+                                <span className="text-[10px] text-slate-500 block">
+                                  Equiv. {formatUSD(initialUSD)} (BCV)
+                                </span>
+                              </>
+                            ) : (
+                              <>
+                                <span className="font-bold text-slate-800 block">
+                                  {formatUSD(paidUSD)}
+                                </span>
+                                {paidUSD > 0 && (
+                                  <span className="text-[10px] text-slate-500 block">
+                                    Equiv. {formatBs(totalPaidBs)}
+                                  </span>
+                                )}
+                              </>
+                            )}
+                          </div>
+                        </div>
 
-                  {selectedInvoice.creditStatus !== 'PAGADO' && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        updateSaleCreditStatus(selectedInvoice.id, 'PAGADO', selectedInvoice.total);
-                        setSelectedInvoice({
-                          ...selectedInvoice,
-                          creditStatus: 'PAGADO',
-                          creditPaidAmount: selectedInvoice.total,
-                        });
-                      }}
-                      className="w-full mt-1 py-1 px-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded text-[10px] flex items-center justify-center gap-1 transition-colors cursor-pointer"
-                    >
-                      <CheckCircle2 className="w-3 h-3" />
-                      <span>
-                        {selectedInvoice.paymentType === 'APARTADO'
-                          ? 'Marcar Apartado como Liquidado'
-                          : 'Marcar Crédito como Pagado'}
-                      </span>
-                    </button>
-                  )}
+                        {payments.length > 0 && (
+                          <div className="pt-1 border-t border-slate-200/70 space-y-1">
+                            <span className="text-[9px] font-bold uppercase tracking-wider text-slate-500 block">
+                              Desglose de Abonos ({payments.length + (initialUSD > 0 ? 1 : 0)}):
+                            </span>
+                            {initialUSD > 0 && (
+                              <div className="flex justify-between text-[10px] text-slate-600">
+                                <span>Abono inicial ({selectedInvoice.paymentMethod})</span>
+                                <span className="font-mono font-semibold text-slate-800">
+                                  {initialIsBs
+                                    ? `${formatBs(initialBs)} (${formatUSD(initialUSD)})`
+                                    : `${formatUSD(initialUSD)} (${formatBs(initialBs)})`}
+                                </span>
+                              </div>
+                            )}
+                            {payments.map((p) => {
+                              const pBs = p.amountBs || p.amountUSD * (p.bcvRate || rate);
+                              const pIsBs =
+                                p.currencyMode === 'BS' ||
+                                (!p.currencyMode &&
+                                  (p.paymentMethod === 'Pago Móvil' ||
+                                    p.paymentMethod === 'Punto de Venta (Bs)' ||
+                                    p.paymentMethod === 'Transferencia Bancaria Bs'));
+                              return (
+                                <div key={p.id} className="flex justify-between gap-2 text-[10px] text-slate-600">
+                                  <span className="truncate">
+                                    {new Date(p.date).toLocaleDateString('es-VE')} · {p.paymentMethod}
+                                  </span>
+                                  <span className="font-mono font-semibold text-emerald-700 shrink-0">
+                                    {pIsBs
+                                      ? `${formatBs(pBs)} (${formatUSD(p.amountUSD)})`
+                                      : `${formatUSD(p.amountUSD)} (${formatBs(pBs)})`}
+                                  </span>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+
+                        <div
+                          className={`flex justify-between items-start font-bold border-t pt-1 ${
+                            selectedInvoice.paymentType === 'APARTADO'
+                              ? 'text-indigo-950 border-indigo-200/80'
+                              : 'text-amber-950 border-amber-200/80'
+                          }`}
+                        >
+                          <span>
+                            {selectedInvoice.paymentType === 'APARTADO'
+                              ? 'Saldo para retirar:'
+                              : 'Saldo pendiente:'}
+                          </span>
+                          <div className="text-right font-mono leading-tight">
+                            <span className="text-rose-700 block">{formatUSD(remainingUSD)}</span>
+                            <span className="text-[10px] font-semibold text-slate-600 block">
+                              {formatBs(remainingBs)}
+                            </span>
+                          </div>
+                        </div>
+
+                        {selectedInvoice.creditStatus !== 'PAGADO' && remainingUSD > 0.01 && (
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 mt-1.5 print:hidden">
+                            <button
+                              type="button"
+                              onClick={() => setShowAddAbonoModal(true)}
+                              className={`py-1.5 px-2 text-white font-bold rounded text-[10px] flex items-center justify-center gap-1 transition-colors cursor-pointer ${
+                                selectedInvoice.paymentType === 'APARTADO'
+                                  ? 'bg-indigo-600 hover:bg-indigo-700'
+                                  : 'bg-amber-600 hover:bg-amber-700'
+                              }`}
+                            >
+                              <DollarSign className="w-3 h-3" />
+                              <span>Registrar Abono (Bs / $)</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                updateSaleCreditStatus(selectedInvoice.id, 'PAGADO', selectedInvoice.total);
+                                setSelectedInvoice({
+                                  ...selectedInvoice,
+                                  creditStatus: 'PAGADO',
+                                  creditPaidAmount: selectedInvoice.total,
+                                });
+                              }}
+                              className="py-1.5 px-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded text-[10px] flex items-center justify-center gap-1 transition-colors cursor-pointer"
+                            >
+                              <CheckCircle2 className="w-3 h-3" />
+                              <span>
+                                {selectedInvoice.paymentType === 'APARTADO'
+                                  ? 'Marcar Liquidado'
+                                  : 'Marcar Pagado'}
+                              </span>
+                            </button>
+                          </div>
+                        )}
+                      </>
+                    );
+                  })()}
                 </div>
               ) : selectedInvoice.paymentType === 'MERCADOLIBRE' ? (
                 <div className="mt-1.5 p-2 bg-yellow-50 rounded-lg border border-yellow-300 text-[11px] space-y-1">
@@ -873,6 +985,32 @@ export const InvoiceModal: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {showAddAbonoModal && selectedInvoice && (
+        <RecordCreditPaymentModal
+          sale={selectedInvoice}
+          onClose={() => setShowAddAbonoModal(false)}
+          onSuccess={(result, sendWhatsApp) => {
+            setSelectedInvoice(result.updatedSale);
+            if (sendWhatsApp) {
+              const { message, url } = buildCreditPaymentReceiptWhatsAppMessage(
+                result.updatedSale,
+                result.paymentRecord,
+                settings,
+                result.totalCustomerDebtAfterUSD
+              );
+              setWhatsappModalData({
+                title: `Comprobante de Abono - Factura ${result.updatedSale.invoiceNumber}`,
+                message,
+                url,
+                phone: result.updatedSale.customerPhone,
+                recipientName: result.updatedSale.customerName,
+                sale: result.updatedSale,
+              });
+            }
+          }}
+        />
+      )}
     </div>
   );
 };

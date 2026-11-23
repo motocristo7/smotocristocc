@@ -8,6 +8,7 @@ import {
   SalePaymentType,
   SalePaymentSplit,
   SaleSplitCondition,
+  PaymentCurrencyMode,
   ProductCategory,
 } from '../../types';
 import { formatUSD, formatBs, buildInvoiceWhatsAppMessage, buildMercadoLibreDebtWhatsAppMessage } from '../../utils/whatsapp';
@@ -151,7 +152,9 @@ export const PosView: React.FC = () => {
     d.setDate(d.getDate() + 15);
     return d.toISOString().split('T')[0];
   });
-  const [creditPaidAmount, setCreditPaidAmount] = useState<number | ''>('');
+  const [creditPaidAmount, setCreditPaidAmount] = useState<string>('');
+  const [creditPaidAmountBs, setCreditPaidAmountBs] = useState<string>('');
+  const [creditPaidCurrencyMode, setCreditPaidCurrencyMode] = useState<PaymentCurrencyMode>('BS');
 
   // Estado de Desglose para Pago Mixto (2 o más formas de pago simultáneas, Contado y/o Crédito)
   type MixtoCurrencyMode = 'BS' | 'USD';
@@ -804,6 +807,69 @@ export const PosView: React.FC = () => {
     setCreditDueDate(getDefaultDueDate(days));
   };
 
+  const handleSelectDeferredCurrencyMode = (nextMode: PaymentCurrencyMode) => {
+    setCreditPaidCurrencyMode(nextMode);
+    if (nextMode === 'BS' && !isBsPaymentMethod(paymentMethod)) {
+      setPaymentMethod('Pago Móvil');
+    } else if (nextMode === 'USD' && isBsPaymentMethod(paymentMethod)) {
+      setPaymentMethod('Dólares Efectivo (USD)');
+    }
+  };
+
+  const handleChangeCreditPaidBs = (rawVal: string) => {
+    setCreditPaidAmountBs(rawVal);
+    const parsed = parseFloat(rawVal);
+    if (rawVal === '' || Number.isNaN(parsed) || parsed < 0) {
+      setCreditPaidAmount('');
+      return;
+    }
+    const equivUSD = rate > 0 ? Math.round((parsed / rate) * 100) / 100 : 0;
+    setCreditPaidAmount(equivUSD > 0 ? equivUSD.toFixed(2) : '');
+  };
+
+  const handleChangeCreditPaidUSD = (rawVal: string) => {
+    setCreditPaidAmount(rawVal);
+    const parsed = parseFloat(rawVal);
+    if (rawVal === '' || Number.isNaN(parsed) || parsed < 0) {
+      setCreditPaidAmountBs('');
+      return;
+    }
+    const equivBs = Math.round(parsed * rate * 100) / 100;
+    setCreditPaidAmountBs(equivBs > 0 ? equivBs.toFixed(2) : '');
+  };
+
+  const handleSetDeferredFraction = (fraction: number) => {
+    if (fraction <= 0 || totalUSD <= 0) {
+      setCreditPaidAmount('');
+      setCreditPaidAmountBs('');
+      return;
+    }
+    const targetUSD = Math.round(totalUSD * fraction * 100) / 100;
+    const targetBs = Math.round(targetUSD * rate * 100) / 100;
+    setCreditPaidAmount(targetUSD.toFixed(2));
+    setCreditPaidAmountBs(targetBs.toFixed(2));
+  };
+
+  const deferredPaidUSD = useMemo(() => {
+    const parsedUSD = parseFloat(creditPaidAmount);
+    if (!Number.isNaN(parsedUSD) && parsedUSD > 0) {
+      return Math.round(parsedUSD * 100) / 100;
+    }
+    const parsedBs = parseFloat(creditPaidAmountBs);
+    if (!Number.isNaN(parsedBs) && parsedBs > 0 && rate > 0) {
+      return Math.round((parsedBs / rate) * 100) / 100;
+    }
+    return 0;
+  }, [creditPaidAmount, creditPaidAmountBs, rate]);
+
+  const deferredPaidBs = useMemo(() => {
+    const parsedBs = parseFloat(creditPaidAmountBs);
+    if (creditPaidCurrencyMode === 'BS' && !Number.isNaN(parsedBs) && parsedBs > 0) {
+      return Math.round(parsedBs * 100) / 100;
+    }
+    return Math.round(deferredPaidUSD * rate * 100) / 100;
+  }, [creditPaidCurrencyMode, creditPaidAmountBs, deferredPaidUSD, rate]);
+
   const handleFinalizeSale = () => {
     if (isSubmittingSaleRef.current) return;
     setPosFormError(null);
@@ -954,8 +1020,20 @@ export const PosView: React.FC = () => {
         };
       });
 
-      const paidNum = isDeferred ? Number(creditPaidAmount || 0) : mixtoHasCredit ? mixtoCashUSD : totalUSD;
-      const isFullyPaid = paidNum >= totalUSD - 0.01;
+      if (isDeferred && deferredPaidUSD > totalUSD + 0.05) {
+        const msg = `El abono inicial (${formatUSD(deferredPaidUSD)}) excede el total de la venta (${formatUSD(totalUSD)}).`;
+        setPosFormError(msg);
+        showToast(msg, 'error');
+        return;
+      }
+
+      const rawPaidNum = isDeferred ? deferredPaidUSD : mixtoHasCredit ? mixtoCashUSD : totalUSD;
+      const paidNum =
+        isDeferred && Math.abs(totalUSD - rawPaidNum) <= 0.02
+          ? Math.round(totalUSD * 100) / 100
+          : rawPaidNum;
+      const paidBsNum = isDeferred && paidNum > 0 ? deferredPaidBs : undefined;
+      const isFullyPaid = paidNum >= totalUSD - 0.02;
       const isMercadoLibre = paymentType === 'MERCADOLIBRE';
       const mlCommissionToRecord = isMercadoLibre ? computedMlCommissionUSD : undefined;
 
@@ -1000,6 +1078,8 @@ export const PosView: React.FC = () => {
         creditDays: hasCreditComponent ? creditDays : undefined,
         creditDueDate: hasCreditComponent ? creditDueDate : undefined,
         creditPaidAmount: hasCreditComponent ? paidNum : undefined,
+        creditPaidAmountBs: isDeferred && paidNum > 0 ? paidBsNum : undefined,
+        creditInitialPaymentCurrency: isDeferred && paidNum > 0 ? creditPaidCurrencyMode : undefined,
         creditStatus: hasCreditComponent ? (isFullyPaid ? 'PAGADO' : 'PENDIENTE') : undefined,
         mercadolibreCommissionUSD: mlCommissionToRecord,
         mercadolibreCommissionRate: isMercadoLibre && mlCommissionMode === 'PERCENT' ? Number(mlCommissionRate || 0) : undefined,
@@ -1033,6 +1113,8 @@ export const PosView: React.FC = () => {
       setCreditDays(15);
       setCreditDueDate(getDefaultDueDate(15));
       setCreditPaidAmount('');
+      setCreditPaidAmountBs('');
+      setCreditPaidCurrencyMode('BS');
       setPosFormError(null);
 
       // Open Invoice Preview Modal (PDF downloads only when user clicks Descargar PDF / Enviar a WhatsApp)
@@ -2996,46 +3078,187 @@ export const PosView: React.FC = () => {
                     ))}
                   </div>
 
-                  <div className="grid grid-cols-2 gap-2 text-xs">
-                    <div>
-                      <label
-                        className={`block text-[10px] font-semibold mb-1 ${
+                  <div className="text-xs">
+                    <label
+                      className={`block text-[10px] font-semibold mb-1 ${
+                        paymentType === 'APARTADO' ? 'text-indigo-900' : 'text-amber-900'
+                      }`}
+                    >
+                      {paymentType === 'APARTADO' ? 'Fecha Límite de Retiro:' : 'Fecha Vencimiento:'}
+                    </label>
+                    <input
+                      type="date"
+                      value={creditDueDate}
+                      onChange={(e) => setCreditDueDate(e.target.value)}
+                      className={`w-full p-1.5 border rounded-lg text-xs bg-white text-slate-800 font-mono ${
+                        paymentType === 'APARTADO' ? 'border-indigo-300' : 'border-amber-300'
+                      }`}
+                    />
+                  </div>
+
+                  {/* Abono Inicial en Bolívares o Divisas con equivalente BCV en vivo */}
+                  <div
+                    className={`p-2.5 rounded-xl bg-white border space-y-2 ${
+                      paymentType === 'APARTADO' ? 'border-indigo-200' : 'border-amber-200'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-1.5 flex-wrap">
+                      <span
+                        className={`text-[10px] font-extrabold uppercase tracking-wide ${
                           paymentType === 'APARTADO' ? 'text-indigo-900' : 'text-amber-900'
                         }`}
                       >
-                        {paymentType === 'APARTADO' ? 'Fecha Límite de Retiro:' : 'Fecha Vencimiento:'}
-                      </label>
-                      <input
-                        type="date"
-                        value={creditDueDate}
-                        onChange={(e) => setCreditDueDate(e.target.value)}
-                        className={`w-full p-1.5 border rounded-lg text-xs bg-white text-slate-800 font-mono ${
-                          paymentType === 'APARTADO' ? 'border-indigo-300' : 'border-amber-300'
-                        }`}
-                      />
+                        {paymentType === 'APARTADO'
+                          ? 'Abono Inicial / Reserva:'
+                          : 'Abono Inicial:'}
+                      </span>
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => handleSetDeferredFraction(0)}
+                          className="px-1.5 py-0.5 text-[10px] font-bold bg-slate-100 hover:bg-slate-200 text-slate-600 rounded border border-slate-200 cursor-pointer"
+                        >
+                          Sin abono
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleSetDeferredFraction(0.3)}
+                          className={`px-1.5 py-0.5 text-[10px] font-bold rounded border cursor-pointer ${
+                            paymentType === 'APARTADO'
+                              ? 'bg-indigo-50 hover:bg-indigo-100 text-indigo-800 border-indigo-200'
+                              : 'bg-amber-50 hover:bg-amber-100 text-amber-800 border-amber-200'
+                          }`}
+                        >
+                          30%
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleSetDeferredFraction(0.5)}
+                          className={`px-1.5 py-0.5 text-[10px] font-bold rounded border cursor-pointer ${
+                            paymentType === 'APARTADO'
+                              ? 'bg-indigo-50 hover:bg-indigo-100 text-indigo-800 border-indigo-200'
+                              : 'bg-amber-50 hover:bg-amber-100 text-amber-800 border-amber-200'
+                          }`}
+                        >
+                          50%
+                        </button>
+                      </div>
                     </div>
 
-                    <div>
-                      <label
-                        className={`block text-[10px] font-semibold mb-1 ${
-                          paymentType === 'APARTADO' ? 'text-indigo-900' : 'text-amber-900'
+                    {/* Selector de moneda del abono inicial */}
+                    <div className="grid grid-cols-2 gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => handleSelectDeferredCurrencyMode('BS')}
+                        className={`py-1.5 px-2 rounded-lg border text-[11px] font-extrabold transition-all cursor-pointer flex items-center justify-center gap-1 ${
+                          creditPaidCurrencyMode === 'BS'
+                            ? 'bg-sky-600 border-sky-600 text-white shadow-2xs'
+                            : 'bg-slate-50 border-slate-200 text-sky-900 hover:bg-sky-50'
                         }`}
                       >
-                        {paymentType === 'APARTADO' ? 'Abono Inicial / Reserva ($):' : 'Abono Inicial ($ USD):'}
-                      </label>
-                      <input
-                        type="number"
-                        step="any"
-                        min="0"
-                        max={totalUSD}
-                        value={creditPaidAmount}
-                        onChange={(e) => setCreditPaidAmount(e.target.value === '' ? '' : Math.max(0, Number(e.target.value)))}
-                        placeholder="0.00"
-                        className={`w-full p-1.5 border rounded-lg text-xs bg-white text-slate-800 font-mono ${
-                          paymentType === 'APARTADO' ? 'border-indigo-300' : 'border-amber-300'
+                        <Banknote className="w-3.5 h-3.5 shrink-0" />
+                        <span>Bs. Bolívares</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleSelectDeferredCurrencyMode('USD')}
+                        className={`py-1.5 px-2 rounded-lg border text-[11px] font-extrabold transition-all cursor-pointer flex items-center justify-center gap-1 ${
+                          creditPaidCurrencyMode === 'USD'
+                            ? 'bg-emerald-600 border-emerald-600 text-white shadow-2xs'
+                            : 'bg-slate-50 border-slate-200 text-emerald-900 hover:bg-emerald-50'
                         }`}
-                      />
+                      >
+                        <DollarSign className="w-3.5 h-3.5 shrink-0" />
+                        <span>$ Divisas (USD)</span>
+                      </button>
                     </div>
+
+                    {/* Inputs sincronizados Bs y $ USD */}
+                    <div className="grid grid-cols-2 gap-2">
+                      {creditPaidCurrencyMode === 'BS' ? (
+                        <>
+                          <div>
+                            <label className="block text-[9px] font-extrabold text-sky-800 uppercase mb-0.5">
+                              Abono en Bs.
+                            </label>
+                            <input
+                              type="number"
+                              step="any"
+                              min="0"
+                              value={creditPaidAmountBs}
+                              onChange={(e) => handleChangeCreditPaidBs(e.target.value)}
+                              placeholder="0.00"
+                              className="w-full p-1.5 border-2 border-sky-400 rounded-lg text-xs font-mono font-extrabold text-sky-950 bg-sky-50/40 focus:bg-white focus:outline-none focus:ring-2 focus:ring-sky-400/50"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-[9px] font-bold text-slate-500 uppercase mb-0.5">
+                              Equiv. $ USD (BCV)
+                            </label>
+                            <input
+                              type="number"
+                              step="any"
+                              min="0"
+                              value={creditPaidAmount}
+                              onChange={(e) => handleChangeCreditPaidUSD(e.target.value)}
+                              placeholder="0.00"
+                              className="w-full p-1.5 border border-slate-200 rounded-lg text-xs font-mono font-semibold text-slate-700 bg-slate-50 focus:bg-white focus:outline-none"
+                            />
+                          </div>
+                        </>
+                      ) : (
+                        <>
+                          <div>
+                            <label className="block text-[9px] font-extrabold text-emerald-800 uppercase mb-0.5">
+                              Abono en Divisas ($)
+                            </label>
+                            <input
+                              type="number"
+                              step="any"
+                              min="0"
+                              value={creditPaidAmount}
+                              onChange={(e) => handleChangeCreditPaidUSD(e.target.value)}
+                              placeholder="0.00"
+                              className="w-full p-1.5 border-2 border-emerald-500 rounded-lg text-xs font-mono font-extrabold text-emerald-950 bg-emerald-50/40 focus:bg-white focus:outline-none focus:ring-2 focus:ring-emerald-400/50"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-[9px] font-bold text-slate-500 uppercase mb-0.5">
+                              Equiv. Bs. (BCV)
+                            </label>
+                            <input
+                              type="number"
+                              step="any"
+                              min="0"
+                              value={creditPaidAmountBs}
+                              onChange={(e) => handleChangeCreditPaidBs(e.target.value)}
+                              placeholder="0.00"
+                              className="w-full p-1.5 border border-slate-200 rounded-lg text-xs font-mono font-semibold text-slate-700 bg-slate-50 focus:bg-white focus:outline-none"
+                            />
+                          </div>
+                        </>
+                      )}
+                    </div>
+
+                    {deferredPaidUSD > 0 && (
+                      <div
+                        className={`px-2 py-1.5 rounded-lg border flex items-center justify-between gap-2 text-[10px] ${
+                          creditPaidCurrencyMode === 'BS'
+                            ? 'bg-sky-50 border-sky-200 text-sky-950'
+                            : 'bg-emerald-50 border-emerald-200 text-emerald-950'
+                        }`}
+                      >
+                        <span className="flex items-center gap-1 font-bold">
+                          <ArrowLeftRight className="w-3 h-3 shrink-0" />
+                          <span>Abono recibido:</span>
+                        </span>
+                        <span className="font-mono font-extrabold text-right">
+                          {creditPaidCurrencyMode === 'BS'
+                            ? `${formatBs(deferredPaidBs)} (Equiv. ${formatUSD(deferredPaidUSD)})`
+                            : `${formatUSD(deferredPaidUSD)} (Equiv. ${formatBs(deferredPaidBs)})`}
+                        </span>
+                      </div>
+                    )}
                   </div>
 
                   {/* Saldo Restante */}
@@ -3053,14 +3276,14 @@ export const PosView: React.FC = () => {
                     </span>
                     <div className="text-right font-mono font-bold">
                       <span className={paymentType === 'APARTADO' ? 'text-indigo-950' : 'text-amber-950'}>
-                        {formatUSD(Math.max(0, totalUSD - Number(creditPaidAmount || 0)))}
+                        {formatUSD(Math.max(0, totalUSD - deferredPaidUSD))}
                       </span>
                       <span
                         className={`text-[10px] ml-1 ${
                           paymentType === 'APARTADO' ? 'text-indigo-800' : 'text-amber-800'
                         }`}
                       >
-                        ({formatBs(Math.max(0, totalUSD - Number(creditPaidAmount || 0)) * rate)})
+                        ({formatBs(Math.max(0, totalUSD - deferredPaidUSD) * rate)})
                       </span>
                     </div>
                   </div>
@@ -3097,13 +3320,19 @@ export const PosView: React.FC = () => {
                       </label>
                       <select
                         value={paymentMethod}
-                        onChange={(e) => setPaymentMethod(e.target.value as PaymentMethod)}
+                        onChange={(e) => {
+                          const nextMethod = e.target.value as PaymentMethod;
+                          setPaymentMethod(nextMethod);
+                          if (paymentType === 'APARTADO' || paymentType === 'CREDITO') {
+                            setCreditPaidCurrencyMode(isBsPaymentMethod(nextMethod) ? 'BS' : 'USD');
+                          }
+                        }}
                         className="w-full p-2 border border-slate-200 rounded-lg text-xs bg-slate-50 font-medium"
                       >
-                        <option value="Pago Móvil">Pago Móvil</option>
-                        <option value="Dólares Efectivo (USD)">Dólares Efectivo (USD)</option>
+                        <option value="Pago Móvil">Pago Móvil (Bs.)</option>
+                        <option value="Dólares Efectivo (USD)">Dólares Efectivo ($ USD)</option>
                         <option value="Transferencia Bancaria Bs">Transferencia Bs</option>
-                        <option value="Punto de Venta (Bs)">Punto de Venta (Bs)</option>
+                        <option value="Punto de Venta (Bs)">Punto de Venta (Bs.)</option>
                         <option value="Binance Pay (USDT)">Binance Pay (USDT)</option>
                       </select>
                     </div>
@@ -3268,17 +3497,46 @@ export const PosView: React.FC = () => {
                 </div>
 
                 {(paymentType === 'CREDITO' || paymentType === 'APARTADO') && (
-                  <div
-                    className={`pt-2 border-t border-slate-800/80 flex justify-between items-baseline text-xs ${
-                      paymentType === 'APARTADO' ? 'text-indigo-300' : 'text-amber-300'
-                    }`}
-                  >
-                    <span>
-                      {paymentType === 'APARTADO' ? 'Saldo Restante para Retirar:' : 'Saldo Restante por Cobrar:'}
-                    </span>
-                    <span className="font-mono font-bold">
-                      {formatUSD(Math.max(0, totalUSD - Number(creditPaidAmount || 0)))}
-                    </span>
+                  <div className="pt-2 border-t border-slate-800/80 space-y-1 text-xs">
+                    {deferredPaidUSD > 0 && (
+                      <div className="flex justify-between items-baseline text-emerald-300">
+                        <span>
+                          {paymentType === 'APARTADO' ? 'Abono Inicial / Reserva:' : 'Abono Inicial:'}
+                        </span>
+                        <div className="text-right font-mono font-bold">
+                          {creditPaidCurrencyMode === 'BS' ? (
+                            <>
+                              <span>{formatBs(deferredPaidBs)}</span>
+                              <span className="text-[10px] text-emerald-200/80 block font-normal">
+                                Equiv. {formatUSD(deferredPaidUSD)} (BCV)
+                              </span>
+                            </>
+                          ) : (
+                            <>
+                              <span>{formatUSD(deferredPaidUSD)}</span>
+                              <span className="text-[10px] text-emerald-200/80 block font-normal">
+                                Equiv. {formatBs(deferredPaidBs)} (BCV)
+                              </span>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                    <div
+                      className={`flex justify-between items-baseline ${
+                        paymentType === 'APARTADO' ? 'text-indigo-300' : 'text-amber-300'
+                      }`}
+                    >
+                      <span>
+                        {paymentType === 'APARTADO' ? 'Saldo Restante para Retirar:' : 'Saldo Restante por Cobrar:'}
+                      </span>
+                      <div className="text-right font-mono font-bold">
+                        <span>{formatUSD(Math.max(0, totalUSD - deferredPaidUSD))}</span>
+                        <span className="text-[10px] opacity-80 block font-normal">
+                          {formatBs(Math.max(0, totalUSD - deferredPaidUSD) * rate)}
+                        </span>
+                      </div>
+                    </div>
                   </div>
                 )}
 

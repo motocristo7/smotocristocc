@@ -144,11 +144,15 @@ export function isSaleWithCredit(
   return false;
 }
 
+export type PaymentCurrencyMode = 'BS' | 'USD';
+
 export interface CreditPaymentRecord {
   id: string;
   date: string; // ISO string
   amountUSD: number;
   amountBs: number;
+  currencyMode?: PaymentCurrencyMode; // Moneda en la que se recibió el abono ('BS' o 'USD')
+  bcvRate?: number; // Tasa BCV aplicada al registrar este abono
   paymentMethod: PaymentMethod;
   pagoMovilAccount?: PagoMovilAccountOption;
   treasuryAccountId?: string;
@@ -188,6 +192,8 @@ export interface Sale {
   creditDays?: number; // p. ej. 7, 15, 30 días
   creditDueDate?: string; // Fecha límite de pago (YYYY-MM-DD)
   creditPaidAmount?: number; // Monto abonado acumulado en USD
+  creditPaidAmountBs?: number; // Monto exacto en Bs. del abono inicial (cuando se ingresa en Bolívares o su equivalente BCV)
+  creditInitialPaymentCurrency?: PaymentCurrencyMode; // Moneda en la que se registró el abono inicial ('BS' o 'USD')
   creditStatus?: SaleCreditStatus; // 'PENDIENTE' | 'PAGADO' | 'ANULADO'
   creditPayments?: CreditPaymentRecord[]; // Historial de abonos parciales
   lastPaymentReminderSentAt?: string; // Fecha del último recordatorio de cobro enviado por WhatsApp

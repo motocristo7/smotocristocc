@@ -654,6 +654,27 @@ export async function generateInvoicePDF(
     y += 4.5;
   }
 
+  // Optional National Shipping Cost (otros estados distintos a Mérida)
+  if ((sale.shippingCostUSD || 0) > 0) {
+    const shipUSD = sale.shippingCostUSD || 0;
+    const shipBs = sale.shippingCostBs || shipUSD * rate;
+    const shipLabel = `Gastos de Envío (${sale.shippingAgency || 'Encomienda'}${
+      sale.shippingState ? ` · ${sale.shippingState}` : ''
+    }): +${formatUSD(shipUSD)} (${formatBs(shipBs)})`;
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(8);
+    doc.setTextColor(3, 105, 161); // sky-700
+    doc.text(shipLabel, totalsRightX, y, { align: 'right' });
+    y += 4;
+    if (sale.shippingNotes) {
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(7);
+      doc.setTextColor(71, 85, 105);
+      doc.text(`Destino / Agencia: ${sale.shippingNotes}`, totalsRightX, y, { align: 'right' });
+      y += 4;
+    }
+  }
+
   // Grand Total in USD
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(13);

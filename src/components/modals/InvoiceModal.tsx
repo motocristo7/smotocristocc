@@ -25,6 +25,7 @@ import {
   Phone,
   Eye,
   DollarSign,
+  Truck,
 } from 'lucide-react';
 
 export const InvoiceModal: React.FC = () => {
@@ -683,6 +684,30 @@ export const InvoiceModal: React.FC = () => {
                 <div className="flex justify-between text-amber-800 font-semibold">
                   <span>Recargo MercadoLibre (Adicional):</span>
                   <span className="font-mono tabular-nums">+{formatUSD(selectedInvoice.mercadolibreCommissionUSD || 0)}</span>
+                </div>
+              )}
+              {(selectedInvoice.shippingCostUSD || 0) > 0 && (
+                <div className="p-2 rounded-lg bg-sky-50 border border-sky-200 space-y-0.5">
+                  <div className="flex justify-between text-sky-900 font-semibold">
+                    <span className="flex items-center gap-1">
+                      <Truck className="w-3.5 h-3.5 text-sky-600 shrink-0" />
+                      <span>
+                        Envío ({selectedInvoice.shippingAgency || 'Encomienda'}
+                        {selectedInvoice.shippingState ? ` · ${selectedInvoice.shippingState}` : ''}):
+                      </span>
+                    </span>
+                    <span className="font-mono tabular-nums">
+                      +{formatUSD(selectedInvoice.shippingCostUSD || 0)}
+                    </span>
+                  </div>
+                  <div className="flex justify-between text-[10px] text-sky-800">
+                    <span className="truncate pr-2">
+                      {selectedInvoice.shippingNotes || 'Envío nacional fuera de Mérida'}
+                    </span>
+                    <span className="font-mono shrink-0">
+                      {formatBs(selectedInvoice.shippingCostBs || (selectedInvoice.shippingCostUSD || 0) * rate)}
+                    </span>
+                  </div>
                 </div>
               )}
               <div className="flex justify-between text-sm font-bold text-slate-900 pt-2 border-t border-slate-200">

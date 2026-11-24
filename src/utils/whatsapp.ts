@@ -9,6 +9,7 @@ import {
   CreditPaymentRecord,
   PurchaseOrder,
   PurchasePaymentRecord,
+  OpenAccount,
   isSaleWithCredit,
   getServiceOrderPaymentSummary,
 } from '../types';
@@ -124,6 +125,14 @@ export function buildInvoiceWhatsAppMessage(sale: Sale, settings: BusinessSettin
   const pendingBalanceUSD = Math.max(0, sale.total - (sale.creditPaidAmount || 0));
   const pendingBalanceBs = pendingBalanceUSD * rate;
   const businessName = (settings.commercialName || settings.name || 'MotoCristoc').toUpperCase();
+  const shippingLine =
+    (sale.shippingCostUSD || 0) > 0
+      ? `🚚 *Gastos de Envío (${sale.shippingAgency || 'Encomienda'}${
+          sale.shippingState ? ` · ${sale.shippingState}` : ''
+        }):* *+${formatUSD(sale.shippingCostUSD || 0)}* (${formatBs(
+          sale.shippingCostBs || (sale.shippingCostUSD || 0) * rate
+        )})${sale.shippingNotes ? ` — ${sale.shippingNotes}` : ''}\n`
+      : '';
 
   let message = '';
 
@@ -149,7 +158,7 @@ export function buildInvoiceWhatsAppMessage(sale: Sale, settings: BusinessSettin
 🛒 *Mercancía Apartada:*
 ${itemsText}
 
-💰 *Total del Apartado:* *${formatUSD(sale.total)}* | *${formatBs(sale.totalBs || sale.total * rate)}*
+${shippingLine}💰 *Total del Apartado:* *${formatUSD(sale.total)}* | *${formatBs(sale.totalBs || sale.total * rate)}*
 📌 Condición: *SISTEMA DE APARTADO* (${sale.creditDays || 15} días para retirar)
 ⏳ Fecha Límite de Retiro: *${sale.creditDueDate || 'A convenir'}*
 ${abonoLine}⚠️ *Saldo Restante para Retirar:* *${formatUSD(pendingBalanceUSD)}* | *${formatBs(pendingBalanceBs)}* (Tasa BCV: ${rate.toFixed(2)})
@@ -183,7 +192,7 @@ ${abonoLine}⚠️ *Saldo Restante para Retirar:* *${formatUSD(pendingBalanceUSD
 🛒 *Detalle de compra:*
 ${itemsText}
 
-💰 *Monto Total:* *${formatUSD(sale.total)}* | *${formatBs(sale.totalBs || sale.total * rate)}*
+${shippingLine}💰 *Monto Total:* *${formatUSD(sale.total)}* | *${formatBs(sale.totalBs || sale.total * rate)}*
 📌 Condición: *A CRÉDITO* (${sale.creditDays || 15} días)
 ⏳ Fecha de Vencimiento: *${sale.creditDueDate || 'A convenir'}*
 ${abonoLine}⚠️ *Saldo Pendiente por Pagar:* *${formatUSD(pendingBalanceUSD)}* | *${formatBs(pendingBalanceBs)}* (Tasa BCV: ${rate.toFixed(2)})
@@ -218,7 +227,7 @@ ${abonoLine}⚠️ *Saldo Pendiente por Pagar:* *${formatUSD(pendingBalanceUSD)}
 🛒 *Detalle de compra:*
 ${itemsText}
 
-💰 *Monto Total:* *${formatUSD(sale.total)}* | *${formatBs(sale.totalBs || sale.total * rate)}*
+${shippingLine}💰 *Monto Total:* *${formatUSD(sale.total)}* | *${formatBs(sale.totalBs || sale.total * rate)}*
 📌 Condición: *PAGO MIXTO (CONTADO + CRÉDITO ${sale.creditDays || 15} días)*
 💳 *Desglose de pago:*
 ${mixtoLines}
@@ -262,7 +271,7 @@ ${mixtoLines}
 🛒 *Detalle de compra:*
 ${itemsText}
 
-💰 *Total Pagado:* *${formatUSD(sale.total)}* | *${formatBs(sale.totalBs || sale.total * rate)}* (Tasa BCV: ${rate.toFixed(2)})
+${shippingLine}💰 *Total Pagado:* *${formatUSD(sale.total)}* | *${formatBs(sale.totalBs || sale.total * rate)}* (Tasa BCV: ${rate.toFixed(2)})
 ${conditionText}
 
 📎 Le adjuntamos su Factura de Compra en PDF.
@@ -970,4 +979,57 @@ ${balanceLine}${consolidatedDebtLine}${bcvNote}
   return { message, url };
 }
 
+/**
+ * Builds WhatsApp running statement for a POS daily Open Account ("Cuenta Abierta del Día")
+ */
+export function buildOpenAccountWhatsAppMessage(
+  account: OpenAccount,
+  settings: BusinessSettings
+): { message: string; url: string } {
+  const rate = settings.bcvRate || account.bcvRate;
+  const businessName = (settings.commercialName || settings.name || 'MotoCristoc').toUpperCase();
+  const totalUSD = Math.round((account.subtotal || 0) * 100) / 100;
+  const totalBs = Math.round(totalUSD * rate * 100) / 100;
 
+  const itemsLines =
+    account.items.length > 0
+      ? account.items
+          .map((item) => {
+            const timeLabel = item.addedAt
+              ? new Date(item.addedAt).toLocaleTimeString('es-VE', {
+                  hour: '2-digit',
+                  minute: '2-digit',
+                })
+              : '';
+            return `▪ ${item.quantity}x ${item.name} — *${formatUSD(item.total)}*${timeLabel ? ` _(${timeLabel})_` : ''}`;
+          })
+          .join('\n')
+      : '▪ Sin repuestos cargados todavía';
+
+  const workshopLine = account.workshopName ? `🔧 *Taller / Mecánico:* ${account.workshopName}\n` : '';
+  const motoLine = account.motorcycleInfo ? `🏍️ *Moto / Placa:* ${account.motorcycleInfo}\n` : '';
+
+  const message = `📋 *ESTADO DE CUENTA ABIERTA DEL DÍA* · *${businessName}*
+───────────────────────
+Hola *${account.customerName}*, te enviamos el resumen actualizado de los repuestos cargados a tu cuenta hoy:
+
+🔖 *Cuenta:* #${account.accountNumber}
+${account.customerDocument ? `🆔 *C.I./RIF:* ${account.customerDocument}\n` : ''}${workshopLine}${motoLine}
+🔩 *Repuestos Retirados (${account.items.length}):*
+${itemsLines}
+
+───────────────────────
+💵 *TOTAL ACUMULADO HOY:* *${formatUSD(totalUSD)}*
+🇻🇪 *Equivalente en Bolívares:* *${formatBs(totalBs)}* _(Tasa BCV: Bs. ${rate.toFixed(2)})_
+───────────────────────
+
+📲 *Datos para cancelar al finalizar el día:*
+🏦 *Banco:* ${settings.bankDetails.pagoMovilBank || '0134 - Banesco'}
+📱 *Pago Móvil:* ${settings.bankDetails.pagoMovilPhone || '0412-2242450'}
+🆔 *C.I. / RIF:* ${settings.bankDetails.pagoMovilId || 'V-19996141'}
+${settings.bankDetails.binancePayId ? `🟡 *Binance Pay ID:* ${settings.bankDetails.binancePayId}\n` : ''}
+¡Estamos a la orden para cualquier otro repuesto que necesite tu moto! 🛵🔧`;
+
+  const url = buildWhatsAppSendUrl(account.customerPhone, message);
+  return { message, url };
+}

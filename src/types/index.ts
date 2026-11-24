@@ -208,6 +208,15 @@ export interface Sale {
   mercadolibreCommissionRate?: number; // % de comisión aplicada
   mercadolibreFeeStatus?: 'PENDIENTE' | 'PAGADO'; // Estado de liquidación con MercadoLibre
   mercadolibreSettledAt?: string; // Fecha de liquidación
+
+  // Gastos de Envío Nacional (Ventas a otros estados distintos a Mérida)
+  hasShipping?: boolean;
+  shippingCostUSD?: number;
+  shippingCostBs?: number;
+  shippingCurrencyMode?: PaymentCurrencyMode;
+  shippingState?: string;
+  shippingAgency?: string;
+  shippingNotes?: string;
 }
 
 export interface MercadoLibreEntry {
@@ -862,3 +871,31 @@ export interface TreasuryDebt {
   updatedAt?: string;
 }
 
+export type OpenAccountStatus = 'ABIERTA' | 'CERRADA';
+
+export interface OpenAccountItem extends SaleItem {
+  entryId: string;
+  addedAt: string; // ISO timestamp when customer/mechanic picked up this part
+  note?: string;
+}
+
+export interface OpenAccount {
+  id: string;
+  accountNumber: string; // e.g., CTA-2026-0001
+  customerId?: string;
+  customerName: string;
+  customerPhone: string;
+  customerDocument?: string;
+  workshopName?: string; // Taller vecino donde arreglan la motocicleta
+  motorcycleInfo?: string; // Modelo / placa / color de la motocicleta
+  notes?: string;
+  items: OpenAccountItem[];
+  subtotal: number; // Acumulado actual en USD
+  bcvRate: number;
+  status: OpenAccountStatus;
+  openedAt: string; // ISO date
+  updatedAt: string; // ISO date
+  settledAt?: string;
+  settledSaleId?: string;
+  settledInvoiceNumber?: string;
+}

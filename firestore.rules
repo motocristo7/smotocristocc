@@ -122,6 +122,11 @@ service cloud.firestore {
       allow list: if true;
       allow get, create, update, delete: if isValidId(debtId);
     }
+
+    // Punto de Venta: Cuentas Abiertas del Día (Talleres Vecinos)
+    match /openAccounts/{accountId} {
+      allow list: if true;
+      allow get, create, update, delete: if isValidId(accountId);
+    }
   }
 }
-

@@ -58,6 +58,8 @@ import {
   DebtPaymentPlan,
   DebtPaymentRecord,
   TreasuryDebt,
+  OpenAccount,
+  OpenAccountItem,
 } from '../types';
 import {
   INITIAL_SETTINGS,
@@ -93,6 +95,7 @@ import {
   subscribeToTreasuryCommitments,
   subscribeToTreasuryMovements,
   subscribeToTreasuryDebts,
+  subscribeToOpenAccounts,
   subscribeToDeletedIds,
   fetchDeletedIdsFromFirestore,
   syncProductToFirestore,
@@ -126,6 +129,8 @@ import {
   removeTreasuryMovementFromFirestore,
   syncTreasuryDebtToFirestore,
   removeTreasuryDebtFromFirestore,
+  syncOpenAccountToFirestore,
+  removeOpenAccountFromFirestore,
   recordDeletedIdsInFirestore,
   clearDeletedIdsInFirestore,
   uploadAllToFirestore,
@@ -202,6 +207,7 @@ function mergeDeletedMaps(a?: Partial<DeletedIdsMap>, b?: Partial<DeletedIdsMap>
     treasuryCommitments: Array.from(new Set([...(a?.treasuryCommitments || []), ...(b?.treasuryCommitments || [])])),
     treasuryMovements: Array.from(new Set([...(a?.treasuryMovements || []), ...(b?.treasuryMovements || [])])),
     treasuryDebts: Array.from(new Set([...(a?.treasuryDebts || []), ...(b?.treasuryDebts || [])])),
+    openAccounts: Array.from(new Set([...(a?.openAccounts || []), ...(b?.openAccounts || [])])),
   };
 }
 
@@ -301,6 +307,14 @@ interface AppContextType {
     mercadolibreCommissionUSD?: number;
     mercadolibreCommissionRate?: number;
     mercadolibreFeeStatus?: 'PENDIENTE' | 'PAGADO';
+    hasShipping?: boolean;
+    shippingCostUSD?: number;
+    shippingCostBs?: number;
+    shippingCurrencyMode?: PaymentCurrencyMode;
+    shippingState?: string;
+    shippingAgency?: string;
+    shippingNotes?: string;
+    skipInventoryDeduction?: boolean;
   }) => Sale;
   updateSale: (
     saleId: string,
@@ -703,6 +717,65 @@ interface AppContextType {
   totalPendingDebtsUSD: number;
   totalPendingDebtsBs: number;
 
+  // POS Daily Open Accounts ("Abrir Cuenta" para talleres vecinos)
+  openAccounts: OpenAccount[];
+  openCustomerAccount: (data: {
+    customerId?: string;
+    customerName: string;
+    customerPhone: string;
+    customerDocument?: string;
+    workshopName?: string;
+    motorcycleInfo?: string;
+    notes?: string;
+    items: SaleItem[];
+  }) => OpenAccount;
+  addItemsToOpenAccount: (
+    accountId: string,
+    items: SaleItem[],
+    note?: string
+  ) => OpenAccount | null;
+  updateOpenAccountItem: (
+    accountId: string,
+    entryId: string,
+    updates: { quantity?: number; unitPrice?: number }
+  ) => OpenAccount | null;
+  removeOpenAccountItem: (accountId: string, entryId: string) => OpenAccount | null;
+  updateOpenAccountMeta: (
+    accountId: string,
+    updates: {
+      customerName?: string;
+      customerPhone?: string;
+      customerDocument?: string;
+      workshopName?: string;
+      motorcycleInfo?: string;
+      notes?: string;
+    }
+  ) => OpenAccount | null;
+  cancelOpenAccount: (accountId: string) => boolean;
+  settleOpenAccount: (
+    accountId: string,
+    settlement: {
+      paymentType: SalePaymentType;
+      paymentMethod: PaymentMethod;
+      pagoMovilAccount?: PagoMovilAccountOption;
+      paymentSplits?: SalePaymentSplit[];
+      discount?: number;
+      notes?: string;
+      creditDays?: number;
+      creditDueDate?: string;
+      creditPaidAmount?: number;
+      creditPaidAmountBs?: number;
+      creditInitialPaymentCurrency?: PaymentCurrencyMode;
+      hasShipping?: boolean;
+      shippingCostUSD?: number;
+      shippingCostBs?: number;
+      shippingCurrencyMode?: PaymentCurrencyMode;
+      shippingState?: string;
+      shippingAgency?: string;
+      shippingNotes?: string;
+    }
+  ) => Sale | null;
+
   // Modals & UI triggers
   selectedInvoice: Sale | null;
   setSelectedInvoice: (sale: Sale | null) => void;
@@ -813,6 +886,7 @@ const STORAGE_KEYS = {
   TREASURY_COMMITMENTS: 'servimotos_treasury_commitments_ve_v1',
   TREASURY_MOVEMENTS: 'servimotos_treasury_movements_ve_v1',
   TREASURY_DEBTS: 'servimotos_treasury_debts_ve_v1',
+  OPEN_ACCOUNTS: 'servimotos_open_accounts_ve_v1',
   DEBT_CATEGORIES: 'servimotos_debt_categories_ve_v1',
   CART: 'servimotos_cart_ve_v2',
   ML_ENTRIES: 'servimotos_ml_entries_ve_v2',
@@ -1793,6 +1867,18 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     return [];
   });
 
+  const [openAccounts, setOpenAccounts] = useState<OpenAccount[]>(() => {
+    try {
+      const delSet = new Set(deletedIdsRef.current.openAccounts);
+      const stored = localStorage.getItem(STORAGE_KEYS.OPEN_ACCOUNTS);
+      if (stored) {
+        const parsed: OpenAccount[] = JSON.parse(stored);
+        return Array.isArray(parsed) ? parsed.filter((a) => !delSet.has(a.id)) : [];
+      }
+    } catch {}
+    return [];
+  });
+
   const [customDebtCategories, setCustomDebtCategories] = useState<string[]>(() => {
     try {
       const stored = localStorage.getItem(STORAGE_KEYS.DEBT_CATEGORIES);
@@ -1864,6 +1950,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
   const pendingSyncTreasuryCommitmentIdsRef = useRef<Set<string>>(new Set());
   const pendingSyncTreasuryMovementIdsRef = useRef<Set<string>>(new Set());
   const pendingSyncTreasuryDebtIdsRef = useRef<Set<string>>(new Set());
+  const pendingSyncOpenAccountIdsRef = useRef<Set<string>>(new Set());
 
   // Live refs so concurrent callbacks never read stale closures
   const salesRef = useRef<Sale[]>(sales);
@@ -1881,6 +1968,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
   const treasuryCommitmentsRef = useRef<TreasuryCommitment[]>(treasuryCommitments);
   const treasuryMovementsRef = useRef<TreasuryMovement[]>(treasuryMovements);
   const treasuryDebtsRef = useRef<TreasuryDebt[]>(treasuryDebts);
+  const openAccountsRef = useRef<OpenAccount[]>(openAccounts);
   const settingsRef = useRef<BusinessSettings>(settings);
 
   // Sync to LocalStorage and live refs immediately on any state change
@@ -1963,6 +2051,11 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     treasuryDebtsRef.current = treasuryDebts;
     localStorage.setItem(STORAGE_KEYS.TREASURY_DEBTS, JSON.stringify(treasuryDebts));
   }, [treasuryDebts]);
+
+  useEffect(() => {
+    openAccountsRef.current = openAccounts;
+    localStorage.setItem(STORAGE_KEYS.OPEN_ACCOUNTS, JSON.stringify(openAccounts));
+  }, [openAccounts]);
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEYS.DEBT_CATEGORIES, JSON.stringify(customDebtCategories));
@@ -2073,6 +2166,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
           const deletedTreasuryCommitmentSet = new Set(mergedDeleted.treasuryCommitments);
           const deletedTreasuryMovementSet = new Set(mergedDeleted.treasuryMovements);
           const deletedTreasuryDebtSet = new Set(mergedDeleted.treasuryDebts);
+          const deletedOpenAccountSet = new Set(mergedDeleted.openAccounts);
 
           // Merge products (excluding demo & deleted products)
           if (Array.isArray(serverDb.products)) {
@@ -2516,6 +2610,39 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
               return mergedList;
             });
           }
+
+          // POS Open Accounts (excluding deleted)
+          if (Array.isArray(serverDb.openAccounts)) {
+            const validServerAccounts = serverDb.openAccounts.filter(
+              (a: OpenAccount) => !deletedOpenAccountSet.has(a.id)
+            );
+            setOpenAccounts((current) => {
+              const serverById = new Map<string, OpenAccount>(
+                validServerAccounts.map((a: OpenAccount) => [a.id, a])
+              );
+              const mergedList: OpenAccount[] = [];
+              const seenIds = new Set<string>();
+              for (const localAcc of current) {
+                if (deletedOpenAccountSet.has(localAcc.id)) continue;
+                seenIds.add(localAcc.id);
+                const serverAcc = serverById.get(localAcc.id);
+                if (!serverAcc || pendingSyncOpenAccountIdsRef.current.has(localAcc.id)) {
+                  mergedList.push(localAcc);
+                } else {
+                  mergedList.push(serverAcc);
+                }
+              }
+              for (const serverAcc of validServerAccounts) {
+                if (!seenIds.has(serverAcc.id) && !deletedOpenAccountSet.has(serverAcc.id)) {
+                  mergedList.push(serverAcc);
+                }
+              }
+              mergedList.sort((a, b) => (b.updatedAt || b.openedAt || '').localeCompare(a.updatedAt || a.openedAt || ''));
+              openAccountsRef.current = mergedList;
+              localStorage.setItem(STORAGE_KEYS.OPEN_ACCOUNTS, JSON.stringify(mergedList));
+              return mergedList;
+            });
+          }
         }
       } catch (err) {
         console.warn('Servidor de datos no respondió, usando datos locales:', err);
@@ -2544,6 +2671,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
                 treasuryCommitments: treasuryCommitmentsRef.current,
                 treasuryMovements: treasuryMovementsRef.current,
                 treasuryDebts: treasuryDebtsRef.current,
+                openAccounts: openAccountsRef.current,
                 deletedIds: deletedIdsRef.current,
               }),
             }).catch(() => {});
@@ -2578,6 +2706,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     treasuryCommitments: false,
     treasuryMovements: false,
     treasuryDebts: false,
+    openAccounts: false,
   });
   const seenFirestoreIdsRef = useRef<{
     products: Set<string>;
@@ -2595,6 +2724,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     treasuryCommitments: Set<string>;
     treasuryMovements: Set<string>;
     treasuryDebts: Set<string>;
+    openAccounts: Set<string>;
   }>({
     products: new Set(),
     customers: new Set(),
@@ -2611,6 +2741,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     treasuryCommitments: new Set(),
     treasuryMovements: new Set(),
     treasuryDebts: new Set(),
+    openAccounts: new Set(),
   });
 
   useEffect(() => {
@@ -2633,6 +2764,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       const delTreasuryCommitments = new Set(merged.treasuryCommitments);
       const delTreasuryMovements = new Set(merged.treasuryMovements);
       const delTreasuryDebts = new Set(merged.treasuryDebts);
+      const delOpenAccounts = new Set(merged.openAccounts);
 
       setSales((prev) => prev.filter((s) => !delSales.has(s.id)));
       setProducts((prev) => prev.filter((p) => !delProds.has(p.id)));
@@ -2649,6 +2781,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       setTreasuryCommitments((prev) => prev.filter((cm) => !delTreasuryCommitments.has(cm.id)));
       setTreasuryMovements((prev) => prev.filter((mv) => !delTreasuryMovements.has(mv.id)));
       setTreasuryDebts((prev) => prev.filter((d) => !delTreasuryDebts.has(d.id)));
+      setOpenAccounts((prev) => prev.filter((a) => !delOpenAccounts.has(a.id)));
     };
 
     async function initFirestore() {
@@ -3638,6 +3771,76 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
           setFirebaseSyncStatus('synced');
         });
 
+        // 17. Real-time POS daily open accounts listener
+        const unsubOpenAccounts = subscribeToOpenAccounts((firestoreAccounts, meta) => {
+          if (!Array.isArray(firestoreAccounts)) return;
+          const delSet = new Set(deletedIdsRef.current.openAccounts);
+          firestoreAccounts.forEach((a) => {
+            if (delSet.has(a.id)) {
+              removeOpenAccountFromFirestore(a.id).catch(() => {});
+            }
+          });
+          const cleanAccounts = firestoreAccounts.filter((a) => !delSet.has(a.id));
+          const remoteById = new Map(cleanAccounts.map((a) => [a.id, a]));
+          const remoteIdSet = new Set(cleanAccounts.map((a) => a.id));
+          const prevSeen = seenFirestoreIdsRef.current.openAccounts;
+          const isServerConfirmed = !meta?.fromCache && !meta?.hasPendingWrites;
+
+          if (isServerConfirmed) {
+            remoteIdSet.forEach((id) => pendingSyncOpenAccountIdsRef.current.delete(id));
+          }
+
+          setOpenAccounts((prev) => {
+            const toUpload: OpenAccount[] = [];
+            const mergedMap = new Map<string, OpenAccount>();
+
+            for (const ra of cleanAccounts) {
+              mergedMap.set(ra.id, ra);
+            }
+
+            for (const la of prev) {
+              if (delSet.has(la.id)) continue;
+              const ra = remoteById.get(la.id);
+              const isPendingLocal = pendingSyncOpenAccountIdsRef.current.has(la.id);
+              const isNewerLocal =
+                ra && la.updatedAt && (!ra.updatedAt || la.updatedAt > ra.updatedAt);
+
+              if (!ra) {
+                if (isPendingLocal || !isServerConfirmed || !prevSeen.has(la.id)) {
+                  mergedMap.set(la.id, la);
+                  toUpload.push(la);
+                }
+              } else if (isPendingLocal || isNewerLocal) {
+                mergedMap.set(la.id, la);
+                toUpload.push(la);
+              }
+            }
+
+            if (toUpload.length > 0 && isServerConfirmed) {
+              queueMicrotask(() => {
+                toUpload.forEach((a) => {
+                  pendingSyncOpenAccountIdsRef.current.add(a.id);
+                  syncOpenAccountToFirestore(a)
+                    .then(() => pendingSyncOpenAccountIdsRef.current.delete(a.id))
+                    .catch(() => {});
+                });
+              });
+            }
+
+            const merged = Array.from(mergedMap.values()).sort((a, b) =>
+              (b.updatedAt || b.openedAt || '').localeCompare(a.updatedAt || a.openedAt || '')
+            );
+            openAccountsRef.current = merged;
+            return merged;
+          });
+
+          if (isServerConfirmed) {
+            seenFirestoreIdsRef.current.openAccounts = remoteIdSet;
+            firestoreSyncedFlags.current.openAccounts = true;
+          }
+          setFirebaseSyncStatus('synced');
+        });
+
         unsubs = [
           unsubDeleted,
           unsubProducts,
@@ -3656,6 +3859,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
           unsubTreasuryCommitments,
           unsubTreasuryMovements,
           unsubTreasuryDebts,
+          unsubOpenAccounts,
         ];
       } catch (err) {
         console.warn('Error starting Firestore real-time listeners:', err);
@@ -3694,6 +3898,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
         treasuryCommitments,
         treasuryMovements,
         treasuryDebts,
+        openAccounts,
         deletedIds: deletedIdsRef.current,
       });
       if (result.success) {
@@ -3737,6 +3942,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
           treasuryCommitments,
           treasuryMovements,
           treasuryDebts,
+          openAccounts,
           deletedIds: deletedIdsRef.current,
         }),
       }).catch((err) => {
@@ -3749,7 +3955,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
         clearTimeout(saveTimeoutRef.current);
       }
     };
-  }, [settings, products, customers, sales, serviceOrders, onlineOrders, technicians, serviceCommissions, technicianPayouts, suppliers, purchaseOrders, expenses, treasuryAccounts, treasuryCommitments, treasuryMovements, treasuryDebts, deletedIds]);
+  }, [settings, products, customers, sales, serviceOrders, onlineOrders, technicians, serviceCommissions, technicianPayouts, suppliers, purchaseOrders, expenses, treasuryAccounts, treasuryCommitments, treasuryMovements, treasuryDebts, openAccounts, deletedIds]);
 
   // Guarantee save before tab/window is closed
   useEffect(() => {
@@ -3772,6 +3978,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
           treasuryCommitments,
           treasuryMovements,
           treasuryDebts,
+          openAccounts,
           deletedIds: deletedIdsRef.current,
         });
 
@@ -3793,7 +4000,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     return () => {
       window.removeEventListener('beforeunload', handleBeforeUnload);
     };
-  }, [settings, products, customers, sales, serviceOrders, onlineOrders, technicians, serviceCommissions, technicianPayouts, suppliers, purchaseOrders, expenses, treasuryAccounts, treasuryCommitments, treasuryMovements, treasuryDebts, deletedIds]);
+  }, [settings, products, customers, sales, serviceOrders, onlineOrders, technicians, serviceCommissions, technicianPayouts, suppliers, purchaseOrders, expenses, treasuryAccounts, treasuryCommitments, treasuryMovements, treasuryDebts, openAccounts, deletedIds]);
 
   // Online products: strictly filter where stock > 0, sanitize internal pricing fields, and sort A-Z
   const onlineProducts = useMemo(() => {
@@ -4497,6 +4704,14 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     mercadolibreCommissionUSD?: number;
     mercadolibreCommissionRate?: number;
     mercadolibreFeeStatus?: 'PENDIENTE' | 'PAGADO';
+    hasShipping?: boolean;
+    shippingCostUSD?: number;
+    shippingCostBs?: number;
+    shippingCurrencyMode?: PaymentCurrencyMode;
+    shippingState?: string;
+    shippingAgency?: string;
+    shippingNotes?: string;
+    skipInventoryDeduction?: boolean;
   }): Sale => {
     const customer = ensureCustomer(
       saleData.customerName,
@@ -4507,37 +4722,41 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       saleData.customerId
     );
 
-    // Auto-deduct inventory & sync updated product stocks to Firestore
-    setProducts((prevProducts) => {
-      const touched: Product[] = [];
-      const prevProdIdSet = new Set(prevProducts.map((p) => p.id));
-      const next = prevProducts.map((prod) => {
-        const itemSold = saleData.items.find((item) => {
-          if (item.productId && prevProdIdSet.has(item.productId)) {
-            return item.productId === prod.id;
+    // Auto-deduct inventory & sync updated product stocks to Firestore (skipped when settling an already-deducted Open Account)
+    if (!saleData.skipInventoryDeduction) {
+      setProducts((prevProducts) => {
+        const touched: Product[] = [];
+        const prevProdIdSet = new Set(prevProducts.map((p) => p.id));
+        const next = prevProducts.map((prod) => {
+          const matchingItems = saleData.items.filter((item) => {
+            if (item.isService) return false;
+            if (item.productId && prevProdIdSet.has(item.productId)) {
+              return item.productId === prod.id;
+            }
+            return (
+              typeof item.sku === 'string' &&
+              item.sku.trim().length > 0 &&
+              typeof prod.sku === 'string' &&
+              prod.sku.trim().length > 0 &&
+              item.sku.trim().toLowerCase() === prod.sku.trim().toLowerCase()
+            );
+          });
+          if (matchingItems.length > 0) {
+            const totalQty = matchingItems.reduce((s, it) => s + (Number(it.quantity) || 0), 0);
+            const updatedStock = Math.max(0, prod.stock - totalQty);
+            const updatedProd = { ...prod, stock: updatedStock };
+            touched.push(updatedProd);
+            return updatedProd;
           }
-          return (
-            typeof item.sku === 'string' &&
-            item.sku.trim().length > 0 &&
-            typeof prod.sku === 'string' &&
-            prod.sku.trim().length > 0 &&
-            item.sku.trim().toLowerCase() === prod.sku.trim().toLowerCase()
-          );
+          return prod;
         });
-        if (itemSold && !itemSold.isService) {
-          const updatedStock = Math.max(0, prod.stock - itemSold.quantity);
-          const updatedProd = { ...prod, stock: updatedStock };
-          touched.push(updatedProd);
-          return updatedProd;
-        }
-        return prod;
+        productsRef.current = next;
+        queueMicrotask(() => {
+          touched.forEach((p) => syncProductToFirestore(p).catch(() => {}));
+        });
+        return next;
       });
-      productsRef.current = next;
-      queueMicrotask(() => {
-        touched.forEach((p) => syncProductToFirestore(p).catch(() => {}));
-      });
-      return next;
-    });
+    }
 
     const year = new Date().getFullYear();
     const maxExistingSeq = salesRef.current.reduce((maxSeq, s) => {
@@ -4738,7 +4957,16 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
         undefined,
       bcvRate: rate,
       subtotalBs: saleData.subtotal * rate,
-      totalBs: saleData.total * rate,
+      totalBs:
+        saleData.shippingCurrencyMode === 'BS' &&
+        (saleData.shippingCostBs || 0) > 0 &&
+        (saleData.shippingCostUSD || 0) > 0
+          ? Math.round(
+              ((saleData.total - (saleData.shippingCostUSD || 0)) * rate +
+                (saleData.shippingCostBs || 0)) *
+                100
+            ) / 100
+          : saleData.total * rate,
       paymentMethod: resolvedPaymentMethod,
       pagoMovilAccount: resolvedPagoMovilAccount,
       treasuryAccountId: linkedTreasuryAccountId,
@@ -11248,6 +11476,479 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
 
   const totalPendingDebtsBs = totalPendingDebtsUSD * settings.bcvRate;
 
+  // =========================================================================
+  // POS Daily Open Accounts ("Abrir Cuenta" para clientes en talleres vecinos)
+  // =========================================================================
+  const adjustInventoryForOpenAccountItems = (items: SaleItem[], direction: 'DEDUCT' | 'RESTORE') => {
+    if (!Array.isArray(items) || items.length === 0) return;
+    setProducts((prevProducts) => {
+      const touched: Product[] = [];
+      const prevProdIdSet = new Set(prevProducts.map((p) => p.id));
+      const next = prevProducts.map((prod) => {
+        const matchingItems = items.filter((item) => {
+          if (item.isService) return false;
+          if (item.productId && prevProdIdSet.has(item.productId)) {
+            return item.productId === prod.id;
+          }
+          return (
+            typeof item.sku === 'string' &&
+            item.sku.trim().length > 0 &&
+            typeof prod.sku === 'string' &&
+            prod.sku.trim().length > 0 &&
+            item.sku.trim().toLowerCase() === prod.sku.trim().toLowerCase()
+          );
+        });
+        if (matchingItems.length === 0) return prod;
+        const qtySum = matchingItems.reduce((s, it) => s + (Number(it.quantity) || 0), 0);
+        if (qtySum <= 0) return prod;
+        const nextStock =
+          direction === 'DEDUCT' ? Math.max(0, prod.stock - qtySum) : prod.stock + qtySum;
+        const updatedProd = { ...prod, stock: nextStock };
+        touched.push(updatedProd);
+        return updatedProd;
+      });
+      productsRef.current = next;
+      if (touched.length > 0) {
+        queueMicrotask(() => {
+          touched.forEach((p) => syncProductToFirestore(p).catch(() => {}));
+        });
+      }
+      return next;
+    });
+  };
+
+  const openCustomerAccount = (data: {
+    customerId?: string;
+    customerName: string;
+    customerPhone: string;
+    customerDocument?: string;
+    workshopName?: string;
+    motorcycleInfo?: string;
+    notes?: string;
+    items: SaleItem[];
+  }): OpenAccount => {
+    const customer = ensureCustomer(
+      data.customerName,
+      data.customerPhone || 'N/A',
+      data.customerDocument,
+      undefined,
+      undefined,
+      data.customerId
+    );
+
+    const now = new Date().toISOString();
+    const year = new Date().getFullYear();
+    const maxSeq = openAccountsRef.current.reduce((maxVal, acc) => {
+      const m = (acc.accountNumber || '').match(/CTA-\d+-(\d+)/);
+      const seq = m ? parseInt(m[1], 10) : 0;
+      return seq > maxVal ? seq : maxVal;
+    }, 0);
+    const accountNumber = `CTA-${year}-${String(maxSeq + 1).padStart(4, '0')}`;
+    const rate = settingsRef.current.bcvRate;
+
+    const initialItems: OpenAccountItem[] = (data.items || []).map((item, idx) => ({
+      ...item,
+      total: Math.round(Number(item.unitPrice || 0) * Number(item.quantity || 0) * 100) / 100,
+      entryId: `oai-${Date.now()}-${idx}-${Math.floor(Math.random() * 1000)}`,
+      addedAt: now,
+    }));
+
+    if (initialItems.length > 0) {
+      adjustInventoryForOpenAccountItems(initialItems, 'DEDUCT');
+    }
+
+    const subtotal =
+      Math.round(initialItems.reduce((sum, it) => sum + (Number(it.total) || 0), 0) * 100) / 100;
+
+    const newAccount: OpenAccount = {
+      id: `openacc-${Date.now()}-${Math.floor(Math.random() * 1000).toString().padStart(3, '0')}`,
+      accountNumber,
+      customerId: customer.id,
+      customerName: customer.name || data.customerName.trim(),
+      customerPhone: (data.customerPhone || customer.phone || 'N/A').trim() || 'N/A',
+      customerDocument: (data.customerDocument || customer.documentId || '').trim() || undefined,
+      workshopName: data.workshopName?.trim() || undefined,
+      motorcycleInfo: data.motorcycleInfo?.trim() || undefined,
+      notes: data.notes?.trim() || undefined,
+      items: initialItems,
+      subtotal,
+      bcvRate: rate,
+      status: 'ABIERTA',
+      openedAt: now,
+      updatedAt: now,
+    };
+
+    const nextList = [newAccount, ...openAccountsRef.current];
+    openAccountsRef.current = nextList;
+    setOpenAccounts(nextList);
+    try {
+      localStorage.setItem(STORAGE_KEYS.OPEN_ACCOUNTS, JSON.stringify(nextList));
+    } catch {}
+
+    pendingSyncOpenAccountIdsRef.current.add(newAccount.id);
+    syncOpenAccountToFirestore(newAccount)
+      .then(() => pendingSyncOpenAccountIdsRef.current.delete(newAccount.id))
+      .catch(() => {});
+
+    return newAccount;
+  };
+
+  const addItemsToOpenAccount = (
+    accountId: string,
+    items: SaleItem[],
+    note?: string
+  ): OpenAccount | null => {
+    const existing = openAccountsRef.current.find((a) => a.id === accountId);
+    if (!existing || existing.status !== 'ABIERTA' || !Array.isArray(items) || items.length === 0) {
+      return null;
+    }
+
+    const now = new Date().toISOString();
+    const newEntries: OpenAccountItem[] = items.map((item, idx) => ({
+      ...item,
+      total: Math.round(Number(item.unitPrice || 0) * Number(item.quantity || 0) * 100) / 100,
+      entryId: `oai-${Date.now()}-${idx}-${Math.floor(Math.random() * 1000)}`,
+      addedAt: now,
+      note: note?.trim() || undefined,
+    }));
+
+    adjustInventoryForOpenAccountItems(newEntries, 'DEDUCT');
+
+    const updatedItems = [...existing.items, ...newEntries];
+    const subtotal =
+      Math.round(updatedItems.reduce((sum, it) => sum + (Number(it.total) || 0), 0) * 100) / 100;
+
+    const updatedAccount: OpenAccount = {
+      ...existing,
+      items: updatedItems,
+      subtotal,
+      bcvRate: settingsRef.current.bcvRate,
+      updatedAt: now,
+    };
+
+    const nextList = openAccountsRef.current.map((a) => (a.id === accountId ? updatedAccount : a));
+    openAccountsRef.current = nextList;
+    setOpenAccounts(nextList);
+    try {
+      localStorage.setItem(STORAGE_KEYS.OPEN_ACCOUNTS, JSON.stringify(nextList));
+    } catch {}
+
+    pendingSyncOpenAccountIdsRef.current.add(updatedAccount.id);
+    syncOpenAccountToFirestore(updatedAccount)
+      .then(() => pendingSyncOpenAccountIdsRef.current.delete(updatedAccount.id))
+      .catch(() => {});
+
+    return updatedAccount;
+  };
+
+  const updateOpenAccountItem = (
+    accountId: string,
+    entryId: string,
+    updates: { quantity?: number; unitPrice?: number }
+  ): OpenAccount | null => {
+    const existing = openAccountsRef.current.find((a) => a.id === accountId);
+    if (!existing || existing.status !== 'ABIERTA') return null;
+
+    const targetItem = existing.items.find((it) => it.entryId === entryId);
+    if (!targetItem) return null;
+
+    const nextQty =
+      updates.quantity !== undefined ? Math.max(0, Math.floor(updates.quantity)) : targetItem.quantity;
+    if (nextQty <= 0) {
+      return removeOpenAccountItem(accountId, entryId);
+    }
+
+    const nextPrice =
+      updates.unitPrice !== undefined && !Number.isNaN(updates.unitPrice) && updates.unitPrice >= 0
+        ? Math.round(updates.unitPrice * 100) / 100
+        : targetItem.unitPrice;
+
+    const qtyDelta = nextQty - targetItem.quantity;
+    if (qtyDelta > 0) {
+      adjustInventoryForOpenAccountItems([{ ...targetItem, quantity: qtyDelta }], 'DEDUCT');
+    } else if (qtyDelta < 0) {
+      adjustInventoryForOpenAccountItems([{ ...targetItem, quantity: Math.abs(qtyDelta) }], 'RESTORE');
+    }
+
+    const updatedItems = existing.items.map((it) =>
+      it.entryId === entryId
+        ? {
+            ...it,
+            quantity: nextQty,
+            unitPrice: nextPrice,
+            total: Math.round(nextPrice * nextQty * 100) / 100,
+          }
+        : it
+    );
+    const subtotal =
+      Math.round(updatedItems.reduce((sum, it) => sum + (Number(it.total) || 0), 0) * 100) / 100;
+
+    const updatedAccount: OpenAccount = {
+      ...existing,
+      items: updatedItems,
+      subtotal,
+      updatedAt: new Date().toISOString(),
+    };
+
+    const nextList = openAccountsRef.current.map((a) => (a.id === accountId ? updatedAccount : a));
+    openAccountsRef.current = nextList;
+    setOpenAccounts(nextList);
+    try {
+      localStorage.setItem(STORAGE_KEYS.OPEN_ACCOUNTS, JSON.stringify(nextList));
+    } catch {}
+
+    pendingSyncOpenAccountIdsRef.current.add(updatedAccount.id);
+    syncOpenAccountToFirestore(updatedAccount)
+      .then(() => pendingSyncOpenAccountIdsRef.current.delete(updatedAccount.id))
+      .catch(() => {});
+
+    return updatedAccount;
+  };
+
+  const removeOpenAccountItem = (accountId: string, entryId: string): OpenAccount | null => {
+    const existing = openAccountsRef.current.find((a) => a.id === accountId);
+    if (!existing || existing.status !== 'ABIERTA') return null;
+
+    const targetItem = existing.items.find((it) => it.entryId === entryId);
+    if (!targetItem) return null;
+
+    adjustInventoryForOpenAccountItems([targetItem], 'RESTORE');
+
+    const updatedItems = existing.items.filter((it) => it.entryId !== entryId);
+    const subtotal =
+      Math.round(updatedItems.reduce((sum, it) => sum + (Number(it.total) || 0), 0) * 100) / 100;
+
+    const updatedAccount: OpenAccount = {
+      ...existing,
+      items: updatedItems,
+      subtotal,
+      updatedAt: new Date().toISOString(),
+    };
+
+    const nextList = openAccountsRef.current.map((a) => (a.id === accountId ? updatedAccount : a));
+    openAccountsRef.current = nextList;
+    setOpenAccounts(nextList);
+    try {
+      localStorage.setItem(STORAGE_KEYS.OPEN_ACCOUNTS, JSON.stringify(nextList));
+    } catch {}
+
+    pendingSyncOpenAccountIdsRef.current.add(updatedAccount.id);
+    syncOpenAccountToFirestore(updatedAccount)
+      .then(() => pendingSyncOpenAccountIdsRef.current.delete(updatedAccount.id))
+      .catch(() => {});
+
+    return updatedAccount;
+  };
+
+  const updateOpenAccountMeta = (
+    accountId: string,
+    updates: {
+      customerName?: string;
+      customerPhone?: string;
+      customerDocument?: string;
+      workshopName?: string;
+      motorcycleInfo?: string;
+      notes?: string;
+    }
+  ): OpenAccount | null => {
+    const existing = openAccountsRef.current.find((a) => a.id === accountId);
+    if (!existing) return null;
+
+    const updatedAccount: OpenAccount = {
+      ...existing,
+      customerName: updates.customerName !== undefined ? updates.customerName.trim() || existing.customerName : existing.customerName,
+      customerPhone: updates.customerPhone !== undefined ? updates.customerPhone.trim() || 'N/A' : existing.customerPhone,
+      customerDocument: updates.customerDocument !== undefined ? updates.customerDocument.trim() || undefined : existing.customerDocument,
+      workshopName: updates.workshopName !== undefined ? updates.workshopName.trim() || undefined : existing.workshopName,
+      motorcycleInfo: updates.motorcycleInfo !== undefined ? updates.motorcycleInfo.trim() || undefined : existing.motorcycleInfo,
+      notes: updates.notes !== undefined ? updates.notes.trim() || undefined : existing.notes,
+      updatedAt: new Date().toISOString(),
+    };
+
+    const nextList = openAccountsRef.current.map((a) => (a.id === accountId ? updatedAccount : a));
+    openAccountsRef.current = nextList;
+    setOpenAccounts(nextList);
+    try {
+      localStorage.setItem(STORAGE_KEYS.OPEN_ACCOUNTS, JSON.stringify(nextList));
+    } catch {}
+
+    pendingSyncOpenAccountIdsRef.current.add(updatedAccount.id);
+    syncOpenAccountToFirestore(updatedAccount)
+      .then(() => pendingSyncOpenAccountIdsRef.current.delete(updatedAccount.id))
+      .catch(() => {});
+
+    return updatedAccount;
+  };
+
+  const cancelOpenAccount = (accountId: string): boolean => {
+    const existing = openAccountsRef.current.find((a) => a.id === accountId);
+    if (!existing) return false;
+
+    if (existing.status === 'ABIERTA' && existing.items.length > 0) {
+      adjustInventoryForOpenAccountItems(existing.items, 'RESTORE');
+    }
+
+    recordDeleted('openAccounts', [accountId]);
+    pendingSyncOpenAccountIdsRef.current.delete(accountId);
+
+    const nextList = openAccountsRef.current.filter((a) => a.id !== accountId);
+    openAccountsRef.current = nextList;
+    setOpenAccounts(nextList);
+    try {
+      localStorage.setItem(STORAGE_KEYS.OPEN_ACCOUNTS, JSON.stringify(nextList));
+    } catch {}
+
+    removeOpenAccountFromFirestore(accountId).catch(() => {});
+    return true;
+  };
+
+  const settleOpenAccount = (
+    accountId: string,
+    settlement: {
+      paymentType: SalePaymentType;
+      paymentMethod: PaymentMethod;
+      pagoMovilAccount?: PagoMovilAccountOption;
+      paymentSplits?: SalePaymentSplit[];
+      discount?: number;
+      notes?: string;
+      creditDays?: number;
+      creditDueDate?: string;
+      creditPaidAmount?: number;
+      creditPaidAmountBs?: number;
+      creditInitialPaymentCurrency?: PaymentCurrencyMode;
+      hasShipping?: boolean;
+      shippingCostUSD?: number;
+      shippingCostBs?: number;
+      shippingCurrencyMode?: PaymentCurrencyMode;
+      shippingState?: string;
+      shippingAgency?: string;
+      shippingNotes?: string;
+    }
+  ): Sale | null => {
+    const existing = openAccountsRef.current.find((a) => a.id === accountId);
+    if (!existing || existing.status !== 'ABIERTA' || existing.items.length === 0) {
+      return null;
+    }
+
+    // Consolidate identical productId + unitPrice lines cleanly for the official invoice
+    const consolidatedMap = new Map<string, SaleItem>();
+    for (const item of existing.items) {
+      const key = `${item.productId || item.sku || item.name}__${item.unitPrice}__${item.isService ? 'S' : 'P'}`;
+      const prev = consolidatedMap.get(key);
+      if (prev) {
+        const nextQty = prev.quantity + item.quantity;
+        consolidatedMap.set(key, {
+          ...prev,
+          quantity: nextQty,
+          total: Math.round(prev.unitPrice * nextQty * 100) / 100,
+        });
+      } else {
+        consolidatedMap.set(key, {
+          productId: item.productId,
+          sku: item.sku,
+          name: item.name,
+          category: item.category,
+          quantity: item.quantity,
+          unitPrice: item.unitPrice,
+          total: Math.round(item.unitPrice * item.quantity * 100) / 100,
+          isService: item.isService,
+          imageUrl: item.imageUrl,
+        });
+      }
+    }
+    const saleItems = Array.from(consolidatedMap.values());
+    const subtotalUSD =
+      Math.round(saleItems.reduce((sum, it) => sum + (Number(it.total) || 0), 0) * 100) / 100;
+    const discountUSD = Math.max(0, Math.round((settlement.discount || 0) * 100) / 100);
+    const shippingUSD =
+      settlement.hasShipping && (settlement.shippingCostUSD || 0) > 0
+        ? Math.round((settlement.shippingCostUSD || 0) * 100) / 100
+        : 0;
+    const totalUSD = Math.max(0, Math.round((subtotalUSD - discountUSD + shippingUSD) * 100) / 100);
+
+    const metaBits: string[] = [`Cierre de Cuenta Abierta #${existing.accountNumber}`];
+    if (existing.workshopName) metaBits.push(`Taller: ${existing.workshopName}`);
+    if (existing.motorcycleInfo) metaBits.push(`Moto: ${existing.motorcycleInfo}`);
+    if (existing.notes) metaBits.push(existing.notes);
+    if (settlement.notes?.trim()) metaBits.push(settlement.notes.trim());
+
+    const isDeferred = settlement.paymentType === 'CREDITO' || settlement.paymentType === 'APARTADO';
+    const isMixtoCredit =
+      settlement.paymentType === 'MIXTO' &&
+      Array.isArray(settlement.paymentSplits) &&
+      settlement.paymentSplits.some((sp) => sp.splitType === 'CREDITO' && (Number(sp.amountUSD) || 0) > 0);
+    const hasCreditComponent = isDeferred || isMixtoCredit;
+    const paidAmount = isDeferred
+      ? Math.max(0, settlement.creditPaidAmount || 0)
+      : isMixtoCredit
+      ? Math.round(
+          (settlement.paymentSplits || [])
+            .filter((sp) => sp.splitType !== 'CREDITO')
+            .reduce((s, sp) => s + (Number(sp.amountUSD) || 0), 0) * 100
+        ) / 100
+      : totalUSD;
+
+    const newSale = createSale({
+      customerId: existing.customerId,
+      customerName: existing.customerName,
+      customerPhone: existing.customerPhone,
+      customerDocument: existing.customerDocument,
+      items: saleItems,
+      subtotal: subtotalUSD,
+      discount: discountUSD,
+      tax: 0,
+      total: totalUSD,
+      paymentMethod: settlement.paymentMethod,
+      pagoMovilAccount: settlement.pagoMovilAccount,
+      paymentSplits: settlement.paymentSplits,
+      notes: metaBits.join(' · '),
+      source: 'POS',
+      paymentType: settlement.paymentType,
+      creditDays: hasCreditComponent ? settlement.creditDays || 15 : undefined,
+      creditDueDate: hasCreditComponent ? settlement.creditDueDate : undefined,
+      creditPaidAmount: hasCreditComponent ? paidAmount : undefined,
+      creditPaidAmountBs: isDeferred ? settlement.creditPaidAmountBs : undefined,
+      creditInitialPaymentCurrency: isDeferred ? settlement.creditInitialPaymentCurrency : undefined,
+      creditStatus: hasCreditComponent
+        ? paidAmount >= totalUSD - 0.02
+          ? 'PAGADO'
+          : 'PENDIENTE'
+        : undefined,
+      hasShipping: shippingUSD > 0 ? true : undefined,
+      shippingCostUSD: shippingUSD > 0 ? shippingUSD : undefined,
+      shippingCostBs: shippingUSD > 0 ? settlement.shippingCostBs : undefined,
+      shippingCurrencyMode: shippingUSD > 0 ? settlement.shippingCurrencyMode : undefined,
+      shippingState: shippingUSD > 0 ? settlement.shippingState : undefined,
+      shippingAgency: shippingUSD > 0 ? settlement.shippingAgency : undefined,
+      shippingNotes: shippingUSD > 0 ? settlement.shippingNotes : undefined,
+      skipInventoryDeduction: true, // Stock was already deducted as items were picked up!
+    });
+
+    const now = new Date().toISOString();
+    const closedAccount: OpenAccount = {
+      ...existing,
+      status: 'CERRADA',
+      settledAt: now,
+      updatedAt: now,
+      settledSaleId: newSale.id,
+      settledInvoiceNumber: newSale.invoiceNumber,
+    };
+
+    const nextList = openAccountsRef.current.map((a) => (a.id === accountId ? closedAccount : a));
+    openAccountsRef.current = nextList;
+    setOpenAccounts(nextList);
+    try {
+      localStorage.setItem(STORAGE_KEYS.OPEN_ACCOUNTS, JSON.stringify(nextList));
+    } catch {}
+
+    pendingSyncOpenAccountIdsRef.current.add(closedAccount.id);
+    syncOpenAccountToFirestore(closedAccount)
+      .then(() => pendingSyncOpenAccountIdsRef.current.delete(closedAccount.id))
+      .catch(() => {});
+
+    return newSale;
+  };
+
   // Online Store Orders
   const placeOnlineOrder = (
     orderData: Omit<OnlineOrder, 'id' | 'orderCode' | 'createdAt' | 'status' | 'bcvRate' | 'totalBs'>
@@ -11402,6 +12103,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     setTreasuryCommitments([]);
     setTreasuryMovements([]);
     setTreasuryDebts([]);
+    setOpenAccounts([]);
     setCart([]);
     localStorage.clear();
   };
@@ -11558,6 +12260,14 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
         scheduleDebtInstallmentToCommitments,
         totalPendingDebtsUSD,
         totalPendingDebtsBs,
+        openAccounts,
+        openCustomerAccount,
+        addItemsToOpenAccount,
+        updateOpenAccountItem,
+        removeOpenAccountItem,
+        updateOpenAccountMeta,
+        cancelOpenAccount,
+        settleOpenAccount,
         onlineOrders,
         placeOnlineOrder,
         updateOrderStatus,

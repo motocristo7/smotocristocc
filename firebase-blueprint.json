@@ -107,6 +107,13 @@
         "creditInitialPaymentCurrency": { "type": "string", "description": "Moneda en la que se registró el abono inicial: BS o USD" },
         "creditPayments": { "type": "array", "description": "Historial de abonos parciales en Bs o Divisas con sus equivalentes BCV" },
         "creditStatus": { "type": "string", "description": "PENDIENTE, PAGADO o ANULADO" },
+        "hasShipping": { "type": "boolean", "description": "Indica si la venta incluye gastos de envío a otro estado distinto a Mérida" },
+        "shippingCostUSD": { "type": "number", "description": "Monto de gastos de envío en USD" },
+        "shippingCostBs": { "type": "number", "description": "Monto de gastos de envío en Bs. (exacto o equivalente BCV)" },
+        "shippingCurrencyMode": { "type": "string", "description": "Moneda en la que se ingresó el gasto de envío: USD o BS" },
+        "shippingState": { "type": "string", "description": "Estado de destino del envío nacional" },
+        "shippingAgency": { "type": "string", "description": "Agencia de encomienda (MRW, ZOOM, TEALCA, DOMESA, etc.)" },
+        "shippingNotes": { "type": "string", "description": "Ciudad, agencia destino o referencia del envío" },
         "createdAt": { "type": "string", "description": "Fecha de creación ISO" },
         "source": { "type": "string", "description": "POS o TIENDA_ONLINE" }
       },
@@ -202,7 +209,9 @@
         "expenses": { "type": "array", "description": "IDs de gastos del negocio eliminados" },
         "treasuryAccounts": { "type": "array", "description": "IDs de cuentas de tesorería eliminadas" },
         "treasuryCommitments": { "type": "array", "description": "IDs de compromisos de pago eliminados" },
-        "treasuryMovements": { "type": "array", "description": "IDs de movimientos de tesorería eliminados" }
+        "treasuryMovements": { "type": "array", "description": "IDs de movimientos de tesorería eliminados" },
+        "treasuryDebts": { "type": "array", "description": "IDs de deudas de tesorería eliminadas" },
+        "openAccounts": { "type": "array", "description": "IDs de cuentas abiertas del día eliminadas o anuladas" }
       }
     },
     "Technician": {
@@ -428,6 +437,32 @@
         "createdAt": { "type": "string", "description": "Fecha de creación ISO" }
       },
       "required": ["id", "debtNumber", "title", "creditor", "category", "totalAmountUSD", "paidAmountUSD", "remainingAmountUSD", "status", "createdAt"]
+    },
+    "OpenAccount": {
+      "title": "OpenAccount",
+      "description": "Cuenta abierta diaria en Punto de Venta para clientes en talleres vecinos que van retirando repuestos y pagan al final del día",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "ID único de la cuenta abierta" },
+        "accountNumber": { "type": "string", "description": "Correlativo CTA-YYYY-XXXX" },
+        "customerId": { "type": "string", "description": "ID del cliente vinculado" },
+        "customerName": { "type": "string", "description": "Nombre completo del cliente" },
+        "customerPhone": { "type": "string", "description": "Teléfono / WhatsApp del cliente" },
+        "customerDocument": { "type": "string", "description": "Cédula o RIF del cliente" },
+        "workshopName": { "type": "string", "description": "Taller vecino o mecánico donde reparan la moto" },
+        "motorcycleInfo": { "type": "string", "description": "Modelo, placa o descripción de la motocicleta" },
+        "notes": { "type": "string", "description": "Notas adicionales de la cuenta" },
+        "items": { "type": "array", "description": "Lista acumulada de repuestos entregados con fecha/hora de retiro" },
+        "subtotal": { "type": "number", "description": "Monto total acumulado en USD" },
+        "bcvRate": { "type": "number", "description": "Tasa BCV de referencia" },
+        "status": { "type": "string", "description": "ABIERTA o CERRADA" },
+        "openedAt": { "type": "string", "description": "Fecha y hora de apertura ISO" },
+        "updatedAt": { "type": "string", "description": "Última actualización ISO" },
+        "settledAt": { "type": "string", "description": "Fecha y hora de cobro y cierre ISO" },
+        "settledSaleId": { "type": "string", "description": "ID de la factura/venta emitida al cerrar" },
+        "settledInvoiceNumber": { "type": "string", "description": "Número de factura emitida al cerrar" }
+      },
+      "required": ["id", "accountNumber", "customerName", "items", "subtotal", "status", "openedAt", "updatedAt"]
     }
   },
   "firestore": {
@@ -502,6 +537,10 @@
     "/treasuryDebts/{debtId}": {
       "schema": { "$ref": "#/entities/TreasuryDebt" },
       "description": "Deudas del negocio con categorías editables y planificación de pagos"
+    },
+    "/openAccounts/{accountId}": {
+      "schema": { "$ref": "#/entities/OpenAccount" },
+      "description": "Cuentas abiertas del día en Punto de Venta para clientes en talleres vecinos"
     }
   }
 }

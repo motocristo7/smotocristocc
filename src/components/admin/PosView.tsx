@@ -10,8 +10,15 @@ import {
   SaleSplitCondition,
   PaymentCurrencyMode,
   ProductCategory,
+  OpenAccount,
 } from '../../types';
 import { formatUSD, formatBs, buildInvoiceWhatsAppMessage, buildMercadoLibreDebtWhatsAppMessage } from '../../utils/whatsapp';
+import {
+  OpenAccountsPanel,
+  OpenAccountDetailModal,
+  SettleOpenAccountModal,
+  buildOpenAccountWhatsAppMessage,
+} from './OpenAccountsModals';
 import {
   Search,
   ShoppingCart,
@@ -48,7 +55,40 @@ import {
   BookmarkCheck,
   Layers,
   ArrowLeftRight,
+  Truck,
+  ClipboardList,
+  Wrench,
+  Bike,
 } from 'lucide-react';
+
+const OTHER_VENEZUELAN_STATES = [
+  'Distrito Capital',
+  'Miranda',
+  'Carabobo',
+  'Zulia',
+  'Lara',
+  'Aragua',
+  'Táchira',
+  'Trujillo',
+  'Barinas',
+  'Anzoátegui',
+  'Bolívar',
+  'Falcón',
+  'Portuguesa',
+  'Yaracuy',
+  'Sucre',
+  'Monagas',
+  'Nueva Esparta',
+  'Guárico',
+  'Cojedes',
+  'Apure',
+  'La Guaira',
+  'Amazonas',
+  'Delta Amacuro',
+  'Otro Estado (Fuera de Mérida)',
+];
+
+const SHIPPING_AGENCY_OPTIONS = ['MRW', 'ZOOM', 'TEALCA', 'DOMESA', 'Liberty Express', 'Otro'];
 
 export interface PosCartItem {
   product: Product;
@@ -70,6 +110,14 @@ export const PosView: React.FC = () => {
     setSelectedInvoice,
     pendingMercadoLibreSales,
     mercadolibreDebtUSD,
+    openAccounts,
+    openCustomerAccount,
+    addItemsToOpenAccount,
+    updateOpenAccountItem,
+    removeOpenAccountItem,
+    updateOpenAccountMeta,
+    cancelOpenAccount,
+    settleOpenAccount,
   } = useApp();
 
   const [productSearch, setProductSearch] = useState('');
@@ -144,8 +192,42 @@ export const PosView: React.FC = () => {
   const [discountUSD, setDiscountUSD] = useState<number>(0);
   const [saleNotes, setSaleNotes] = useState('');
 
-  // Condición de Venta: De Contado, Pago Mixto, A Crédito, Apartado o MercadoLibre
+  // Gastos de Envío Nacional (Ventas a otros estados distintos a Mérida)
+  const [hasShipping, setHasShipping] = useState<boolean>(false);
+  const [shippingCurrencyMode, setShippingCurrencyMode] = useState<PaymentCurrencyMode>('USD');
+  const [shippingCostUSDInput, setShippingCostUSDInput] = useState<string>('');
+  const [shippingCostBsInput, setShippingCostBsInput] = useState<string>('');
+  const [shippingState, setShippingState] = useState<string>('Distrito Capital');
+  const [shippingAgency, setShippingAgency] = useState<string>('MRW');
+  const [shippingNotes, setShippingNotes] = useState<string>('');
+
+  // Condición de Venta: De Contado, Pago Mixto, A Crédito, Apartado, MercadoLibre o Abrir Cuenta del Día
   const [paymentType, setPaymentType] = useState<SalePaymentType>('CONTADO');
+  const [isOpenAccountMode, setIsOpenAccountMode] = useState<boolean>(false);
+  const [openAccountSubMode, setOpenAccountSubMode] = useState<'NUEVA' | 'SUMAR'>('NUEVA');
+  const [targetOpenAccountId, setTargetOpenAccountId] = useState<string | null>(null);
+  const [openAccountWorkshop, setOpenAccountWorkshop] = useState<string>('');
+  const [openAccountMoto, setOpenAccountMoto] = useState<string>('');
+  const [openAccountPickupNote, setOpenAccountPickupNote] = useState<string>('');
+  const [inspectingAccountId, setInspectingAccountId] = useState<string | null>(null);
+  const [settlingAccountId, setSettlingAccountId] = useState<string | null>(null);
+
+  const activeOpenAccounts = useMemo(
+    () => openAccounts.filter((a) => a.status === 'ABIERTA'),
+    [openAccounts]
+  );
+  const targetOpenAccount = useMemo(
+    () => activeOpenAccounts.find((a) => a.id === targetOpenAccountId) || null,
+    [activeOpenAccounts, targetOpenAccountId]
+  );
+  const inspectingAccount = useMemo(
+    () => openAccounts.find((a) => a.id === inspectingAccountId) || null,
+    [openAccounts, inspectingAccountId]
+  );
+  const settlingAccount = useMemo(
+    () => activeOpenAccounts.find((a) => a.id === settlingAccountId) || null,
+    [activeOpenAccounts, settlingAccountId]
+  );
   const [creditDays, setCreditDays] = useState<number>(15);
   const [creditDueDate, setCreditDueDate] = useState<string>(() => {
     const d = new Date();
@@ -601,6 +683,25 @@ export const PosView: React.FC = () => {
       setCustomerDocument(found.documentId || '');
       setCustomerSearchQuery('');
       setActiveSuggestionSource(null);
+      if (found.state) {
+        const normalizedCustomerState = found.state
+          .trim()
+          .toLowerCase()
+          .normalize('NFD')
+          .replace(/[\u0300-\u036f]/g, '');
+        if (normalizedCustomerState && normalizedCustomerState !== 'merida') {
+          const matchedState = OTHER_VENEZUELAN_STATES.find(
+            (st) =>
+              st
+                .toLowerCase()
+                .normalize('NFD')
+                .replace(/[\u0300-\u036f]/g, '') === normalizedCustomerState
+          );
+          if (matchedState) {
+            setShippingState(matchedState);
+          }
+        }
+      }
     }
   };
 
@@ -711,6 +812,68 @@ export const PosView: React.FC = () => {
     setShowCustomService(false);
   };
 
+  // Cálculos de Gastos de Envío Nacional (USD o Bs exacto a tasa BCV)
+  const handleChangeShippingUSD = (rawVal: string) => {
+    setShippingCostUSDInput(rawVal);
+    const parsed = parseFloat(rawVal);
+    if (rawVal === '' || Number.isNaN(parsed) || parsed < 0) {
+      setShippingCostBsInput('');
+      return;
+    }
+    const equivBs = Math.round(parsed * rate * 100) / 100;
+    setShippingCostBsInput(equivBs > 0 ? equivBs.toFixed(2) : '');
+  };
+
+  const handleChangeShippingBs = (rawVal: string) => {
+    setShippingCostBsInput(rawVal);
+    const parsed = parseFloat(rawVal);
+    if (rawVal === '' || Number.isNaN(parsed) || parsed < 0) {
+      setShippingCostUSDInput('');
+      return;
+    }
+    const equivUSD = rate > 0 ? Math.round((parsed / rate) * 100) / 100 : 0;
+    setShippingCostUSDInput(equivUSD > 0 ? equivUSD.toFixed(2) : '');
+  };
+
+  const handleSelectShippingCurrencyMode = (nextMode: PaymentCurrencyMode) => {
+    setShippingCurrencyMode(nextMode);
+    if (nextMode === 'BS') {
+      const curUSD = parseFloat(shippingCostUSDInput);
+      const curBs = parseFloat(shippingCostBsInput);
+      if ((Number.isNaN(curBs) || curBs <= 0) && !Number.isNaN(curUSD) && curUSD > 0) {
+        setShippingCostBsInput((Math.round(curUSD * rate * 100) / 100).toFixed(2));
+      }
+    } else {
+      const curBs = parseFloat(shippingCostBsInput);
+      const curUSD = parseFloat(shippingCostUSDInput);
+      if ((Number.isNaN(curUSD) || curUSD <= 0) && !Number.isNaN(curBs) && curBs > 0 && rate > 0) {
+        setShippingCostUSDInput((Math.round((curBs / rate) * 100) / 100).toFixed(2));
+      }
+    }
+  };
+
+  const shippingCostUSD = useMemo(() => {
+    if (!hasShipping) return 0;
+    const parsedUSD = parseFloat(shippingCostUSDInput);
+    if (!Number.isNaN(parsedUSD) && parsedUSD > 0) {
+      return Math.round(parsedUSD * 100) / 100;
+    }
+    const parsedBs = parseFloat(shippingCostBsInput);
+    if (!Number.isNaN(parsedBs) && parsedBs > 0 && rate > 0) {
+      return Math.round((parsedBs / rate) * 100) / 100;
+    }
+    return 0;
+  }, [hasShipping, shippingCostUSDInput, shippingCostBsInput, rate]);
+
+  const shippingCostBs = useMemo(() => {
+    if (!hasShipping) return 0;
+    const parsedBs = parseFloat(shippingCostBsInput);
+    if (shippingCurrencyMode === 'BS' && !Number.isNaN(parsedBs) && parsedBs > 0) {
+      return Math.round(parsedBs * 100) / 100;
+    }
+    return Math.round(shippingCostUSD * rate * 100) / 100;
+  }, [hasShipping, shippingCurrencyMode, shippingCostBsInput, shippingCostUSD, rate]);
+
   // Totals calculations (El precio de los repuestos en el carrito, considerando precio modificado si aplica)
   const subtotalUSD = posCart.reduce((sum, item) => sum + getItemEffectivePrice(item) * item.quantity, 0);
   const baseTotalUSD = Math.max(0, subtotalUSD - discountUSD);
@@ -724,13 +887,14 @@ export const PosView: React.FC = () => {
     return Math.round(Number(mlCommissionUSD || 0) * 100) / 100;
   }, [paymentType, mlCommissionMode, mlCommissionRate, mlCommissionUSD, baseTotalUSD]);
 
-  // Si la condición es MercadoLibre, el monto que cobra MercadoLibre se agrega ADICIONAL al precio registrado
-  const totalUSD = paymentType === 'MERCADOLIBRE'
-    ? baseTotalUSD + computedMlCommissionUSD
-    : baseTotalUSD;
+  // Si la condición es MercadoLibre, el monto que cobra MercadoLibre se agrega ADICIONAL al precio registrado.
+  // Si se activan Gastos de Envío a otro estado, también se suman al total de la venta.
+  const preShippingTotalUSD =
+    paymentType === 'MERCADOLIBRE' ? baseTotalUSD + computedMlCommissionUSD : baseTotalUSD;
+  const totalUSD = Math.round((preShippingTotalUSD + shippingCostUSD) * 100) / 100;
 
   const subtotalBs = subtotalUSD * rate;
-  const totalBs = totalUSD * rate;
+  const totalBs = Math.round((preShippingTotalUSD * rate + shippingCostBs) * 100) / 100;
   const totalCartUnits = posCart.reduce((sum, item) => sum + item.quantity, 0);
 
   const hasMixtoCreditSplit =
@@ -876,6 +1040,13 @@ export const PosView: React.FC = () => {
 
     if (posCart.length === 0) {
       const msg = 'Agrega al menos un repuesto o servicio para generar la factura.';
+      setPosFormError(msg);
+      showToast(msg, 'error');
+      return;
+    }
+
+    if (hasShipping && shippingCostUSD <= 0) {
+      const msg = 'Ingresa el monto de los gastos de envío (en $ o Bs.) o desactiva la opción de envío.';
       setPosFormError(msg);
       showToast(msg, 'error');
       return;
@@ -1084,6 +1255,13 @@ export const PosView: React.FC = () => {
         mercadolibreCommissionUSD: mlCommissionToRecord,
         mercadolibreCommissionRate: isMercadoLibre && mlCommissionMode === 'PERCENT' ? Number(mlCommissionRate || 0) : undefined,
         mercadolibreFeeStatus: isMercadoLibre ? 'PENDIENTE' : undefined,
+        hasShipping: hasShipping && shippingCostUSD > 0 ? true : undefined,
+        shippingCostUSD: hasShipping && shippingCostUSD > 0 ? shippingCostUSD : undefined,
+        shippingCostBs: hasShipping && shippingCostUSD > 0 ? shippingCostBs : undefined,
+        shippingCurrencyMode: hasShipping && shippingCostUSD > 0 ? shippingCurrencyMode : undefined,
+        shippingState: hasShipping && shippingCostUSD > 0 ? shippingState : undefined,
+        shippingAgency: hasShipping && shippingCostUSD > 0 ? shippingAgency : undefined,
+        shippingNotes: hasShipping && shippingCostUSD > 0 && shippingNotes.trim() ? shippingNotes.trim() : undefined,
       });
 
       // If MercadoLibre, prepare notification of accumulated debt for the owner
@@ -1108,6 +1286,13 @@ export const PosView: React.FC = () => {
       setActiveSuggestionSource(null);
       setDiscountUSD(0);
       setSaleNotes('');
+      setHasShipping(false);
+      setShippingCurrencyMode('USD');
+      setShippingCostUSDInput('');
+      setShippingCostBsInput('');
+      setShippingState('Distrito Capital');
+      setShippingAgency('MRW');
+      setShippingNotes('');
       setPaymentType('CONTADO');
       setMixtoSplits(createDefaultMixtoSplits());
       setCreditDays(15);
@@ -1155,6 +1340,197 @@ export const PosView: React.FC = () => {
       isSubmittingSaleRef.current = false;
       setIsSubmittingSale(false);
     }
+  };
+
+  // =========================================================================
+  // Handlers para Modalidad "Abrir Cuenta" (Talleres Vecinos · Pago al Final del Día)
+  // =========================================================================
+  const handleStartNewOpenAccount = () => {
+    setIsOpenAccountMode(true);
+    setOpenAccountSubMode('NUEVA');
+    setTargetOpenAccountId(null);
+    setPosFormError(null);
+    setTimeout(() => {
+      customerSearchInputRef.current?.focus();
+      customerSearchInputRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, 60);
+  };
+
+  const handleStartAddItemsToOpenAccount = (acc: OpenAccount) => {
+    setIsOpenAccountMode(true);
+    setOpenAccountSubMode('SUMAR');
+    setTargetOpenAccountId(acc.id);
+    setSelectedCustomerId(acc.customerId || '');
+    setCustomerName(acc.customerName);
+    setCustomerPhone(acc.customerPhone === 'N/A' ? '' : acc.customerPhone);
+    setCustomerDocument(acc.customerDocument || '');
+    setPosFormError(null);
+    showToast(
+      `Modo activo: agrega repuestos del catálogo y pulsa "Sumar a Cuenta de ${acc.customerName}".`,
+      'info'
+    );
+  };
+
+  const handleExitOpenAccountMode = () => {
+    setIsOpenAccountMode(false);
+    setTargetOpenAccountId(null);
+    setOpenAccountPickupNote('');
+    setPosFormError(null);
+  };
+
+  const handleSendOpenAccountWhatsApp = (acc: OpenAccount) => {
+    const { message, url } = buildOpenAccountWhatsAppMessage(acc, settings);
+    setWhatsappModalData({
+      title: `Estado de Cuenta Abierta ${acc.accountNumber}`,
+      message,
+      url,
+      phone: acc.customerPhone,
+      recipientName: acc.customerName,
+    });
+  };
+
+  const handleSubmitOpenAccount = () => {
+    setPosFormError(null);
+
+    const cartSaleItems: SaleItem[] = posCart.map((item) => {
+      const price = getItemEffectivePrice(item);
+      return {
+        productId: item.product.id,
+        sku: item.product.sku,
+        name: item.product.name,
+        category: item.product.category,
+        quantity: item.quantity,
+        unitPrice: price,
+        total: Math.round(price * item.quantity * 100) / 100,
+        isService: item.product.sku === 'MAN-OBRA',
+        imageUrl: item.product.imageUrl || undefined,
+      };
+    });
+
+    if (openAccountSubMode === 'SUMAR') {
+      if (!targetOpenAccount) {
+        const msg = 'Selecciona la cuenta abierta a la cual deseas sumar los repuestos.';
+        setPosFormError(msg);
+        showToast(msg, 'error');
+        return;
+      }
+      if (cartSaleItems.length === 0) {
+        const msg = 'Agrega al menos un repuesto del catálogo para sumarlo a la cuenta abierta.';
+        setPosFormError(msg);
+        showToast(msg, 'error');
+        return;
+      }
+
+      const updated = addItemsToOpenAccount(
+        targetOpenAccount.id,
+        cartSaleItems,
+        openAccountPickupNote
+      );
+      if (updated) {
+        setPosCart([]);
+        setOpenAccountPickupNote('');
+        setPosFormError(null);
+        showToast(
+          `¡Se sumaron ${cartSaleItems.length} ítem(s) a ${updated.accountNumber} (${updated.customerName})! Nuevo acumulado: ${formatUSD(updated.subtotal)}.`,
+          'success'
+        );
+      }
+      return;
+    }
+
+    // Sub-modo NUEVA CUENTA: exigir datos personales del cliente
+    const cleanName = customerName.trim();
+    const cleanDoc = customerDocument.trim();
+    const cleanPhone = customerPhone.trim();
+
+    if (!cleanName || cleanName.toLowerCase() === 'cliente mostrador') {
+      const msg =
+        'Para abrir una cuenta diaria debes ingresar el nombre completo real del cliente (no Cliente Mostrador).';
+      setPosFormError(msg);
+      showToast(msg, 'error');
+      return;
+    }
+
+    if (!cleanDoc && !cleanPhone) {
+      const msg =
+        'Para abrir una cuenta ingresa al menos la Cédula/RIF o el Teléfono/WhatsApp del cliente.';
+      setPosFormError(msg);
+      showToast(msg, 'error');
+      return;
+    }
+
+    const created = openCustomerAccount({
+      customerId: selectedCustomerId || undefined,
+      customerName: cleanName,
+      customerPhone: cleanPhone || 'N/A',
+      customerDocument: cleanDoc || undefined,
+      workshopName: openAccountWorkshop.trim() || undefined,
+      motorcycleInfo: openAccountMoto.trim() || undefined,
+      notes: saleNotes.trim() || undefined,
+      items: cartSaleItems,
+    });
+
+    setPosCart([]);
+    setSelectedCustomerId('');
+    setCustomerName('');
+    setCustomerPhone('');
+    setCustomerDocument('');
+    setCustomerSearchQuery('');
+    setActiveSuggestionSource(null);
+    setOpenAccountWorkshop('');
+    setOpenAccountMoto('');
+    setOpenAccountPickupNote('');
+    setSaleNotes('');
+    setIsOpenAccountMode(false);
+    setTargetOpenAccountId(null);
+    setPosFormError(null);
+
+    showToast(
+      `¡Cuenta Abierta ${created.accountNumber} creada para ${created.customerName}${
+        created.items.length > 0 ? ` con ${formatUSD(created.subtotal)} acumulados` : ''
+      }!`,
+      'success'
+    );
+  };
+
+  const handleConfirmSettleOpenAccount = (
+    accountId: string,
+    settlement: Parameters<typeof settleOpenAccount>[1]
+  ) => {
+    const newSale = settleOpenAccount(accountId, settlement);
+    if (!newSale) return null;
+
+    if (targetOpenAccountId === accountId) {
+      setTargetOpenAccountId(null);
+      setIsOpenAccountMode(false);
+    }
+
+    setSelectedInvoice(newSale);
+
+    const hasValidPhone = Boolean(
+      newSale.customerPhone &&
+        newSale.customerPhone !== 'N/A' &&
+        newSale.customerPhone.replace(/\D/g, '').length >= 7
+    );
+
+    if (hasValidPhone) {
+      const { message, url } = buildInvoiceWhatsAppMessage(newSale, settings);
+      setWhatsappModalData({
+        title: `Cuenta Cerrada · Factura ${newSale.invoiceNumber}`,
+        message,
+        url,
+        phone: newSale.customerPhone,
+        recipientName: newSale.customerName,
+        sale: newSale,
+      });
+    } else {
+      showToast(
+        `¡Cuenta cerrada y Factura ${newSale.invoiceNumber} emitida (${newSale.customerName})!`,
+        'success'
+      );
+    }
+
+    return newSale;
   };
 
   return (
@@ -1322,7 +1698,9 @@ export const PosView: React.FC = () => {
               </span>
               <span
                 className={`font-bold px-2 py-0.5 rounded text-[10px] tracking-wide ${
-                  paymentType === 'APARTADO'
+                  isOpenAccountMode
+                    ? 'bg-violet-500/25 text-violet-200 border border-violet-400/50'
+                    : paymentType === 'APARTADO'
                     ? 'bg-indigo-500/20 text-indigo-300 border border-indigo-400/40'
                     : paymentType === 'CREDITO'
                     ? 'bg-amber-500/20 text-amber-300 border border-amber-400/40'
@@ -1333,7 +1711,11 @@ export const PosView: React.FC = () => {
                     : 'bg-emerald-500/20 text-emerald-300 border border-emerald-400/40'
                 }`}
               >
-                {paymentType === 'APARTADO'
+                {isOpenAccountMode
+                  ? openAccountSubMode === 'SUMAR' && targetOpenAccount
+                    ? `SUMAR A ${targetOpenAccount.accountNumber}`
+                    : 'ABRIR CUENTA (HOY)'
+                  : paymentType === 'APARTADO'
                   ? `APARTADO (${creditDays}D)`
                   : paymentType === 'CREDITO'
                   ? `CRÉDITO (${creditDays}D)`
@@ -1416,6 +1798,50 @@ export const PosView: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* Banner Activo: Sumando Repuestos a Cuenta Abierta */}
+      {isOpenAccountMode && openAccountSubMode === 'SUMAR' && targetOpenAccount && (
+        <div className="p-3.5 bg-violet-700 text-white rounded-2xl border border-violet-500 shadow-md flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="flex items-start sm:items-center gap-3 min-w-0">
+            <div className="w-9 h-9 rounded-xl bg-white/20 flex items-center justify-center shrink-0">
+              <ClipboardList className="w-5 h-5 text-white" />
+            </div>
+            <div className="min-w-0">
+              <p className="text-xs sm:text-sm font-extrabold leading-snug whitespace-normal break-words">
+                Sumando repuestos a Cuenta Abierta {targetOpenAccount.accountNumber} ·{' '}
+                {targetOpenAccount.customerName}
+              </p>
+              <p className="text-[11px] text-violet-100">
+                Acumulado actual: <strong className="font-mono">{formatUSD(targetOpenAccount.subtotal)}</strong> (
+                {formatBs(targetOpenAccount.subtotal * rate)})
+                {targetOpenAccount.workshopName ? ` · Taller: ${targetOpenAccount.workshopName}` : ''}
+                {' · '}Selecciona repuestos del catálogo y pulsa <strong>"Sumar a Cuenta Abierta"</strong>.
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={handleExitOpenAccountMode}
+            className="px-3 py-1.5 rounded-lg bg-white/15 hover:bg-white/25 text-white text-xs font-bold shrink-0 self-end sm:self-auto cursor-pointer"
+          >
+            Salir de Cuenta Abierta
+          </button>
+        </div>
+      )}
+
+      {/* Panel de Cuentas Abiertas del Día (Talleres Vecinos) */}
+      <OpenAccountsPanel
+        openAccounts={openAccounts}
+        rate={rate}
+        activeTargetAccountId={
+          isOpenAccountMode && openAccountSubMode === 'SUMAR' ? targetOpenAccountId : null
+        }
+        onStartAddItems={handleStartAddItemsToOpenAccount}
+        onStartNewAccount={handleStartNewOpenAccount}
+        onInspectAccount={(acc) => setInspectingAccountId(acc.id)}
+        onSettleAccount={(acc) => setSettlingAccountId(acc.id)}
+        onSendWhatsAppStatement={handleSendOpenAccountWhatsApp}
+      />
 
       {/* 2-Column POS Layout */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
@@ -2038,7 +2464,210 @@ export const PosView: React.FC = () => {
 
             {/* Payment Method & Dual Totals */}
             <div className="space-y-3">
-              {/* Condición de Venta: De Contado, A Crédito, Sistema de Apartado o MercadoLibre */}
+              {/* Opción de Gastos de Envío Nacional (Ventas a Otros Estados distintos a Mérida) */}
+              <div
+                className={`rounded-xl border transition-all ${
+                  hasShipping
+                    ? 'bg-sky-50/70 border-sky-300 shadow-2xs'
+                    : 'bg-slate-50/80 border-slate-200 hover:border-sky-300'
+                }`}
+              >
+                <button
+                  type="button"
+                  onClick={() => {
+                    setHasShipping((prev) => !prev);
+                    setPosFormError(null);
+                  }}
+                  className="w-full px-3 py-2.5 flex items-center justify-between gap-2 text-left cursor-pointer"
+                >
+                  <div className="flex items-center gap-2 min-w-0">
+                    <div
+                      className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 ${
+                        hasShipping
+                          ? 'bg-sky-600 text-white'
+                          : 'bg-white border border-slate-200 text-slate-600'
+                      }`}
+                    >
+                      <Truck className="w-4 h-4" />
+                    </div>
+                    <div className="min-w-0">
+                      <span className="text-xs font-bold text-slate-900 block leading-tight">
+                        Agregar Gastos de Envío (Otros Estados)
+                      </span>
+                      <span className="text-[10px] text-slate-500 block leading-snug">
+                        {hasShipping
+                          ? `${shippingAgency} · Destino: ${shippingState}`
+                          : 'Para envíos fuera de Mérida (MRW, Zoom, Tealca, Domesa...)'}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 shrink-0">
+                    {hasShipping && shippingCostUSD > 0 && (
+                      <span className="px-2 py-0.5 rounded-md bg-sky-600 text-white font-mono text-[11px] font-bold">
+                        +{formatUSD(shippingCostUSD)}
+                      </span>
+                    )}
+                    <div
+                      className={`w-9 h-5 rounded-full transition-colors p-0.5 flex items-center ${
+                        hasShipping ? 'bg-sky-600 justify-end' : 'bg-slate-300 justify-start'
+                      }`}
+                    >
+                      <span className="w-4 h-4 rounded-full bg-white shadow-xs block" />
+                    </div>
+                  </div>
+                </button>
+
+                {hasShipping && (
+                  <div className="px-3 pb-3 pt-1.5 border-t border-sky-200/80 space-y-2.5">
+                    {/* Estado de destino (fuera de Mérida) */}
+                    <div>
+                      <label className="block text-[10px] font-bold text-sky-950 uppercase tracking-wider mb-1">
+                        Estado de Destino (Distinto a Mérida):
+                      </label>
+                      <select
+                        value={shippingState}
+                        onChange={(e) => setShippingState(e.target.value)}
+                        className="w-full px-2.5 py-1.5 text-xs font-semibold rounded-lg border border-sky-300 bg-white text-slate-900 focus:outline-hidden focus:border-sky-500"
+                      >
+                        {OTHER_VENEZUELAN_STATES.map((st) => (
+                          <option key={st} value={st}>
+                            {st}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    {/* Agencia de Encomienda */}
+                    <div>
+                      <label className="block text-[10px] font-bold text-sky-950 uppercase tracking-wider mb-1">
+                        Agencia de Envío:
+                      </label>
+                      <div className="flex flex-wrap gap-1.5">
+                        {SHIPPING_AGENCY_OPTIONS.map((agency) => (
+                          <button
+                            key={agency}
+                            type="button"
+                            onClick={() => setShippingAgency(agency)}
+                            className={`px-2.5 py-1 rounded-lg text-[11px] font-bold border transition-colors cursor-pointer ${
+                              shippingAgency === agency
+                                ? 'bg-sky-600 border-sky-600 text-white shadow-2xs'
+                                : 'bg-white border-sky-200 text-sky-900 hover:bg-sky-100'
+                            }`}
+                          >
+                            {agency}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Monto del Envío en USD ($) o Bolívares (Bs.) */}
+                    <div>
+                      <div className="flex items-center justify-between gap-2 mb-1">
+                        <label className="text-[10px] font-bold text-sky-950 uppercase tracking-wider">
+                          Costo de Envío:
+                        </label>
+                        <div className="inline-flex rounded-lg border border-sky-300 bg-white p-0.5">
+                          <button
+                            type="button"
+                            onClick={() => handleSelectShippingCurrencyMode('USD')}
+                            className={`px-2 py-0.5 rounded-md text-[10px] font-bold cursor-pointer transition-colors ${
+                              shippingCurrencyMode === 'USD'
+                                ? 'bg-sky-600 text-white'
+                                : 'text-sky-900 hover:bg-sky-50'
+                            }`}
+                          >
+                            $ Divisas
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleSelectShippingCurrencyMode('BS')}
+                            className={`px-2 py-0.5 rounded-md text-[10px] font-bold cursor-pointer transition-colors ${
+                              shippingCurrencyMode === 'BS'
+                                ? 'bg-sky-600 text-white'
+                                : 'text-sky-900 hover:bg-sky-50'
+                            }`}
+                          >
+                            Bs. BCV
+                          </button>
+                        </div>
+                      </div>
+
+                      {shippingCurrencyMode === 'USD' ? (
+                        <div className="space-y-1.5">
+                          <div className="relative">
+                            <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-xs font-extrabold text-sky-700">
+                              $
+                            </span>
+                            <input
+                              type="number"
+                              step="any"
+                              min="0"
+                              value={shippingCostUSDInput}
+                              onChange={(e) => handleChangeShippingUSD(e.target.value)}
+                              placeholder="0.00"
+                              className="w-full pl-6 pr-3 py-1.5 text-sm font-mono font-bold rounded-lg border border-sky-300 bg-white text-slate-900 focus:outline-hidden focus:border-sky-500"
+                            />
+                          </div>
+                          <div className="flex items-center justify-between gap-1.5 flex-wrap">
+                            <div className="flex items-center gap-1">
+                              {[3, 5, 8, 10].map((preset) => (
+                                <button
+                                  key={preset}
+                                  type="button"
+                                  onClick={() => handleChangeShippingUSD(String(preset))}
+                                  className="px-2 py-0.5 rounded bg-white hover:bg-sky-100 border border-sky-200 text-[10px] font-mono font-bold text-sky-900 cursor-pointer"
+                                >
+                                  +${preset}
+                                </button>
+                              ))}
+                            </div>
+                            {shippingCostUSD > 0 && (
+                              <span className="text-[11px] font-mono font-semibold text-emerald-800">
+                                ≈ {formatBs(shippingCostBs)} (BCV)
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="space-y-1">
+                          <div className="relative">
+                            <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-xs font-extrabold text-sky-700">
+                              Bs.
+                            </span>
+                            <input
+                              type="number"
+                              step="any"
+                              min="0"
+                              value={shippingCostBsInput}
+                              onChange={(e) => handleChangeShippingBs(e.target.value)}
+                              placeholder="0.00"
+                              className="w-full pl-9 pr-3 py-1.5 text-sm font-mono font-bold rounded-lg border border-sky-300 bg-white text-slate-900 focus:outline-hidden focus:border-sky-500"
+                            />
+                          </div>
+                          {shippingCostBs > 0 && (
+                            <div className="text-right text-[11px] font-mono font-semibold text-sky-900">
+                              Equiv. {formatUSD(shippingCostUSD)} (Tasa BCV: Bs. {rate.toFixed(2)})
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Ciudad / Oficina destino opcional */}
+                    <div>
+                      <input
+                        type="text"
+                        value={shippingNotes}
+                        onChange={(e) => setShippingNotes(e.target.value)}
+                        placeholder={`Ciudad o agencia ${shippingAgency} de destino (opcional)...`}
+                        className="w-full px-2.5 py-1.5 text-xs rounded-lg border border-sky-200 bg-white text-slate-800 placeholder:text-slate-400 focus:outline-hidden focus:border-sky-500"
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Condición de Venta: De Contado, A Crédito, Sistema de Apartado, MercadoLibre, Pago Mixto o Abrir Cuenta */}
               <div>
                 <label className="block text-[10px] font-bold text-slate-700 uppercase tracking-wider mb-1.5">
                   Condición de la Venta:
@@ -2046,9 +2675,13 @@ export const PosView: React.FC = () => {
                 <div className="grid grid-cols-2 gap-2">
                   <button
                     type="button"
-                    onClick={() => setPaymentType('CONTADO')}
+                    onClick={() => {
+                      setIsOpenAccountMode(false);
+                      setTargetOpenAccountId(null);
+                      setPaymentType('CONTADO');
+                    }}
                     className={`p-2 rounded-lg border text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
-                      paymentType === 'CONTADO'
+                      !isOpenAccountMode && paymentType === 'CONTADO'
                         ? 'bg-emerald-600 border-emerald-600 text-white shadow-xs'
                         : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100'
                     }`}
@@ -2059,9 +2692,13 @@ export const PosView: React.FC = () => {
 
                   <button
                     type="button"
-                    onClick={() => setPaymentType('CREDITO')}
+                    onClick={() => {
+                      setIsOpenAccountMode(false);
+                      setTargetOpenAccountId(null);
+                      setPaymentType('CREDITO');
+                    }}
                     className={`p-2 rounded-lg border text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
-                      paymentType === 'CREDITO'
+                      !isOpenAccountMode && paymentType === 'CREDITO'
                         ? 'bg-amber-600 border-amber-600 text-white shadow-xs'
                         : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100'
                     }`}
@@ -2072,9 +2709,13 @@ export const PosView: React.FC = () => {
 
                   <button
                     type="button"
-                    onClick={() => setPaymentType('APARTADO')}
+                    onClick={() => {
+                      setIsOpenAccountMode(false);
+                      setTargetOpenAccountId(null);
+                      setPaymentType('APARTADO');
+                    }}
                     className={`p-2 rounded-lg border text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
-                      paymentType === 'APARTADO'
+                      !isOpenAccountMode && paymentType === 'APARTADO'
                         ? 'bg-indigo-600 border-indigo-600 text-white shadow-xs'
                         : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100'
                     }`}
@@ -2085,9 +2726,13 @@ export const PosView: React.FC = () => {
 
                   <button
                     type="button"
-                    onClick={() => setPaymentType('MERCADOLIBRE')}
+                    onClick={() => {
+                      setIsOpenAccountMode(false);
+                      setTargetOpenAccountId(null);
+                      setPaymentType('MERCADOLIBRE');
+                    }}
                     className={`p-2 rounded-lg border text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
-                      paymentType === 'MERCADOLIBRE'
+                      !isOpenAccountMode && paymentType === 'MERCADOLIBRE'
                         ? 'bg-yellow-500 border-yellow-500 text-slate-950 font-extrabold shadow-xs'
                         : 'bg-slate-50 border-slate-200 text-slate-700 hover:bg-slate-100'
                     }`}
@@ -2099,6 +2744,8 @@ export const PosView: React.FC = () => {
                   <button
                     type="button"
                     onClick={() => {
+                      setIsOpenAccountMode(false);
+                      setTargetOpenAccountId(null);
                       setPaymentType('MIXTO');
                       setPosFormError(null);
                       if (mixtoSplits.length < 2) {
@@ -2106,7 +2753,7 @@ export const PosView: React.FC = () => {
                       }
                     }}
                     className={`col-span-2 p-2 rounded-lg border text-xs font-bold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
-                      paymentType === 'MIXTO'
+                      !isOpenAccountMode && paymentType === 'MIXTO'
                         ? 'bg-teal-600 border-teal-600 text-white shadow-xs'
                         : 'bg-teal-50/60 border-teal-200 text-teal-900 hover:bg-teal-100/70'
                     }`}
@@ -2114,11 +2761,196 @@ export const PosView: React.FC = () => {
                     <Layers className="w-3.5 h-3.5" />
                     <span>Pago Mixto (Combinar 2 o más formas de pago)</span>
                   </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsOpenAccountMode(true);
+                      setPosFormError(null);
+                      if (activeOpenAccounts.length === 0) {
+                        setOpenAccountSubMode('NUEVA');
+                        setTargetOpenAccountId(null);
+                      }
+                    }}
+                    className={`col-span-2 p-2.5 rounded-lg border text-xs font-extrabold flex items-center justify-center gap-1.5 transition-all cursor-pointer ${
+                      isOpenAccountMode
+                        ? 'bg-violet-600 border-violet-600 text-white shadow-sm'
+                        : 'bg-violet-50/80 border-violet-300 text-violet-950 hover:bg-violet-100'
+                    }`}
+                  >
+                    <ClipboardList className="w-4 h-4 shrink-0" />
+                    <span>Abrir Cuenta (Talleres Vecinos · Pago al Final del Día)</span>
+                  </button>
                 </div>
               </div>
 
+              {/* Panel de Configuración para Modalidad Abrir Cuenta */}
+              {isOpenAccountMode && (
+                <div className="p-3 bg-violet-50/90 border-2 border-violet-300 rounded-xl space-y-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="text-xs font-extrabold text-violet-950 flex items-center gap-1.5">
+                      <ClipboardList className="w-4 h-4 text-violet-700" />
+                      Modalidad Cuenta Abierta del Día
+                    </span>
+                    <button
+                      type="button"
+                      onClick={handleExitOpenAccountMode}
+                      className="text-[11px] font-bold text-violet-700 hover:text-violet-950 cursor-pointer"
+                    >
+                      Cambiar
+                    </button>
+                  </div>
+
+                  {/* Toggle Nueva Cuenta vs Sumar a Existente */}
+                  <div className="grid grid-cols-2 gap-1.5 bg-violet-100/80 p-1 rounded-lg border border-violet-200">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setOpenAccountSubMode('NUEVA');
+                        setTargetOpenAccountId(null);
+                        setPosFormError(null);
+                      }}
+                      className={`py-1.5 px-2 rounded-md text-[11px] font-bold cursor-pointer transition-colors ${
+                        openAccountSubMode === 'NUEVA'
+                          ? 'bg-violet-700 text-white shadow-2xs'
+                          : 'text-violet-900 hover:bg-white/70'
+                      }`}
+                    >
+                      + Nueva Cuenta
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setOpenAccountSubMode('SUMAR');
+                        setPosFormError(null);
+                        if (!targetOpenAccountId && activeOpenAccounts.length > 0) {
+                          setTargetOpenAccountId(activeOpenAccounts[0].id);
+                        }
+                      }}
+                      className={`py-1.5 px-2 rounded-md text-[11px] font-bold cursor-pointer transition-colors ${
+                        openAccountSubMode === 'SUMAR'
+                          ? 'bg-violet-700 text-white shadow-2xs'
+                          : 'text-violet-900 hover:bg-white/70'
+                      }`}
+                    >
+                      + Sumar a Existente ({activeOpenAccounts.length})
+                    </button>
+                  </div>
+
+                  {openAccountSubMode === 'NUEVA' ? (
+                    <div className="space-y-2.5">
+                      <div className="p-2 rounded-lg bg-white border border-violet-200 text-[11px] text-violet-950 leading-snug">
+                        <strong>Datos personales requeridos arriba:</strong> Nombre completo del cliente + Cédula/RIF o Teléfono/WhatsApp. Puedes abrir la cuenta con repuestos ya cargados o en $0 para ir sumando durante el día.
+                      </div>
+
+                      <div className="grid grid-cols-1 gap-2">
+                        <div>
+                          <label className="block text-[10px] font-bold text-violet-950 uppercase mb-1 flex items-center gap-1">
+                            <Wrench className="w-3 h-3 text-violet-600" />
+                            <span>Taller Vecino / Mecánico (Opcional):</span>
+                          </label>
+                          <input
+                            type="text"
+                            value={openAccountWorkshop}
+                            onChange={(e) => setOpenAccountWorkshop(e.target.value)}
+                            placeholder="Ej. Taller El Chino, Mecánico Luis..."
+                            className="w-full px-2.5 py-1.5 text-xs font-medium rounded-lg border border-violet-300 bg-white text-slate-900 focus:outline-hidden focus:border-violet-600"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block text-[10px] font-bold text-violet-950 uppercase mb-1 flex items-center gap-1">
+                            <Bike className="w-3 h-3 text-violet-600" />
+                            <span>Moto / Placa (Opcional):</span>
+                          </label>
+                          <input
+                            type="text"
+                            value={openAccountMoto}
+                            onChange={(e) => setOpenAccountMoto(e.target.value)}
+                            placeholder="Ej. Bera SBR Negra · Placa AB1C23D"
+                            className="w-full px-2.5 py-1.5 text-xs font-medium rounded-lg border border-violet-300 bg-white text-slate-900 focus:outline-hidden focus:border-violet-600"
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="space-y-2.5">
+                      {activeOpenAccounts.length === 0 ? (
+                        <div className="p-3 rounded-lg bg-white border border-violet-200 text-xs text-slate-600 text-center">
+                          No hay cuentas abiertas todavía. Cambia a <strong>"+ Nueva Cuenta"</strong> para crear una.
+                        </div>
+                      ) : (
+                        <>
+                          <div>
+                            <label className="block text-[10px] font-bold text-violet-950 uppercase mb-1">
+                              Selecciona la Cuenta Abierta:
+                            </label>
+                            <div className="space-y-1.5 max-h-40 overflow-y-auto pr-0.5">
+                              {activeOpenAccounts.map((acc) => {
+                                const isSelected = targetOpenAccountId === acc.id;
+                                return (
+                                  <button
+                                    key={acc.id}
+                                    type="button"
+                                    onClick={() => handleStartAddItemsToOpenAccount(acc)}
+                                    className={`w-full text-left p-2 rounded-lg border transition-all cursor-pointer flex items-center justify-between gap-2 ${
+                                      isSelected
+                                        ? 'bg-violet-700 border-violet-700 text-white shadow-xs'
+                                        : 'bg-white border-violet-200 text-slate-900 hover:bg-violet-100/70'
+                                    }`}
+                                  >
+                                    <div className="min-w-0">
+                                      <p className="text-xs font-extrabold whitespace-normal break-words leading-snug">
+                                        {acc.customerName}
+                                      </p>
+                                      <p
+                                        className={`text-[10px] ${
+                                          isSelected ? 'text-violet-200' : 'text-slate-500'
+                                        }`}
+                                      >
+                                        {acc.accountNumber}
+                                        {acc.workshopName ? ` · ${acc.workshopName}` : ''}
+                                      </p>
+                                    </div>
+                                    <div className="text-right font-mono shrink-0 tabular-nums">
+                                      <span className="text-xs font-extrabold block">
+                                        {formatUSD(acc.subtotal)}
+                                      </span>
+                                      <span
+                                        className={`text-[10px] block ${
+                                          isSelected ? 'text-emerald-300' : 'text-emerald-700'
+                                        }`}
+                                      >
+                                        {acc.items.length} ítems
+                                      </span>
+                                    </div>
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+
+                          <div>
+                            <label className="block text-[10px] font-bold text-violet-950 uppercase mb-1">
+                              Quién retira / Nota de este pedido (Opcional):
+                            </label>
+                            <input
+                              type="text"
+                              value={openAccountPickupNote}
+                              onChange={(e) => setOpenAccountPickupNote(e.target.value)}
+                              placeholder="Ej. Retiró el mecánico, 2da vuelta..."
+                              className="w-full px-2.5 py-1.5 text-xs rounded-lg border border-violet-300 bg-white text-slate-900"
+                            />
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
+
               {/* Si es Pago Mixto: Panel de Desglose por Formas de Pago */}
-              {paymentType === 'MIXTO' && (() => {
+              {!isOpenAccountMode && paymentType === 'MIXTO' && (() => {
                 const assignedUSD = Math.round(
                   mixtoSplits.reduce((sum, sp) => sum + (parseFloat(sp.amountUSD) || 0), 0) * 100
                 ) / 100;
@@ -2870,7 +3702,7 @@ export const PosView: React.FC = () => {
               })()}
 
               {/* Si es MercadoLibre: Panel de Configuración de Comisión */}
-              {paymentType === 'MERCADOLIBRE' && (
+              {!isOpenAccountMode && paymentType === 'MERCADOLIBRE' && (
                 <div className="p-3 bg-yellow-50/90 border border-yellow-300 rounded-xl space-y-2.5">
                   <div className="flex items-center justify-between text-xs font-bold text-yellow-950">
                     <span className="flex items-center gap-1.5">
@@ -3030,7 +3862,7 @@ export const PosView: React.FC = () => {
               )}
 
               {/* Si es A Crédito o Sistema de Apartado: Panel de Plazo, Vencimiento y Abono */}
-              {(paymentType === 'CREDITO' || paymentType === 'APARTADO') && (
+              {!isOpenAccountMode && (paymentType === 'CREDITO' || paymentType === 'APARTADO') && (
                 <div
                   className={`p-3 rounded-xl space-y-2.5 border ${
                     paymentType === 'APARTADO'
@@ -3306,7 +4138,7 @@ export const PosView: React.FC = () => {
                 </div>
               )}
 
-              {paymentType === 'MIXTO' ? (
+              {!isOpenAccountMode && (paymentType === 'MIXTO' ? (
                 <div className="text-xs">
                   <label className="block text-[10px] font-semibold text-slate-600 mb-1">
                     Descuento ($ USD):
@@ -3436,7 +4268,7 @@ export const PosView: React.FC = () => {
                     </div>
                   )}
                 </>
-              )}
+              ))}
 
               <div>
                 <input
@@ -3454,7 +4286,9 @@ export const PosView: React.FC = () => {
                   <span className="text-slate-400">Condición:</span>
                   <span
                     className={`font-bold px-2 py-0.5 rounded text-[11px] ${
-                      paymentType === 'APARTADO'
+                      isOpenAccountMode
+                        ? 'bg-violet-500/25 text-violet-200 border border-violet-400/50'
+                        : paymentType === 'APARTADO'
                         ? 'bg-indigo-400/20 text-indigo-300 border border-indigo-400/40'
                         : paymentType === 'CREDITO'
                         ? 'bg-amber-400/20 text-amber-300 border border-amber-400/30'
@@ -3465,7 +4299,11 @@ export const PosView: React.FC = () => {
                         : 'bg-emerald-400/20 text-emerald-300 border border-emerald-400/30'
                     }`}
                   >
-                    {paymentType === 'APARTADO'
+                    {isOpenAccountMode
+                      ? openAccountSubMode === 'SUMAR' && targetOpenAccount
+                        ? `SUMAR A CUENTA ${targetOpenAccount.accountNumber}`
+                        : 'CUENTA ABIERTA DEL DÍA'
+                      : paymentType === 'APARTADO'
                       ? `SISTEMA DE APARTADO (${creditDays} DÍAS)`
                       : paymentType === 'CREDITO'
                       ? `A CRÉDITO (${creditDays} DÍAS)`
@@ -3489,30 +4327,69 @@ export const PosView: React.FC = () => {
                     <span className="font-mono">-{formatUSD(discountUSD)}</span>
                   </div>
                 )}
-                {paymentType === 'MERCADOLIBRE' && computedMlCommissionUSD > 0 && (
+                {!isOpenAccountMode && paymentType === 'MERCADOLIBRE' && computedMlCommissionUSD > 0 && (
                   <div className="flex justify-between text-xs text-yellow-300 font-semibold">
                     <span>+ Recargo MercadoLibre (Adicional):</span>
                     <span className="font-mono">+{formatUSD(computedMlCommissionUSD)}</span>
                   </div>
                 )}
+                {!isOpenAccountMode && hasShipping && shippingCostUSD > 0 && (
+                  <div className="flex justify-between items-baseline text-xs text-sky-300 font-semibold">
+                    <span>
+                      + Gastos de Envío ({shippingAgency} · {shippingState}):
+                    </span>
+                    <div className="text-right font-mono">
+                      <span>+{formatUSD(shippingCostUSD)}</span>
+                      <span className="text-[10px] text-sky-200/80 block font-normal">
+                        {formatBs(shippingCostBs)}
+                      </span>
+                    </div>
+                  </div>
+                )}
                 <div className="flex justify-between items-baseline pt-2 border-t border-slate-800">
-                  <span className="text-xs sm:text-sm font-bold text-amber-300 uppercase">TOTAL ($ USD):</span>
+                  <span className="text-xs sm:text-sm font-bold text-amber-300 uppercase">
+                    {isOpenAccountMode
+                      ? openAccountSubMode === 'SUMAR'
+                        ? 'A SUMAR AHORA ($):'
+                        : 'CARGO INICIAL ($):'
+                      : 'TOTAL ($ USD):'}
+                  </span>
                   <span className="text-2xl sm:text-3xl font-mono text-amber-400 font-extrabold tabular-nums leading-none">
-                    {formatUSD(totalUSD)}
+                    {formatUSD(isOpenAccountMode ? subtotalUSD : totalUSD)}
                   </span>
                 </div>
 
                 <div className="pt-2 border-t border-slate-800/80 flex justify-between items-baseline">
                   <div>
-                    <span className="text-xs sm:text-sm font-bold text-emerald-300 uppercase block">TOTAL (Bs.):</span>
+                    <span className="text-xs sm:text-sm font-bold text-emerald-300 uppercase block">
+                      {isOpenAccountMode ? 'EQUIV. EN Bs.:' : 'TOTAL (Bs.):'}
+                    </span>
                     <span className="text-[11px] text-slate-400">Tasa BCV: Bs. {rate.toFixed(2)}</span>
                   </div>
                   <span className="text-xl sm:text-2xl font-mono text-emerald-300 font-extrabold tabular-nums leading-none">
-                    {formatBs(totalBs)}
+                    {formatBs(isOpenAccountMode ? subtotalBs : totalBs)}
                   </span>
                 </div>
 
-                {(paymentType === 'CREDITO' || paymentType === 'APARTADO') && (
+                {isOpenAccountMode && openAccountSubMode === 'SUMAR' && targetOpenAccount && (
+                  <div className="pt-2 border-t border-slate-800/80 space-y-1 text-xs">
+                    <div className="flex justify-between text-violet-300">
+                      <span>Acumulado anterior ({targetOpenAccount.accountNumber}):</span>
+                      <span className="font-mono font-bold">{formatUSD(targetOpenAccount.subtotal)}</span>
+                    </div>
+                    <div className="flex justify-between items-baseline text-amber-300 font-bold">
+                      <span>Nuevo Acumulado Total del Día:</span>
+                      <div className="text-right font-mono">
+                        <span>{formatUSD(targetOpenAccount.subtotal + subtotalUSD)}</span>
+                        <span className="text-[10px] text-emerald-300 block font-normal">
+                          {formatBs((targetOpenAccount.subtotal + subtotalUSD) * rate)}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {!isOpenAccountMode && (paymentType === 'CREDITO' || paymentType === 'APARTADO') && (
                   <div className="pt-2 border-t border-slate-800/80 space-y-1 text-xs">
                     {deferredPaidUSD > 0 && (
                       <div className="flex justify-between items-baseline text-emerald-300">
@@ -3556,7 +4433,7 @@ export const PosView: React.FC = () => {
                   </div>
                 )}
 
-                {paymentType === 'MERCADOLIBRE' && (
+                {!isOpenAccountMode && paymentType === 'MERCADOLIBRE' && (
                   <div className="pt-2 border-t border-slate-800/80 space-y-1 text-xs">
                     <div className="flex justify-between items-baseline text-emerald-300 font-medium">
                       <span>Tu ingreso neto (Precio registrado):</span>
@@ -3572,7 +4449,7 @@ export const PosView: React.FC = () => {
                     </div>
                   </div>
                 )}
-                {paymentType === 'MIXTO' && (
+                {!isOpenAccountMode && paymentType === 'MIXTO' && (
                   <div className="pt-2 border-t border-slate-800/80 space-y-1.5 text-[11px]">
                     <div className="flex items-center justify-between gap-2">
                       <span className="text-teal-300 font-bold">Resumen de Pago Mixto:</span>
@@ -3697,45 +4574,67 @@ export const PosView: React.FC = () => {
               )}
 
               {/* Finalize Button */}
-              <button
-                type="button"
-                onClick={handleFinalizeSale}
-                disabled={posCart.length === 0 || isSubmittingSale}
-                className={`w-full py-3 text-white font-bold text-xs rounded-xl shadow-md transition-colors flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 ${
-                  paymentType === 'APARTADO'
-                    ? 'bg-indigo-600 hover:bg-indigo-700'
-                    : paymentType === 'CREDITO'
-                    ? 'bg-amber-600 hover:bg-amber-700'
-                    : paymentType === 'MERCADOLIBRE'
-                    ? 'bg-yellow-600 hover:bg-yellow-700 text-slate-950 font-extrabold'
-                    : paymentType === 'MIXTO'
-                    ? 'bg-teal-600 hover:bg-teal-700'
-                    : 'bg-emerald-600 hover:bg-emerald-700'
-                }`}
-              >
-                {customerPhone && customerPhone !== 'N/A' && customerPhone.replace(/\D/g, '').length >= 7 ? (
-                  <MessageSquare className="w-4 h-4" />
-                ) : (
-                  <Printer className="w-4 h-4" />
-                )}
-                <span>
-                  {isSubmittingSale
-                    ? 'Registrando Venta...'
-                    : paymentType === 'APARTADO'
-                    ? 'Registrar Apartado y Emitir Comprobante'
-                    : paymentType === 'CREDITO'
-                    ? 'Registrar Venta a Crédito y Emitir Factura'
-                    : paymentType === 'MERCADOLIBRE'
-                    ? 'Registrar Venta MercadoLibre y Factura'
-                    : paymentType === 'MIXTO'
-                    ? hasMixtoCreditSplit
-                      ? 'Registrar Pago Mixto (Contado + Crédito)'
-                      : 'Cobrar Pago Mixto y Emitir Factura'
-                    : customerPhone && customerPhone !== 'N/A' && customerPhone.replace(/\D/g, '').length >= 7
-                    ? 'Cobrar y Enviar Factura ($ y Bs) al WhatsApp'
-                    : 'Cobrar y Emitir Factura ($ y Bs)'}
-                </span>
-              </button>
+              {isOpenAccountMode ? (
+                <button
+                  type="button"
+                  onClick={handleSubmitOpenAccount}
+                  disabled={
+                    openAccountSubMode === 'SUMAR'
+                      ? posCart.length === 0 || !targetOpenAccount
+                      : false
+                  }
+                  className="w-full py-3 bg-violet-600 hover:bg-violet-700 text-white font-extrabold text-xs sm:text-sm rounded-xl shadow-md transition-colors flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+                >
+                  <ClipboardList className="w-4 h-4 shrink-0" />
+                  <span>
+                    {openAccountSubMode === 'SUMAR' && targetOpenAccount
+                      ? `Sumar ${posCart.length > 0 ? `${formatUSD(subtotalUSD)} ` : ''}a Cuenta de ${targetOpenAccount.customerName}`
+                      : posCart.length > 0
+                      ? `Abrir Cuenta del Día (${formatUSD(subtotalUSD)})`
+                      : 'Abrir Cuenta del Día (Sin repuestos iniciales)'}
+                  </span>
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={handleFinalizeSale}
+                  disabled={posCart.length === 0 || isSubmittingSale}
+                  className={`w-full py-3 text-white font-bold text-xs rounded-xl shadow-md transition-colors flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 ${
+                    paymentType === 'APARTADO'
+                      ? 'bg-indigo-600 hover:bg-indigo-700'
+                      : paymentType === 'CREDITO'
+                      ? 'bg-amber-600 hover:bg-amber-700'
+                      : paymentType === 'MERCADOLIBRE'
+                      ? 'bg-yellow-600 hover:bg-yellow-700 text-slate-950 font-extrabold'
+                      : paymentType === 'MIXTO'
+                      ? 'bg-teal-600 hover:bg-teal-700'
+                      : 'bg-emerald-600 hover:bg-emerald-700'
+                  }`}
+                >
+                  {customerPhone && customerPhone !== 'N/A' && customerPhone.replace(/\D/g, '').length >= 7 ? (
+                    <MessageSquare className="w-4 h-4" />
+                  ) : (
+                    <Printer className="w-4 h-4" />
+                  )}
+                  <span>
+                    {isSubmittingSale
+                      ? 'Registrando Venta...'
+                      : paymentType === 'APARTADO'
+                      ? 'Registrar Apartado y Emitir Comprobante'
+                      : paymentType === 'CREDITO'
+                      ? 'Registrar Venta a Crédito y Emitir Factura'
+                      : paymentType === 'MERCADOLIBRE'
+                      ? 'Registrar Venta MercadoLibre y Factura'
+                      : paymentType === 'MIXTO'
+                      ? hasMixtoCreditSplit
+                        ? 'Registrar Pago Mixto (Contado + Crédito)'
+                        : 'Cobrar Pago Mixto y Emitir Factura'
+                      : customerPhone && customerPhone !== 'N/A' && customerPhone.replace(/\D/g, '').length >= 7
+                      ? 'Cobrar y Enviar Factura ($ y Bs) al WhatsApp'
+                      : 'Cobrar y Emitir Factura ($ y Bs)'}
+                  </span>
+                </button>
+              )}
             </div>
           </div>
         </div>
@@ -4366,6 +5265,40 @@ export const PosView: React.FC = () => {
             </form>
           </div>
         </div>
+      )}
+
+      {/* Modal: Detalle / Gestión de Cuenta Abierta */}
+      {inspectingAccount && (
+        <OpenAccountDetailModal
+          account={inspectingAccount}
+          rate={rate}
+          settings={settings}
+          onClose={() => setInspectingAccountId(null)}
+          onUpdateItem={updateOpenAccountItem}
+          onRemoveItem={removeOpenAccountItem}
+          onUpdateMeta={updateOpenAccountMeta}
+          onCancelAccount={(id) => {
+            cancelOpenAccount(id);
+            if (targetOpenAccountId === id) {
+              setTargetOpenAccountId(null);
+              setIsOpenAccountMode(false);
+            }
+            showToast('Cuenta abierta anulada y repuestos devueltos al inventario.', 'info');
+          }}
+          onStartAddItems={handleStartAddItemsToOpenAccount}
+          onProceedToSettle={(acc) => setSettlingAccountId(acc.id)}
+          onSendWhatsAppStatement={handleSendOpenAccountWhatsApp}
+        />
+      )}
+
+      {/* Modal: Cobrar y Cerrar Cuenta Abierta al Final del Día */}
+      {settlingAccount && (
+        <SettleOpenAccountModal
+          account={settlingAccount}
+          rate={rate}
+          onClose={() => setSettlingAccountId(null)}
+          onConfirmSettle={handleConfirmSettleOpenAccount}
+        />
       )}
     </div>
   );

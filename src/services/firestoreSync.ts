@@ -28,6 +28,7 @@ import {
   TreasuryCommitment,
   TreasuryMovement,
   TreasuryDebt,
+  OpenAccount,
 } from '../types';
 
 export interface SnapshotSyncMeta {
@@ -51,6 +52,7 @@ export interface DeletedIdsMap {
   treasuryCommitments: string[];
   treasuryMovements: string[];
   treasuryDebts: string[];
+  openAccounts: string[];
 }
 
 export const EMPTY_DELETED_IDS: DeletedIdsMap = {
@@ -69,6 +71,7 @@ export const EMPTY_DELETED_IDS: DeletedIdsMap = {
   treasuryCommitments: [],
   treasuryMovements: [],
   treasuryDebts: [],
+  openAccounts: [],
 };
 
 // Recursively remove undefined values because Firestore throws on undefined fields
@@ -525,6 +528,32 @@ export function subscribeToTreasuryDebts(callback: (debts: TreasuryDebt[], meta:
   }
 }
 
+// Real-time listener for POS daily open accounts
+export function subscribeToOpenAccounts(callback: (accounts: OpenAccount[], meta: SnapshotSyncMeta) => void) {
+  try {
+    const colRef = collection(db, 'openAccounts');
+    return onSnapshot(
+      colRef,
+      (snapshot) => {
+        const list: OpenAccount[] = [];
+        snapshot.forEach((docSnap) => {
+          list.push({ ...(docSnap.data() as OpenAccount), id: docSnap.id });
+        });
+        callback(list, {
+          hasPendingWrites: snapshot.metadata.hasPendingWrites,
+          fromCache: snapshot.metadata.fromCache,
+        });
+      },
+      (error) => {
+        logFirestoreError(error, OperationType.GET, 'openAccounts');
+      }
+    );
+  } catch (error) {
+    console.warn('Error starting openAccounts listener:', error);
+    return () => {};
+  }
+}
+
 // One-shot fetch for deleted IDs tombstones before starting collection listeners
 export async function fetchDeletedIdsFromFirestore(): Promise<DeletedIdsMap | null> {
   try {
@@ -548,6 +577,7 @@ export async function fetchDeletedIdsFromFirestore(): Promise<DeletedIdsMap | nu
       treasuryCommitments: Array.isArray(data.treasuryCommitments) ? data.treasuryCommitments : [],
       treasuryMovements: Array.isArray(data.treasuryMovements) ? data.treasuryMovements : [],
       treasuryDebts: Array.isArray(data.treasuryDebts) ? data.treasuryDebts : [],
+      openAccounts: Array.isArray(data.openAccounts) ? data.openAccounts : [],
     };
   } catch (error) {
     console.warn('Error fetching deletedIds registry:', error);
@@ -580,6 +610,7 @@ export function subscribeToDeletedIds(callback: (deletedIds: DeletedIdsMap) => v
             treasuryCommitments: Array.isArray(data.treasuryCommitments) ? data.treasuryCommitments : [],
             treasuryMovements: Array.isArray(data.treasuryMovements) ? data.treasuryMovements : [],
             treasuryDebts: Array.isArray(data.treasuryDebts) ? data.treasuryDebts : [],
+            openAccounts: Array.isArray(data.openAccounts) ? data.openAccounts : [],
           });
         }
       },
@@ -893,6 +924,22 @@ export async function removeTreasuryDebtFromFirestore(debtId: string): Promise<v
   }
 }
 
+export async function syncOpenAccountToFirestore(account: OpenAccount): Promise<void> {
+  try {
+    await setDoc(doc(db, 'openAccounts', account.id), stripUndefined(account));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, `openAccounts/${account.id}`);
+  }
+}
+
+export async function removeOpenAccountFromFirestore(accountId: string): Promise<void> {
+  try {
+    await deleteDoc(doc(db, 'openAccounts', accountId));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, `openAccounts/${accountId}`);
+  }
+}
+
 export async function recordDeletedIdsInFirestore(
   category: keyof DeletedIdsMap,
   ids: string[]
@@ -935,6 +982,7 @@ export async function uploadAllToFirestore(data: {
   treasuryCommitments?: TreasuryCommitment[];
   treasuryMovements?: TreasuryMovement[];
   treasuryDebts?: TreasuryDebt[];
+  openAccounts?: OpenAccount[];
   users?: AppUser[];
   deletedIds?: DeletedIdsMap;
 }): Promise<{ success: boolean; count: number }> {
@@ -994,6 +1042,9 @@ export async function uploadAllToFirestore(data: {
       }
       for (const id of data.deletedIds.treasuryDebts || []) {
         await deleteDoc(doc(db, 'treasuryDebts', id)).catch(() => {});
+      }
+      for (const id of data.deletedIds.openAccounts || []) {
+        await deleteDoc(doc(db, 'openAccounts', id)).catch(() => {});
       }
     }
 
@@ -1107,6 +1158,13 @@ export async function uploadAllToFirestore(data: {
     if (Array.isArray(data.treasuryDebts) && data.treasuryDebts.length > 0) {
       for (const debt of data.treasuryDebts) {
         await setDoc(doc(db, 'treasuryDebts', debt.id), stripUndefined(debt));
+        totalCount++;
+      }
+    }
+
+    if (Array.isArray(data.openAccounts) && data.openAccounts.length > 0) {
+      for (const acc of data.openAccounts) {
+        await setDoc(doc(db, 'openAccounts', acc.id), stripUndefined(acc));
         totalCount++;
       }
     }

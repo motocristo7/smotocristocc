@@ -1699,10 +1699,12 @@ export const PosView: React.FC = () => {
                               }`}
                             >
                               <div className="min-w-0 flex-1">
-                                <div className="flex items-center gap-1.5">
-                                  <span className="text-xs font-bold truncate">{c.name}</span>
+                                <div className="flex items-start gap-1.5">
+                                  <span className="text-xs font-bold whitespace-normal break-words leading-snug">
+                                    {c.name}
+                                  </span>
                                   {isSelected && (
-                                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0 mt-0.5" />
                                   )}
                                 </div>
                                 <div className="flex items-center gap-2 text-[10px] text-slate-500 font-mono mt-0.5 flex-wrap">
@@ -1763,35 +1765,49 @@ export const PosView: React.FC = () => {
             </div>
 
             {selectedCustomerId && (
-              <div className="flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-lg bg-emerald-50 border border-emerald-200 text-[11px] text-emerald-900">
-                <div className="flex items-center gap-1.5 min-w-0">
-                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
-                  <span className="font-bold truncate">{customerName}</span>
-                  {customerDocument && (
-                    <span className="font-mono text-[10px] bg-white px-1.5 py-0.5 rounded border border-emerald-200 text-emerald-800 shrink-0">
-                      C.I. {customerDocument}
-                    </span>
-                  )}
+              <div className="flex items-start justify-between gap-2.5 px-3 py-2 rounded-lg bg-emerald-50 border border-emerald-200 text-emerald-950">
+                <div className="flex items-start gap-2 min-w-0 flex-1">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
+                  <div className="min-w-0 flex-1">
+                    <div className="text-sm font-extrabold text-emerald-950 whitespace-normal break-words leading-snug">
+                      {customerName}
+                    </div>
+                    {(customerDocument || customerPhone) && (
+                      <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                        {customerDocument && (
+                          <span className="font-mono text-[11px] font-semibold bg-white px-1.5 py-0.5 rounded border border-emerald-200 text-emerald-800">
+                            C.I. {customerDocument}
+                          </span>
+                        )}
+                        {customerPhone && (
+                          <span className="font-mono text-[11px] bg-white px-1.5 py-0.5 rounded border border-emerald-200 text-emerald-800">
+                            Tel: {customerPhone}
+                          </span>
+                        )}
+                      </div>
+                    )}
+                  </div>
                 </div>
                 <button
                   type="button"
                   onClick={handleClearCustomer}
-                  className="text-[10px] font-semibold text-emerald-700 hover:text-emerald-950 underline shrink-0 cursor-pointer"
+                  className="text-xs font-bold text-emerald-700 hover:text-emerald-950 underline shrink-0 cursor-pointer mt-0.5"
                 >
                   Cambiar
                 </button>
               </div>
             )}
 
-            {/* Compact 1-row Name / Phone / Document inputs */}
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-              <div>
-                <label className="block text-[10px] font-semibold text-slate-600 mb-0.5">
-                  Nombre Cliente
+            {/* Full-width Name input + 2-column Document / Phone inputs */}
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <div className="sm:col-span-2">
+                <label className="block text-[11px] font-semibold text-slate-600 mb-0.5">
+                  Nombre Completo del Cliente
                 </label>
                 <input
                   type="text"
                   value={customerName}
+                  title={customerName}
                   onFocus={() => {
                     if (!selectedCustomerId && customerName.trim() && customerName !== 'Cliente Mostrador') {
                       setActiveSuggestionSource('name');
@@ -1809,11 +1825,11 @@ export const PosView: React.FC = () => {
                   }}
                   onKeyDown={handleCustomerInputKeyDown}
                   placeholder="Cliente Mostrador"
-                  className="w-full text-xs p-1.5 rounded border border-slate-200 bg-slate-50 focus:bg-white"
+                  className="w-full text-sm font-semibold px-2.5 py-1.5 rounded-lg border border-slate-200 bg-slate-50 focus:bg-white text-slate-900"
                 />
               </div>
               <div>
-                <label className="block text-[10px] font-semibold text-slate-600 mb-0.5">
+                <label className="block text-[11px] font-semibold text-slate-600 mb-0.5">
                   Cédula / RIF
                 </label>
                 <input
@@ -1836,11 +1852,11 @@ export const PosView: React.FC = () => {
                   }}
                   onKeyDown={handleCustomerInputKeyDown}
                   placeholder="V-00000000 (opc.)"
-                  className="w-full text-xs p-1.5 rounded border border-slate-200 bg-slate-50 focus:bg-white font-mono"
+                  className="w-full text-xs px-2 py-1.5 rounded-lg border border-slate-200 bg-slate-50 focus:bg-white font-mono"
                 />
               </div>
               <div>
-                <label className="block text-[10px] font-semibold text-slate-600 mb-0.5">
+                <label className="block text-[11px] font-semibold text-slate-600 mb-0.5">
                   Celular / WhatsApp
                 </label>
                 <input
@@ -1851,7 +1867,7 @@ export const PosView: React.FC = () => {
                     if (selectedCustomerId) setSelectedCustomerId('');
                   }}
                   placeholder="0414... (opc.)"
-                  className="w-full text-xs p-1.5 rounded border border-slate-200 bg-slate-50 focus:bg-white font-mono"
+                  className="w-full text-xs px-2 py-1.5 rounded-lg border border-slate-200 bg-slate-50 focus:bg-white font-mono"
                 />
               </div>
             </div>

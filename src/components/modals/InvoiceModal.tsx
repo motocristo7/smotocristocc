@@ -32,6 +32,7 @@ export const InvoiceModal: React.FC = () => {
     selectedInvoice,
     setSelectedInvoice,
     settings,
+    products,
     setWhatsappModalData,
     updateSaleCreditStatus,
     updateMercadoLibreCommission,
@@ -80,18 +81,24 @@ export const InvoiceModal: React.FC = () => {
   };
 
   const handleDownloadPDF = () => {
-    downloadInvoicePDF(selectedInvoice, settings);
-    setDownloaded(true);
-    setTimeout(() => setDownloaded(false), 3000);
+    downloadInvoicePDF(selectedInvoice, settings, products)
+      .then(() => {
+        setDownloaded(true);
+        setTimeout(() => setDownloaded(false), 3000);
+      })
+      .catch((err) => console.warn('Error generando PDF de factura:', err));
   };
 
   const handleDirectWhatsAppAndDownload = () => {
-    downloadInvoicePDF(selectedInvoice, settings);
-    setDownloaded(true);
-    setWhatsappNotice(
-      `Factura #${selectedInvoice.invoiceNumber} descargada en PDF y abierta en WhatsApp. Adjunta el PDF con el ícono de clip (📎).`
-    );
-    setTimeout(() => setDownloaded(false), 3500);
+    downloadInvoicePDF(selectedInvoice, settings, products)
+      .then(() => {
+        setDownloaded(true);
+        setWhatsappNotice(
+          `Factura #${selectedInvoice.invoiceNumber} descargada en PDF y abierta en WhatsApp. Adjunta el PDF con el ícono de clip (📎).`
+        );
+        setTimeout(() => setDownloaded(false), 3500);
+      })
+      .catch((err) => console.warn('Error generando PDF de factura:', err));
   };
 
   const handleOpenWhatsAppPreview = () => {

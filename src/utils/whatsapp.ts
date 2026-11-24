@@ -10,6 +10,7 @@ import {
   PurchaseOrder,
   PurchasePaymentRecord,
   isSaleWithCredit,
+  getServiceOrderPaymentSummary,
 } from '../types';
 
 export function formatUSD(amount: number): string {
@@ -387,6 +388,24 @@ export function buildServiceStatusWhatsAppMessage(order: ServiceOrder, settings:
     ? `🪑 *INGRESO DE ASIENTO* · Modelo de Moto: *${moto.model || 'N/A'}*`
     : `🛵 *MOTO:* ${moto.brand} ${moto.model} · Placa: *${moto.plate.toUpperCase()}*\n🎨 Color: ${moto.color} | 🧭 Km: ${moto.mileage.toLocaleString()} km`;
 
+  const paySummary = getServiceOrderPaymentSummary(order, rate);
+  const paymentStatusBlock =
+    paySummary.paymentStatus === 'PAGADO'
+      ? `✅ *ESTADO DE PAGO: PAGADO EN SU TOTALIDAD*\n💵 *Total Cancelado:* ${formatUSD(paySummary.paidUSD)} (${formatBs(paySummary.paidBs)})\n📌 *Saldo Pendiente:* $0.00`
+      : paySummary.paymentStatus === 'ABONO'
+      ? `💳 *ESTADO DE PAGO: ABONO PARCIAL REGISTRADO*\n✅ *Total Abonado:* ${formatUSD(paySummary.paidUSD)} (${formatBs(paySummary.paidBs)})\n⚠️ *Saldo Restante por Pagar:* *${formatUSD(paySummary.remainingUSD)}* | *${formatBs(paySummary.remainingBs)}*`
+      : `⏳ *ESTADO DE PAGO:* Pendiente por pagar`;
+
+  const paymentCoordsBlock =
+    paySummary.paymentStatus === 'PAGADO'
+      ? `✅ *Gracias por su pago. Esta orden se encuentra cancelada al 100%.*`
+      : `📲 *DATOS PAGO MÓVIL${paySummary.paymentStatus === 'ABONO' ? ' (PARA CANCELAR SALDO RESTANTE)' : ''}:*
+🏦 Banco: ${settings.bankDetails.pagoMovilBank || '0134 - Banesco'}
+📱 Celular: ${settings.bankDetails.pagoMovilPhone || '0412-2242450'}
+🆔 Cédula: ${settings.bankDetails.pagoMovilId || 'V-19996141'}
+🖼️ Escanea el código QR para pagar:
+👉 ${qrImageLink}`;
+
   const message = `🏍️ *${settings.name.toUpperCase()}* 🏍️
 ───────────────────────
 ${statusHeader}
@@ -404,13 +423,9 @@ ${partsText}
 💵 *Mano de Obra + Repuestos:* ${formatUSD(order.totalCost)}
 📊 *Tasa BCV del día:* Bs. ${rate.toFixed(2)}
 🇻🇪 *Total en Bolívares:* ${formatBs(totalBs)}
+${paymentStatusBlock}
 ${order.estimatedDelivery ? `⏰ Entrega estimada: ${order.estimatedDelivery}\n` : ''}
-📲 *DATOS PAGO MÓVIL:*
-🏦 Banco: ${settings.bankDetails.pagoMovilBank || '0134 - Banesco'}
-📱 Celular: ${settings.bankDetails.pagoMovilPhone || '0412-2242450'}
-🆔 Cédula: ${settings.bankDetails.pagoMovilId || 'V-19996141'}
-🖼️ Escanea el código QR para pagar:
-👉 ${qrImageLink}
+${paymentCoordsBlock}
 ───────────────────────
 🔎 *Consulta en tiempo real el historial y estado de tu moto:*
 🔗 ${trackingLink}

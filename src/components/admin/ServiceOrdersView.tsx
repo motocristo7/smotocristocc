@@ -4,6 +4,7 @@ import { useApp } from '../../context/AppContext';
 import {
   ServiceOrder,
   ServiceOrderEntryType,
+  ServiceOrderPaymentStatus,
   WorkshopServiceType,
   WorkshopServicePreset,
   ServiceOrderStatus,
@@ -14,6 +15,10 @@ import {
   FuelLevel,
   Product,
   Technician,
+  PaymentMethod,
+  PagoMovilAccountOption,
+  PaymentCurrencyMode,
+  getServiceOrderPaymentSummary,
 } from '../../types';
 import {
   formatUSD,
@@ -60,7 +65,23 @@ import {
   Upload,
   Eye,
   Loader2,
+  DollarSign,
+  Wallet,
+  CreditCard,
 } from 'lucide-react';
+
+const SERVICE_PAYMENT_METHODS: PaymentMethod[] = [
+  'Pago Móvil',
+  'Dólares Efectivo (USD)',
+  'Transferencia Bancaria Bs',
+  'Punto de Venta (Bs)',
+  'Binance Pay (USDT)',
+];
+
+const isBsPaymentMethod = (method: PaymentMethod): boolean =>
+  method === 'Pago Móvil' ||
+  method === 'Transferencia Bancaria Bs' ||
+  method === 'Punto de Venta (Bs)';
 
 const normalizeText = (value?: string): string =>
   (value || '')
@@ -1864,6 +1885,8 @@ export const ServiceOrdersView: React.FC = () => {
     createServiceOrder,
     updateServiceOrderStatus,
     updateServiceOrder,
+    recordServiceOrderPayment,
+    deleteServiceOrderPayment,
     deleteServiceOrder,
     products,
     addProduct,
@@ -1880,6 +1903,7 @@ export const ServiceOrdersView: React.FC = () => {
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [typeFilter, setTypeFilter] = useState<string>('all');
   const [entryTypeFilter, setEntryTypeFilter] = useState<'all' | ServiceOrderEntryType>('all');
+  const [paymentFilter, setPaymentFilter] = useState<'all' | ServiceOrderPaymentStatus>('all');
   const [isNewOrderModalOpen, setIsNewOrderModalOpen] = useState(false);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
   const [lightboxPhoto, setLightboxPhoto] = useState<{
@@ -1888,6 +1912,20 @@ export const ServiceOrdersView: React.FC = () => {
     subtitle?: string;
   } | null>(null);
   const [uploadingDeliveryOrderId, setUploadingDeliveryOrderId] = useState<string | null>(null);
+
+  // Payment / Abono Modal State
+  const [paymentModalOrderId, setPaymentModalOrderId] = useState<string | null>(null);
+  const [paymentModalMode, setPaymentModalMode] = useState<'ABONO' | 'PAGADO'>('ABONO');
+  const [paymentCurrencyMode, setPaymentCurrencyMode] = useState<PaymentCurrencyMode>('USD');
+  const [paymentAmountInput, setPaymentAmountInput] = useState<string>('');
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('Dólares Efectivo (USD)');
+  const [paymentPagoMovilAccount, setPaymentPagoMovilAccount] =
+    useState<PagoMovilAccountOption>('BANESCO_PERSONAL');
+  const [paymentReference, setPaymentReference] = useState<string>('');
+  const [paymentNotes, setPaymentNotes] = useState<string>('');
+  const [paymentSyncTreasury, setPaymentSyncTreasury] = useState<boolean>(true);
+  const [paymentModalError, setPaymentModalError] = useState<string | null>(null);
+  const [confirmDeletePaymentId, setConfirmDeletePaymentId] = useState<string | null>(null);
 
   const rate = settings.bcvRate;
 
@@ -1941,6 +1979,14 @@ export const ServiceOrdersView: React.FC = () => {
     selectedParts: [] as SaleItem[],
     servicesList: [] as ServiceItem[],
     notifyTechnicianOnCreate: true,
+    initialPaymentMode: 'PENDIENTE' as ServiceOrderPaymentStatus,
+    initialPaymentCurrency: 'USD' as PaymentCurrencyMode,
+    initialPaymentAmount: '' as string,
+    initialPaymentMethod: 'Dólares Efectivo (USD)' as PaymentMethod,
+    initialPaymentPagoMovilAccount: 'BANESCO_PERSONAL' as PagoMovilAccountOption,
+    initialPaymentReference: '',
+    initialPaymentNotes: '',
+    initialPaymentSyncTreasury: true,
   };
 
   const [orderForm, setOrderForm] = useState(initialOrderForm);
@@ -2092,6 +2138,10 @@ export const ServiceOrdersView: React.FC = () => {
       if (typeFilter !== 'all' && order.serviceType !== typeFilter) return false;
       const orderEntryType: ServiceOrderEntryType = order.entryType || 'MOTOCICLETA';
       if (entryTypeFilter !== 'all' && orderEntryType !== entryTypeFilter) return false;
+      if (paymentFilter !== 'all') {
+        const paySummary = getServiceOrderPaymentSummary(order, rate);
+        if (paySummary.paymentStatus !== paymentFilter) return false;
+      }
 
       if (searchTerm.trim()) {
         const q = searchTerm.toLowerCase();
@@ -2107,7 +2157,145 @@ export const ServiceOrdersView: React.FC = () => {
 
       return true;
     });
-  }, [serviceOrders, statusFilter, typeFilter, entryTypeFilter, searchTerm]);
+  }, [serviceOrders, statusFilter, typeFilter, entryTypeFilter, paymentFilter, searchTerm, rate]);
+
+  const paymentOverview = useMemo(() => {
+    let pendingCount = 0;
+    let abonoCount = 0;
+    let paidCount = 0;
+    let totalRemainingUSD = 0;
+    let totalCollectedUSD = 0;
+    filteredOrders.forEach((order) => {
+      const summary = getServiceOrderPaymentSummary(order, rate);
+      if (summary.paymentStatus === 'PAGADO') {
+        paidCount += 1;
+      } else if (summary.paymentStatus === 'ABONO') {
+        abonoCount += 1;
+      } else {
+        pendingCount += 1;
+      }
+      totalRemainingUSD += summary.remainingUSD;
+      totalCollectedUSD += summary.paidUSD;
+    });
+    return {
+      pendingCount,
+      abonoCount,
+      paidCount,
+      totalRemainingUSD: Math.round(totalRemainingUSD * 100) / 100,
+      totalCollectedUSD: Math.round(totalCollectedUSD * 100) / 100,
+    };
+  }, [filteredOrders, rate]);
+
+  const paymentModalOrder = useMemo(
+    () => (paymentModalOrderId ? serviceOrders.find((o) => o.id === paymentModalOrderId) || null : null),
+    [paymentModalOrderId, serviceOrders]
+  );
+
+  const handleOpenPaymentModal = (order: ServiceOrder, defaultMode: 'ABONO' | 'PAGADO' = 'ABONO') => {
+    const summary = getServiceOrderPaymentSummary(order, rate);
+    setPaymentModalOrderId(order.id);
+    setPaymentModalMode(defaultMode);
+    setPaymentCurrencyMode('USD');
+    setPaymentMethod('Dólares Efectivo (USD)');
+    setPaymentPagoMovilAccount('BANESCO_PERSONAL');
+    setPaymentAmountInput(
+      defaultMode === 'PAGADO'
+        ? summary.remainingUSD > 0
+          ? summary.remainingUSD.toFixed(2)
+          : ''
+        : ''
+    );
+    setPaymentReference('');
+    setPaymentNotes('');
+    setPaymentSyncTreasury(true);
+    setPaymentModalError(null);
+    setConfirmDeletePaymentId(null);
+  };
+
+  const handleSubmitOrderPayment = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!paymentModalOrder) return;
+    setPaymentModalError(null);
+
+    const summary = getServiceOrderPaymentSummary(paymentModalOrder, rate);
+    const isFull = paymentModalMode === 'PAGADO';
+    const rawVal = parseFloat(paymentAmountInput) || 0;
+
+    let amountUSD = 0;
+    let amountBs = 0;
+
+    if (isFull) {
+      if (summary.remainingUSD > 0.009) {
+        if (paymentCurrencyMode === 'BS') {
+          amountBs = rawVal > 0 ? Math.round(rawVal * 100) / 100 : summary.remainingBs;
+          amountUSD =
+            rawVal > 0
+              ? Math.round((amountBs / (rate || 1)) * 100) / 100
+              : summary.remainingUSD;
+        } else {
+          amountUSD = rawVal > 0 ? Math.round(rawVal * 100) / 100 : summary.remainingUSD;
+          amountBs = Math.round(amountUSD * rate * 100) / 100;
+        }
+      } else {
+        amountUSD = 0;
+        amountBs = 0;
+      }
+    } else {
+      if (rawVal <= 0) {
+        setPaymentModalError(
+          paymentCurrencyMode === 'BS'
+            ? 'Ingresa el monto del abono en Bolívares mayor a 0.'
+            : 'Ingresa el monto del abono en USD mayor a 0.'
+        );
+        return;
+      }
+      if (paymentCurrencyMode === 'BS') {
+        amountBs = Math.round(rawVal * 100) / 100;
+        amountUSD = Math.round((amountBs / (rate || 1)) * 100) / 100;
+      } else {
+        amountUSD = Math.round(rawVal * 100) / 100;
+        amountBs = Math.round(amountUSD * rate * 100) / 100;
+      }
+    }
+
+    const res = recordServiceOrderPayment(paymentModalOrder.id, {
+      amountUSD,
+      amountBs,
+      currencyMode: paymentCurrencyMode,
+      paymentMethod,
+      pagoMovilAccount: paymentMethod === 'Pago Móvil' ? paymentPagoMovilAccount : undefined,
+      reference: paymentReference.trim() || undefined,
+      notes: paymentNotes.trim() || undefined,
+      syncToTreasury: paymentSyncTreasury,
+      markAsFullPayment: isFull,
+    });
+
+    if (res) {
+      const nextSummary = getServiceOrderPaymentSummary(res.updatedOrder, rate);
+      setPaymentAmountInput('');
+      setPaymentReference('');
+      setPaymentNotes('');
+      setPaymentModalError(null);
+      setEditSuccessMessage(
+        nextSummary.paymentStatus === 'PAGADO'
+          ? `¡Orden #${res.updatedOrder.orderNumber} marcada como PAGADA EN SU TOTALIDAD!`
+          : `¡Abono de ${formatUSD(amountUSD)} (${formatBs(amountBs)}) registrado en la orden #${res.updatedOrder.orderNumber}!`
+      );
+      setTimeout(() => setEditSuccessMessage(null), 4500);
+      if (nextSummary.paymentStatus === 'PAGADO') {
+        setPaymentModalOrderId(null);
+      }
+    }
+  };
+
+  const handleDeleteOrderPayment = (orderId: string, paymentId: string) => {
+    const updated = deleteServiceOrderPayment(orderId, paymentId);
+    setConfirmDeletePaymentId(null);
+    if (updated) {
+      setEditSuccessMessage(`Pago eliminado de la orden #${updated.orderNumber}.`);
+      setTimeout(() => setEditSuccessMessage(null), 4000);
+    }
+  };
 
   const handleQuickUploadSeatDeliveryPhoto = async (order: ServiceOrder, file?: File) => {
     if (!file || !file.type.startsWith('image/')) return;
@@ -2129,7 +2317,7 @@ export const ServiceOrdersView: React.FC = () => {
     if (updated) {
       const isCulminada = newStatus === 'CULMINADA';
       if (isCulminada) {
-        downloadServiceOrderPDF(updated, settings).catch((err) =>
+        downloadServiceOrderPDF(updated, settings, products).catch((err) =>
           console.warn('Error generando factura PDF de orden culminada:', err)
         );
       }
@@ -2354,6 +2542,7 @@ export const ServiceOrdersView: React.FC = () => {
         sku: prod.sku,
         name: prod.name,
         category: prod.category,
+        imageUrl: prod.imageUrl,
         quantity: qty,
         unitPrice: prod.salePrice,
         total: prod.salePrice * qty,
@@ -2645,6 +2834,70 @@ export const ServiceOrdersView: React.FC = () => {
       undefined;
     const resolvedTechPhone = assignedTechRecord?.phone || orderForm.assignedTechnicianPhone || undefined;
 
+    let initialPaymentPayload:
+      | {
+          mode: ServiceOrderPaymentStatus;
+          amountUSD?: number;
+          amountBs?: number;
+          currencyMode?: PaymentCurrencyMode;
+          paymentMethod: PaymentMethod;
+          pagoMovilAccount?: PagoMovilAccountOption;
+          reference?: string;
+          notes?: string;
+          syncToTreasury?: boolean;
+        }
+      | undefined;
+
+    if (orderForm.initialPaymentMode === 'ABONO') {
+      const rawAbono = parseFloat(orderForm.initialPaymentAmount) || 0;
+      if (rawAbono <= 0) {
+        setNewOrderError(
+          orderForm.initialPaymentCurrency === 'BS'
+            ? 'Ingresa el monto del abono inicial en Bolívares mayor a 0.'
+            : 'Ingresa el monto del abono inicial en USD mayor a 0.'
+        );
+        return;
+      }
+      const abonoBs =
+        orderForm.initialPaymentCurrency === 'BS'
+          ? Math.round(rawAbono * 100) / 100
+          : Math.round(rawAbono * rate * 100) / 100;
+      const abonoUSD =
+        orderForm.initialPaymentCurrency === 'BS'
+          ? Math.round((abonoBs / (rate || 1)) * 100) / 100
+          : Math.round(rawAbono * 100) / 100;
+
+      initialPaymentPayload = {
+        mode: 'ABONO',
+        amountUSD: abonoUSD,
+        amountBs: abonoBs,
+        currencyMode: orderForm.initialPaymentCurrency,
+        paymentMethod: orderForm.initialPaymentMethod,
+        pagoMovilAccount:
+          orderForm.initialPaymentMethod === 'Pago Móvil'
+            ? orderForm.initialPaymentPagoMovilAccount
+            : undefined,
+        reference: orderForm.initialPaymentReference.trim() || undefined,
+        notes: orderForm.initialPaymentNotes.trim() || undefined,
+        syncToTreasury: orderForm.initialPaymentSyncTreasury,
+      };
+    } else if (orderForm.initialPaymentMode === 'PAGADO') {
+      initialPaymentPayload = {
+        mode: 'PAGADO',
+        amountUSD: totalCostUSD,
+        amountBs: Math.round(totalCostUSD * rate * 100) / 100,
+        currencyMode: isBsPaymentMethod(orderForm.initialPaymentMethod) ? 'BS' : 'USD',
+        paymentMethod: orderForm.initialPaymentMethod,
+        pagoMovilAccount:
+          orderForm.initialPaymentMethod === 'Pago Móvil'
+            ? orderForm.initialPaymentPagoMovilAccount
+            : undefined,
+        reference: orderForm.initialPaymentReference.trim() || undefined,
+        notes: orderForm.initialPaymentNotes.trim() || undefined,
+        syncToTreasury: orderForm.initialPaymentSyncTreasury,
+      };
+    }
+
     const newOrder = createServiceOrder({
       entryType: orderForm.entryType,
       customerId: orderForm.customerId || '',
@@ -2669,6 +2922,7 @@ export const ServiceOrdersView: React.FC = () => {
       assignedTechnicianId: resolvedTechId,
       assignedTechnicianPhone: resolvedTechPhone,
       estimatedDelivery: orderForm.estimatedDelivery.trim() || undefined,
+      ...(initialPaymentPayload ? { initialPayment: initialPaymentPayload } : {}),
     });
 
     const shouldNotifyTech = Boolean(orderForm.notifyTechnicianOnCreate && resolvedTechName);
@@ -2843,6 +3097,7 @@ export const ServiceOrdersView: React.FC = () => {
         sku: prod.sku,
         name: prod.name,
         category: prod.category,
+        imageUrl: prod.imageUrl,
         quantity: qty,
         unitPrice: prod.salePrice,
         total: prod.salePrice * qty,
@@ -3145,7 +3400,7 @@ export const ServiceOrdersView: React.FC = () => {
     setTimeout(() => setEditSuccessMessage(null), 4500);
 
     if (becameCulminada && updated) {
-      downloadServiceOrderPDF(updated, settings).catch((err) =>
+      downloadServiceOrderPDF(updated, settings, products).catch((err) =>
         console.warn('Error generando factura PDF al culminar orden:', err)
       );
     }
@@ -3266,8 +3521,72 @@ export const ServiceOrdersView: React.FC = () => {
                 </option>
               ))}
             </select>
+
+            <select
+              value={paymentFilter}
+              onChange={(e) => setPaymentFilter(e.target.value as 'all' | ServiceOrderPaymentStatus)}
+              className="text-xs p-2 rounded-lg border border-slate-200 bg-slate-50 font-semibold text-slate-800"
+            >
+              <option value="all">Todos los pagos</option>
+              <option value="PENDIENTE">Pendiente de Pago</option>
+              <option value="ABONO">Con Abono Parcial</option>
+              <option value="PAGADO">Pagado Total</option>
+            </select>
           </div>
         </div>
+
+        {/* Compact Payment Overview Strip */}
+        {serviceOrders.length > 0 && (
+          <div className="flex flex-wrap items-center justify-between gap-2 pt-2.5 border-t border-slate-100 text-xs">
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setPaymentFilter(paymentFilter === 'PENDIENTE' ? 'all' : 'PENDIENTE')}
+                className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border font-semibold transition-colors cursor-pointer ${
+                  paymentFilter === 'PENDIENTE'
+                    ? 'bg-rose-600 text-white border-rose-600'
+                    : 'bg-rose-50 text-rose-800 border-rose-200 hover:bg-rose-100'
+                }`}
+              >
+                <Clock className="w-3.5 h-3.5" />
+                <span>Pendientes: {paymentOverview.pendingCount}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setPaymentFilter(paymentFilter === 'ABONO' ? 'all' : 'ABONO')}
+                className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border font-semibold transition-colors cursor-pointer ${
+                  paymentFilter === 'ABONO'
+                    ? 'bg-blue-600 text-white border-blue-600'
+                    : 'bg-blue-50 text-blue-800 border-blue-200 hover:bg-blue-100'
+                }`}
+              >
+                <Wallet className="w-3.5 h-3.5" />
+                <span>Con Abono: {paymentOverview.abonoCount}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setPaymentFilter(paymentFilter === 'PAGADO' ? 'all' : 'PAGADO')}
+                className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border font-semibold transition-colors cursor-pointer ${
+                  paymentFilter === 'PAGADO'
+                    ? 'bg-emerald-600 text-white border-emerald-600'
+                    : 'bg-emerald-50 text-emerald-800 border-emerald-200 hover:bg-emerald-100'
+                }`}
+              >
+                <CheckCircle2 className="w-3.5 h-3.5" />
+                <span>Pagadas Total: {paymentOverview.paidCount}</span>
+              </button>
+            </div>
+            <div className="flex flex-wrap items-center gap-3 font-mono text-[11px]">
+              <span className="text-emerald-700 font-bold">
+                Cobrado: {formatUSD(paymentOverview.totalCollectedUSD)}
+              </span>
+              <span className="text-slate-300">|</span>
+              <span className="text-amber-700 font-bold">
+                Por Cobrar: {formatUSD(paymentOverview.totalRemainingUSD)} ({formatBs(paymentOverview.totalRemainingUSD * rate)})
+              </span>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Orders List / Cards */}
@@ -3308,6 +3627,7 @@ export const ServiceOrdersView: React.FC = () => {
             const isUpholstery = isSeatOrder || order.serviceType === 'Tapicería y Asientos';
             const orderRate = order.bcvRate || rate;
             const totalBs = order.totalCostBs || order.totalCost * orderRate;
+            const paySummary = getServiceOrderPaymentSummary(order, orderRate);
 
             return (
               <div
@@ -3343,6 +3663,24 @@ export const ServiceOrdersView: React.FC = () => {
                         </span>
                         <span className="text-slate-400">·</span>
                         <span className="text-xs text-slate-500 font-mono">{order.orderNumber}</span>
+                        {paySummary.paymentStatus === 'PAGADO' ? (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-100 text-emerald-800 border border-emerald-200 text-[11px] font-bold">
+                            <CheckCircle2 className="w-3 h-3" />
+                            <span>PAGADO TOTAL</span>
+                          </span>
+                        ) : paySummary.paymentStatus === 'ABONO' ? (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-blue-100 text-blue-800 border border-blue-200 text-[11px] font-bold">
+                            <Wallet className="w-3 h-3" />
+                            <span>
+                              ABONÓ {formatUSD(paySummary.paidUSD)} · Resta {formatUSD(paySummary.remainingUSD)}
+                            </span>
+                          </span>
+                        ) : (
+                          <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-rose-50 text-rose-700 border border-rose-200 text-[11px] font-bold">
+                            <Clock className="w-3 h-3" />
+                            <span>PENDIENTE DE PAGO</span>
+                          </span>
+                        )}
                       </div>
 
                       <div className="flex flex-wrap items-center gap-2 text-xs text-slate-500 mt-1">
@@ -3409,6 +3747,30 @@ export const ServiceOrdersView: React.FC = () => {
                     </div>
 
                     <button
+                      onClick={() =>
+                        handleOpenPaymentModal(
+                          order,
+                          paySummary.paymentStatus === 'PAGADO' ? 'ABONO' : 'ABONO'
+                        )
+                      }
+                      className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold shadow-xs cursor-pointer transition-colors ${
+                        paySummary.paymentStatus === 'PAGADO'
+                          ? 'bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-300'
+                          : 'bg-blue-600 hover:bg-blue-700 text-white'
+                      }`}
+                      title="Registrar abono parcial, marcar como pagado total o ver historial de pagos"
+                    >
+                      <DollarSign className="w-3.5 h-3.5" />
+                      <span>
+                        {paySummary.paymentStatus === 'PAGADO'
+                          ? 'Pagos (Pagado)'
+                          : paySummary.paymentStatus === 'ABONO'
+                          ? 'Abonar / Liquidar'
+                          : 'Registrar Abono / Pago'}
+                      </span>
+                    </button>
+
+                    <button
                       onClick={() => handleOpenEditModal(order)}
                       className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-amber-500 hover:bg-amber-400 text-slate-950 rounded-lg text-xs font-bold shadow-xs cursor-pointer transition-colors"
                       title="Editar orden: agregar repuestos o servicios a la orden guardada"
@@ -3417,20 +3779,18 @@ export const ServiceOrdersView: React.FC = () => {
                       <span>Editar Orden</span>
                     </button>
 
-                    {(order.status === 'CULMINADA' || order.status === 'ENTREGADA') && (
-                      <button
-                        onClick={() => {
-                          downloadServiceOrderPDF(order, settings).catch((err) =>
-                            console.warn('Error descargando factura PDF:', err)
-                          );
-                        }}
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-xs font-bold shadow-xs cursor-pointer transition-colors"
-                        title="Descargar Factura PDF con detalle de trabajo, datos de pago y QR Pago Móvil"
-                      >
-                        <FileDown className="w-3.5 h-3.5 text-amber-400" />
-                        <span>Factura PDF (QR)</span>
-                      </button>
-                    )}
+                    <button
+                      onClick={() => {
+                        downloadServiceOrderPDF(order, settings, products).catch((err) =>
+                          console.warn('Error descargando factura PDF:', err)
+                        );
+                      }}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-white rounded-lg text-xs font-bold shadow-xs cursor-pointer transition-colors"
+                      title="Descargar Factura PDF con fotos de repuestos, antes/después de tapicería, datos de pago y QR Pago Móvil"
+                    >
+                      <FileDown className="w-3.5 h-3.5 text-amber-400" />
+                      <span>Factura PDF (QR)</span>
+                    </button>
 
                     {order.assignedTechnician && (
                       <button
@@ -3581,16 +3941,57 @@ export const ServiceOrdersView: React.FC = () => {
                       </div>
                     </div>
 
-                    <div className="pt-2 border-t border-slate-200 mt-2">
+                    <div className="pt-2 border-t border-slate-200 mt-2 space-y-1">
                       <div className="flex justify-between items-baseline font-bold text-slate-900">
                         <span>Total USD:</span>
                         <span className="font-mono text-sm tabular-nums text-slate-950">
                           {formatUSD(order.totalCost)}
                         </span>
                       </div>
-                      <div className="flex justify-between items-baseline text-[11px] text-emerald-700 font-semibold mt-0.5">
+                      <div className="flex justify-between items-baseline text-[11px] text-emerald-700 font-semibold">
                         <span>Equiv. Bs (BCV):</span>
                         <span className="font-mono">{formatBs(totalBs)}</span>
+                      </div>
+
+                      {/* Payment Status Breakdown inside card */}
+                      <div
+                        className={`mt-2 pt-2 border-t text-[11px] space-y-0.5 ${
+                          paySummary.paymentStatus === 'PAGADO'
+                            ? 'border-emerald-200'
+                            : paySummary.paymentStatus === 'ABONO'
+                            ? 'border-blue-200'
+                            : 'border-slate-200'
+                        }`}
+                      >
+                        {paySummary.paymentStatus === 'PAGADO' ? (
+                          <div className="flex items-center justify-between font-bold text-emerald-700">
+                            <span className="inline-flex items-center gap-1">
+                              <CheckCircle2 className="w-3.5 h-3.5" />
+                              <span>Pagado en su totalidad</span>
+                            </span>
+                            <span className="font-mono">{formatUSD(paySummary.paidUSD)}</span>
+                          </div>
+                        ) : paySummary.paymentStatus === 'ABONO' ? (
+                          <>
+                            <div className="flex justify-between text-blue-700 font-semibold">
+                              <span>Total Abonado ({paySummary.paymentsCount}):</span>
+                              <span className="font-mono">
+                                {formatUSD(paySummary.paidUSD)} ({formatBs(paySummary.paidBs)})
+                              </span>
+                            </div>
+                            <div className="flex justify-between text-amber-800 font-bold">
+                              <span>Saldo Restante:</span>
+                              <span className="font-mono">
+                                {formatUSD(paySummary.remainingUSD)} ({formatBs(paySummary.remainingBs)})
+                              </span>
+                            </div>
+                          </>
+                        ) : (
+                          <div className="flex items-center justify-between text-rose-700 font-semibold">
+                            <span>Estado de Pago:</span>
+                            <span>Pendiente por pagar</span>
+                          </div>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -4423,6 +4824,316 @@ export const ServiceOrdersView: React.FC = () => {
                 </div>
               </div>
 
+              {/* Initial Payment Status (Pendiente / Dejó Abono / Pagado Total) — Shared for Motocicleta & Asiento */}
+              {(() => {
+                const draftTotalUSD =
+                  orderForm.selectedParts.reduce((s, p) => s + p.total, 0) +
+                  (orderForm.servicesList.length > 0
+                    ? orderForm.servicesList.reduce((s, srv) => s + srv.cost, 0)
+                    : Number(orderForm.laborCostUSD) || 0);
+                const draftTotalBs = Math.round(draftTotalUSD * rate * 100) / 100;
+                const rawAbonoInput = parseFloat(orderForm.initialPaymentAmount) || 0;
+                const abonoUSDPreview =
+                  orderForm.initialPaymentCurrency === 'BS'
+                    ? Math.round((rawAbonoInput / (rate || 1)) * 100) / 100
+                    : Math.round(rawAbonoInput * 100) / 100;
+                const abonoBsPreview =
+                  orderForm.initialPaymentCurrency === 'BS'
+                    ? Math.round(rawAbonoInput * 100) / 100
+                    : Math.round(rawAbonoInput * rate * 100) / 100;
+                const remainingPreviewUSD = Math.max(0, Math.round((draftTotalUSD - abonoUSDPreview) * 100) / 100);
+
+                return (
+                  <div className="space-y-3 pb-3 border-b border-slate-200">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5">
+                      <h4 className="font-bold text-slate-900 uppercase tracking-wider text-[11px] flex items-center gap-1.5">
+                        <Wallet className="w-3.5 h-3.5 text-emerald-600" />
+                        <span>Estado de Pago Inicial (Abono o Pago Total)</span>
+                      </h4>
+                      <span className="text-[11px] text-slate-500">
+                        Aplica para Taller de Mecánica y Tapicería
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-3 gap-2">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setOrderForm((prev) => ({ ...prev, initialPaymentMode: 'PENDIENTE' }))
+                        }
+                        className={`py-2 px-3 rounded-xl border text-xs font-bold transition-colors cursor-pointer flex items-center justify-center gap-1.5 ${
+                          orderForm.initialPaymentMode === 'PENDIENTE'
+                            ? 'bg-slate-900 text-white border-slate-900 shadow-xs'
+                            : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
+                        }`}
+                      >
+                        <Clock className="w-3.5 h-3.5" />
+                        <span>Pendiente</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setOrderForm((prev) => ({ ...prev, initialPaymentMode: 'ABONO' }))
+                        }
+                        className={`py-2 px-3 rounded-xl border text-xs font-bold transition-colors cursor-pointer flex items-center justify-center gap-1.5 ${
+                          orderForm.initialPaymentMode === 'ABONO'
+                            ? 'bg-blue-600 text-white border-blue-600 shadow-xs'
+                            : 'bg-white text-blue-700 border-blue-200 hover:bg-blue-50'
+                        }`}
+                      >
+                        <Wallet className="w-3.5 h-3.5" />
+                        <span>Dejó Abono</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setOrderForm((prev) => ({ ...prev, initialPaymentMode: 'PAGADO' }))
+                        }
+                        className={`py-2 px-3 rounded-xl border text-xs font-bold transition-colors cursor-pointer flex items-center justify-center gap-1.5 ${
+                          orderForm.initialPaymentMode === 'PAGADO'
+                            ? 'bg-emerald-600 text-white border-emerald-600 shadow-xs'
+                            : 'bg-white text-emerald-700 border-emerald-200 hover:bg-emerald-50'
+                        }`}
+                      >
+                        <CheckCircle2 className="w-3.5 h-3.5" />
+                        <span>Pagado Total</span>
+                      </button>
+                    </div>
+
+                    {orderForm.initialPaymentMode !== 'PENDIENTE' && (
+                      <div
+                        className={`p-3.5 rounded-xl border space-y-3 ${
+                          orderForm.initialPaymentMode === 'PAGADO'
+                            ? 'bg-emerald-50/70 border-emerald-200'
+                            : 'bg-blue-50/70 border-blue-200'
+                        }`}
+                      >
+                        {orderForm.initialPaymentMode === 'ABONO' ? (
+                          <div className="space-y-2.5">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <span className="font-bold text-slate-800 text-xs">
+                                Moneda del Abono Inicial:
+                              </span>
+                              <div className="inline-flex bg-white border border-blue-200 rounded-lg p-0.5">
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setOrderForm((prev) => ({
+                                      ...prev,
+                                      initialPaymentCurrency: 'USD',
+                                      initialPaymentMethod: isBsPaymentMethod(prev.initialPaymentMethod)
+                                        ? 'Dólares Efectivo (USD)'
+                                        : prev.initialPaymentMethod,
+                                    }))
+                                  }
+                                  className={`px-3 py-1 rounded-md text-[11px] font-bold cursor-pointer ${
+                                    orderForm.initialPaymentCurrency === 'USD'
+                                      ? 'bg-emerald-600 text-white'
+                                      : 'text-slate-600 hover:text-slate-900'
+                                  }`}
+                                >
+                                  Divisas ($ USD)
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setOrderForm((prev) => ({
+                                      ...prev,
+                                      initialPaymentCurrency: 'BS',
+                                      initialPaymentMethod: !isBsPaymentMethod(prev.initialPaymentMethod)
+                                        ? 'Pago Móvil'
+                                        : prev.initialPaymentMethod,
+                                    }))
+                                  }
+                                  className={`px-3 py-1 rounded-md text-[11px] font-bold cursor-pointer ${
+                                    orderForm.initialPaymentCurrency === 'BS'
+                                      ? 'bg-blue-600 text-white'
+                                      : 'text-slate-600 hover:text-slate-900'
+                                  }`}
+                                >
+                                  Bolívares (Bs)
+                                </button>
+                              </div>
+                            </div>
+
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                              <div>
+                                <label className="block font-semibold text-slate-700 mb-1">
+                                  {orderForm.initialPaymentCurrency === 'BS'
+                                    ? 'Monto Abonado (Bs.) *'
+                                    : 'Monto Abonado ($ USD) *'}
+                                </label>
+                                <input
+                                  type="number"
+                                  step="any"
+                                  min="0"
+                                  value={orderForm.initialPaymentAmount}
+                                  onChange={(e) =>
+                                    setOrderForm((prev) => ({
+                                      ...prev,
+                                      initialPaymentAmount: e.target.value,
+                                    }))
+                                  }
+                                  placeholder={
+                                    orderForm.initialPaymentCurrency === 'BS' ? 'Ej. 1500.00' : 'Ej. 10.00'
+                                  }
+                                  className="w-full p-2.5 rounded-lg border border-blue-300 bg-white font-mono font-bold text-sm"
+                                />
+                                {rawAbonoInput > 0 && (
+                                  <span className="text-[11px] font-mono text-blue-800 font-semibold block mt-1">
+                                    {orderForm.initialPaymentCurrency === 'BS'
+                                      ? `Equiv. BCV: ${formatUSD(abonoUSDPreview)} · Resta: ${formatUSD(remainingPreviewUSD)}`
+                                      : `Equiv. BCV: ${formatBs(abonoBsPreview)} · Resta: ${formatUSD(remainingPreviewUSD)}`}
+                                  </span>
+                                )}
+                              </div>
+
+                              <div>
+                                <label className="block font-semibold text-slate-700 mb-1">
+                                  Método de Pago *
+                                </label>
+                                <select
+                                  value={orderForm.initialPaymentMethod}
+                                  onChange={(e) => {
+                                    const nextMethod = e.target.value as PaymentMethod;
+                                    setOrderForm((prev) => ({
+                                      ...prev,
+                                      initialPaymentMethod: nextMethod,
+                                      initialPaymentCurrency: isBsPaymentMethod(nextMethod) ? 'BS' : 'USD',
+                                    }));
+                                  }}
+                                  className="w-full p-2.5 rounded-lg border border-slate-300 bg-white font-semibold text-xs"
+                                >
+                                  {SERVICE_PAYMENT_METHODS.map((m) => (
+                                    <option key={m} value={m}>
+                                      {m}
+                                    </option>
+                                  ))}
+                                </select>
+                              </div>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="space-y-2.5">
+                            <div className="flex flex-wrap items-center justify-between gap-2 bg-white border border-emerald-200 rounded-lg px-3 py-2">
+                              <span className="font-bold text-emerald-800 text-xs">
+                                Se registrará como PAGADO EN SU TOTALIDAD:
+                              </span>
+                              <span className="font-mono font-bold text-emerald-900 text-xs">
+                                {formatUSD(draftTotalUSD)} ({formatBs(draftTotalBs)})
+                              </span>
+                            </div>
+
+                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                              <div>
+                                <label className="block font-semibold text-slate-700 mb-1">
+                                  Método de Pago *
+                                </label>
+                                <select
+                                  value={orderForm.initialPaymentMethod}
+                                  onChange={(e) =>
+                                    setOrderForm((prev) => ({
+                                      ...prev,
+                                      initialPaymentMethod: e.target.value as PaymentMethod,
+                                    }))
+                                  }
+                                  className="w-full p-2.5 rounded-lg border border-slate-300 bg-white font-semibold text-xs"
+                                >
+                                  {SERVICE_PAYMENT_METHODS.map((m) => (
+                                    <option key={m} value={m}>
+                                      {m}
+                                    </option>
+                                  ))}
+                                </select>
+                              </div>
+
+                              <div>
+                                <label className="block font-semibold text-slate-700 mb-1">
+                                  Referencia / Comprobante (Opcional)
+                                </label>
+                                <input
+                                  type="text"
+                                  value={orderForm.initialPaymentReference}
+                                  onChange={(e) =>
+                                    setOrderForm((prev) => ({
+                                      ...prev,
+                                      initialPaymentReference: e.target.value,
+                                    }))
+                                  }
+                                  placeholder="Ej. Ref. 049218"
+                                  className="w-full p-2.5 rounded-lg border border-slate-300 bg-white text-xs font-mono"
+                                />
+                              </div>
+                            </div>
+                          </div>
+                        )}
+
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                          {orderForm.initialPaymentMethod === 'Pago Móvil' && (
+                            <div>
+                              <label className="block font-semibold text-slate-700 mb-1">
+                                Cuenta Destino Pago Móvil
+                              </label>
+                              <select
+                                value={orderForm.initialPaymentPagoMovilAccount}
+                                onChange={(e) =>
+                                  setOrderForm((prev) => ({
+                                    ...prev,
+                                    initialPaymentPagoMovilAccount: e.target
+                                      .value as PagoMovilAccountOption,
+                                  }))
+                                }
+                                className="w-full p-2 rounded-lg border border-slate-300 bg-white text-xs font-semibold"
+                              >
+                                <option value="BANESCO_PERSONAL">Banesco Personal</option>
+                                <option value="PROVINCIAL">Provincial</option>
+                              </select>
+                            </div>
+                          )}
+
+                          {orderForm.initialPaymentMode === 'ABONO' && (
+                            <div>
+                              <label className="block font-semibold text-slate-700 mb-1">
+                                Referencia / Nota (Opcional)
+                              </label>
+                              <input
+                                type="text"
+                                value={orderForm.initialPaymentReference}
+                                onChange={(e) =>
+                                  setOrderForm((prev) => ({
+                                    ...prev,
+                                    initialPaymentReference: e.target.value,
+                                  }))
+                                }
+                                placeholder="Ej. Ref. 049218 o nota del abono"
+                                className="w-full p-2 rounded-lg border border-slate-300 bg-white text-xs font-mono"
+                              />
+                            </div>
+                          )}
+                        </div>
+
+                        <label className="inline-flex items-center gap-2 text-[11px] font-semibold text-slate-700 cursor-pointer select-none">
+                          <input
+                            type="checkbox"
+                            checked={orderForm.initialPaymentSyncTreasury}
+                            onChange={(e) =>
+                              setOrderForm((prev) => ({
+                                ...prev,
+                                initialPaymentSyncTreasury: e.target.checked,
+                              }))
+                            }
+                            className="w-3.5 h-3.5 rounded accent-emerald-600 cursor-pointer"
+                          />
+                          <span>Registrar automáticamente este ingreso en Tesorería</span>
+                        </label>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
+
               {/* Notify technician toggle */}
               {orderForm.assignedTechnician.trim() && (
                 <label className="flex items-center gap-2.5 p-3 rounded-xl bg-amber-50 border border-amber-200 cursor-pointer">
@@ -4573,6 +5284,68 @@ export const ServiceOrdersView: React.FC = () => {
                   </button>
                 </div>
               )}
+
+              {/* Payment Status Banner inside Edit Modal */}
+              {(() => {
+                const liveOrder = serviceOrders.find((o) => o.id === editForm.id);
+                if (!liveOrder) return null;
+                const editLiveTotal =
+                  editForm.selectedParts.reduce((s, p) => s + p.total, 0) +
+                  (editForm.servicesList.length > 0
+                    ? editForm.servicesList.reduce((s, srv) => s + srv.cost, 0)
+                    : Number(editForm.laborCost || 0));
+                const editPaySummary = getServiceOrderPaymentSummary(
+                  { ...liveOrder, totalCost: editLiveTotal, totalCostBs: editLiveTotal * rate },
+                  rate
+                );
+                return (
+                  <div
+                    className={`p-3.5 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
+                      editPaySummary.paymentStatus === 'PAGADO'
+                        ? 'bg-emerald-50 border-emerald-200'
+                        : editPaySummary.paymentStatus === 'ABONO'
+                        ? 'bg-blue-50 border-blue-200'
+                        : 'bg-slate-50 border-slate-200'
+                    }`}
+                  >
+                    <div className="space-y-0.5">
+                      <div className="flex items-center gap-2">
+                        <span className="font-bold text-slate-900 text-xs">
+                          Estado de Pago de la Orden:
+                        </span>
+                        {editPaySummary.paymentStatus === 'PAGADO' ? (
+                          <span className="px-2 py-0.5 rounded bg-emerald-600 text-white font-bold text-[10px]">
+                            PAGADO TOTAL
+                          </span>
+                        ) : editPaySummary.paymentStatus === 'ABONO' ? (
+                          <span className="px-2 py-0.5 rounded bg-blue-600 text-white font-bold text-[10px]">
+                            CON ABONO ({editPaySummary.paymentsCount})
+                          </span>
+                        ) : (
+                          <span className="px-2 py-0.5 rounded bg-rose-600 text-white font-bold text-[10px]">
+                            PENDIENTE DE PAGO
+                          </span>
+                        )}
+                      </div>
+                      <p className="text-[11px] text-slate-600 font-mono">
+                        Abonado: <strong>{formatUSD(editPaySummary.paidUSD)}</strong> ({formatBs(editPaySummary.paidBs)}) ·
+                        Saldo Restante:{' '}
+                        <strong className={editPaySummary.remainingUSD > 0 ? 'text-amber-700' : 'text-emerald-700'}>
+                          {formatUSD(editPaySummary.remainingUSD)} ({formatBs(editPaySummary.remainingBs)})
+                        </strong>
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleOpenPaymentModal(liveOrder, 'ABONO')}
+                      className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2 rounded-lg bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs shadow-xs cursor-pointer shrink-0"
+                    >
+                      <DollarSign className="w-3.5 h-3.5" />
+                      <span>Gestionar Abonos / Pago Total</span>
+                    </button>
+                  </div>
+                );
+              })()}
 
               {/* SECTION 0 (Only for ASIENTO): Fotos del Asiento (Recibido y Entregado) */}
               {editForm.entryType === 'ASIENTO' && (
@@ -5334,6 +6107,539 @@ export const ServiceOrdersView: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* Modal: Registrar Abonos y Pago Total de Orden de Servicio */}
+      {paymentModalOrder && (() => {
+        const ordRate = paymentModalOrder.bcvRate || rate;
+        const paySummary = getServiceOrderPaymentSummary(paymentModalOrder, ordRate);
+        const paymentsHistory = Array.isArray(paymentModalOrder.payments)
+          ? paymentModalOrder.payments
+          : [];
+        const rawInputVal = parseFloat(paymentAmountInput) || 0;
+        const convertedUSD =
+          paymentCurrencyMode === 'BS'
+            ? Math.round((rawInputVal / (rate || 1)) * 100) / 100
+            : Math.round(rawInputVal * 100) / 100;
+        const convertedBs =
+          paymentCurrencyMode === 'BS'
+            ? Math.round(rawInputVal * 100) / 100
+            : Math.round(rawInputVal * rate * 100) / 100;
+
+        return (
+          <div className="fixed inset-0 z-[65] flex items-center justify-center p-4 bg-slate-900/70 backdrop-blur-xs">
+            <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-2xl overflow-hidden flex flex-col max-h-[92vh] animate-in fade-in zoom-in-95 duration-150">
+              {/* Header */}
+              <div className="p-4 sm:p-5 bg-slate-900 text-white flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2.5 min-w-0">
+                  <div className="w-9 h-9 rounded-xl bg-emerald-500/20 border border-emerald-400/40 text-emerald-300 flex items-center justify-center shrink-0">
+                    <Wallet className="w-5 h-5" />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h3 className="font-bold text-sm sm:text-base font-display truncate">
+                        Pagos y Abonos · Orden #{paymentModalOrder.orderNumber}
+                      </h3>
+                      {paySummary.paymentStatus === 'PAGADO' ? (
+                        <span className="px-2 py-0.5 rounded bg-emerald-500 text-slate-950 font-bold text-[10px]">
+                          PAGADO TOTAL
+                        </span>
+                      ) : paySummary.paymentStatus === 'ABONO' ? (
+                        <span className="px-2 py-0.5 rounded bg-blue-500 text-white font-bold text-[10px]">
+                          CON ABONO
+                        </span>
+                      ) : (
+                        <span className="px-2 py-0.5 rounded bg-rose-500 text-white font-bold text-[10px]">
+                          PENDIENTE
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-xs text-slate-300 truncate">
+                      {paymentModalOrder.customerName} ·{' '}
+                      {paymentModalOrder.entryType === 'ASIENTO'
+                        ? `Asiento (${paymentModalOrder.motorcycle.model})`
+                        : `${paymentModalOrder.motorcycle.brand} ${paymentModalOrder.motorcycle.model} (${paymentModalOrder.motorcycle.plate})`}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setPaymentModalOrderId(null)}
+                  className="p-1.5 text-slate-400 hover:text-white rounded-lg hover:bg-white/10 cursor-pointer shrink-0"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              {/* Body */}
+              <div className="p-4 sm:p-5 overflow-y-auto space-y-5 text-xs">
+                {/* Summary 3-card strip */}
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div className="p-3 rounded-xl bg-slate-50 border border-slate-200">
+                    <span className="text-[10px] font-bold uppercase text-slate-400 block">
+                      Total de la Orden
+                    </span>
+                    <span className="text-base font-bold font-mono text-slate-950 block mt-0.5">
+                      {formatUSD(paySummary.totalUSD)}
+                    </span>
+                    <span className="text-[11px] font-mono text-slate-600">
+                      {formatBs(paySummary.totalBs)}
+                    </span>
+                  </div>
+
+                  <div className="p-3 rounded-xl bg-emerald-50 border border-emerald-200">
+                    <span className="text-[10px] font-bold uppercase text-emerald-700 block">
+                      Total Abonado / Pagado
+                    </span>
+                    <span className="text-base font-bold font-mono text-emerald-900 block mt-0.5">
+                      {formatUSD(paySummary.paidUSD)}
+                    </span>
+                    <span className="text-[11px] font-mono text-emerald-700">
+                      {formatBs(paySummary.paidBs)}
+                    </span>
+                  </div>
+
+                  <div
+                    className={`p-3 rounded-xl border ${
+                      paySummary.remainingUSD > 0
+                        ? 'bg-amber-50 border-amber-200'
+                        : 'bg-emerald-50 border-emerald-200'
+                    }`}
+                  >
+                    <span
+                      className={`text-[10px] font-bold uppercase block ${
+                        paySummary.remainingUSD > 0 ? 'text-amber-700' : 'text-emerald-700'
+                      }`}
+                    >
+                      Saldo Restante
+                    </span>
+                    <span
+                      className={`text-base font-bold font-mono block mt-0.5 ${
+                        paySummary.remainingUSD > 0 ? 'text-amber-950' : 'text-emerald-900'
+                      }`}
+                    >
+                      {formatUSD(paySummary.remainingUSD)}
+                    </span>
+                    <span
+                      className={`text-[11px] font-mono ${
+                        paySummary.remainingUSD > 0 ? 'text-amber-700' : 'text-emerald-700'
+                      }`}
+                    >
+                      {formatBs(paySummary.remainingBs)}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Form to record new Abono or Mark as Fully Paid */}
+                {paySummary.paymentStatus === 'PAGADO' ? (
+                  <div className="p-4 rounded-xl bg-emerald-50 border border-emerald-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-emerald-900">
+                    <div className="flex items-center gap-3">
+                      <CheckCircle2 className="w-6 h-6 text-emerald-600 shrink-0" />
+                      <div>
+                        <p className="font-bold text-sm">
+                          Esta orden está pagada en su totalidad.
+                        </p>
+                        <p className="text-[11px] text-emerald-700">
+                          {paymentsHistory.length > 0
+                            ? 'Si necesitas corregir algún abono o revertir el pago, puedes eliminarlo en el historial inferior.'
+                            : 'Puedes revertir el estado a pendiente si necesitas registrar un abono diferente.'}
+                        </p>
+                      </div>
+                    </div>
+                    {paymentsHistory.length === 0 && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          updateServiceOrder(paymentModalOrder.id, {
+                            paymentStatus: 'PENDIENTE',
+                            paidAmountUSD: 0,
+                            paidAmountBs: 0,
+                          });
+                        }}
+                        className="px-3 py-1.5 rounded-lg border border-emerald-300 bg-white hover:bg-emerald-100 text-emerald-800 font-bold text-xs cursor-pointer shrink-0"
+                      >
+                        Marcar como Pendiente
+                      </button>
+                    )}
+                  </div>
+                ) : (
+                  <form
+                    onSubmit={handleSubmitOrderPayment}
+                    className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-3.5"
+                  >
+                    {/* Action mode switch */}
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setPaymentModalMode('ABONO');
+                          setPaymentModalError(null);
+                        }}
+                        className={`py-2 px-3 rounded-xl border text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer transition-colors ${
+                          paymentModalMode === 'ABONO'
+                            ? 'bg-blue-600 text-white border-blue-600 shadow-xs'
+                            : 'bg-white text-slate-700 border-slate-200 hover:bg-blue-50'
+                        }`}
+                      >
+                        <Wallet className="w-3.5 h-3.5" />
+                        <span>Registrar Abono Parcial</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setPaymentModalMode('PAGADO');
+                          setPaymentModalError(null);
+                          setPaymentAmountInput(
+                            paymentCurrencyMode === 'BS'
+                              ? paySummary.remainingBs > 0
+                                ? paySummary.remainingBs.toFixed(2)
+                                : ''
+                              : paySummary.remainingUSD > 0
+                              ? paySummary.remainingUSD.toFixed(2)
+                              : ''
+                          );
+                        }}
+                        className={`py-2 px-3 rounded-xl border text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer transition-colors ${
+                          paymentModalMode === 'PAGADO'
+                            ? 'bg-emerald-600 text-white border-emerald-600 shadow-xs'
+                            : 'bg-white text-emerald-700 border-emerald-200 hover:bg-emerald-50'
+                        }`}
+                      >
+                        <CheckCircle2 className="w-3.5 h-3.5" />
+                        <span>Marcar Pagado Total</span>
+                      </button>
+                    </div>
+
+                    {paymentModalError && (
+                      <div className="p-2.5 rounded-lg bg-rose-50 border border-rose-200 text-rose-800 text-[11px] font-medium flex items-center gap-2">
+                        <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+                        <span>{paymentModalError}</span>
+                      </div>
+                    )}
+
+                    {/* Currency selector */}
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="font-bold text-slate-700 text-xs">
+                        Moneda del pago (Tasa BCV: Bs. {rate.toFixed(2)}):
+                      </span>
+                      <div className="inline-flex bg-white border border-slate-200 rounded-lg p-0.5">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setPaymentCurrencyMode('USD');
+                            if (isBsPaymentMethod(paymentMethod)) {
+                              setPaymentMethod('Dólares Efectivo (USD)');
+                            }
+                            if (paymentModalMode === 'PAGADO' && paySummary.remainingUSD > 0) {
+                              setPaymentAmountInput(paySummary.remainingUSD.toFixed(2));
+                            }
+                          }}
+                          className={`px-3 py-1 rounded-md text-[11px] font-bold cursor-pointer ${
+                            paymentCurrencyMode === 'USD'
+                              ? 'bg-emerald-600 text-white'
+                              : 'text-slate-600 hover:text-slate-900'
+                          }`}
+                        >
+                          Divisas ($ USD)
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setPaymentCurrencyMode('BS');
+                            if (!isBsPaymentMethod(paymentMethod)) {
+                              setPaymentMethod('Pago Móvil');
+                            }
+                            if (paymentModalMode === 'PAGADO' && paySummary.remainingBs > 0) {
+                              setPaymentAmountInput(paySummary.remainingBs.toFixed(2));
+                            }
+                          }}
+                          className={`px-3 py-1 rounded-md text-[11px] font-bold cursor-pointer ${
+                            paymentCurrencyMode === 'BS'
+                              ? 'bg-blue-600 text-white'
+                              : 'text-slate-600 hover:text-slate-900'
+                          }`}
+                        >
+                          Bolívares (Bs)
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div>
+                        <label className="block font-semibold text-slate-700 mb-1">
+                          {paymentCurrencyMode === 'BS'
+                            ? paymentModalMode === 'PAGADO'
+                              ? 'Monto a Liquidar (Bs.)'
+                              : 'Monto del Abono (Bs.) *'
+                            : paymentModalMode === 'PAGADO'
+                            ? 'Monto a Liquidar ($ USD)'
+                            : 'Monto del Abono ($ USD) *'}
+                        </label>
+                        <input
+                          type="number"
+                          step="any"
+                          min="0"
+                          value={paymentAmountInput}
+                          onChange={(e) => setPaymentAmountInput(e.target.value)}
+                          placeholder={
+                            paymentCurrencyMode === 'BS'
+                              ? paySummary.remainingBs.toFixed(2)
+                              : paySummary.remainingUSD.toFixed(2)
+                          }
+                          className="w-full p-2.5 rounded-lg border border-slate-300 bg-white font-mono font-bold text-sm focus:outline-hidden focus:border-blue-500"
+                        />
+                        {rawInputVal > 0 && (
+                          <span className="text-[11px] font-mono text-emerald-700 font-semibold block mt-1">
+                            {paymentCurrencyMode === 'BS'
+                              ? `Equiv. BCV: ${formatUSD(convertedUSD)}`
+                              : `Equiv. BCV: ${formatBs(convertedBs)}`}
+                          </span>
+                        )}
+                      </div>
+
+                      <div>
+                        <label className="block font-semibold text-slate-700 mb-1">
+                          Método de Pago *
+                        </label>
+                        <select
+                          value={paymentMethod}
+                          onChange={(e) => {
+                            const m = e.target.value as PaymentMethod;
+                            setPaymentMethod(m);
+                            const nextCurr: PaymentCurrencyMode = isBsPaymentMethod(m) ? 'BS' : 'USD';
+                            setPaymentCurrencyMode(nextCurr);
+                            if (paymentModalMode === 'PAGADO') {
+                              setPaymentAmountInput(
+                                nextCurr === 'BS'
+                                  ? paySummary.remainingBs > 0
+                                    ? paySummary.remainingBs.toFixed(2)
+                                    : ''
+                                  : paySummary.remainingUSD > 0
+                                  ? paySummary.remainingUSD.toFixed(2)
+                                  : ''
+                              );
+                            }
+                          }}
+                          className="w-full p-2.5 rounded-lg border border-slate-300 bg-white font-semibold text-xs"
+                        >
+                          {SERVICE_PAYMENT_METHODS.map((m) => (
+                            <option key={m} value={m}>
+                              {m}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      {paymentMethod === 'Pago Móvil' && (
+                        <div>
+                          <label className="block font-semibold text-slate-700 mb-1">
+                            Cuenta Destino Pago Móvil
+                          </label>
+                          <select
+                            value={paymentPagoMovilAccount}
+                            onChange={(e) =>
+                              setPaymentPagoMovilAccount(e.target.value as PagoMovilAccountOption)
+                            }
+                            className="w-full p-2 rounded-lg border border-slate-300 bg-white text-xs font-semibold"
+                          >
+                            <option value="BANESCO_PERSONAL">Banesco Personal</option>
+                            <option value="PROVINCIAL">Provincial</option>
+                          </select>
+                        </div>
+                      )}
+
+                      <div>
+                        <label className="block font-semibold text-slate-700 mb-1">
+                          Referencia / Comprobante (Opcional)
+                        </label>
+                        <input
+                          type="text"
+                          value={paymentReference}
+                          onChange={(e) => setPaymentReference(e.target.value)}
+                          placeholder="Ej. Ref. 049218"
+                          className="w-full p-2 rounded-lg border border-slate-300 bg-white text-xs font-mono"
+                        />
+                      </div>
+
+                      <div className={paymentMethod === 'Pago Móvil' ? 'sm:col-span-2' : ''}>
+                        <label className="block font-semibold text-slate-700 mb-1">
+                          Nota / Observación (Opcional)
+                        </label>
+                        <input
+                          type="text"
+                          value={paymentNotes}
+                          onChange={(e) => setPaymentNotes(e.target.value)}
+                          placeholder="Ej. Abono en efectivo en mostrador, pago final al retirar..."
+                          className="w-full p-2 rounded-lg border border-slate-300 bg-white text-xs"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+                      <label className="inline-flex items-center gap-2 text-[11px] font-semibold text-slate-700 cursor-pointer select-none">
+                        <input
+                          type="checkbox"
+                          checked={paymentSyncTreasury}
+                          onChange={(e) => setPaymentSyncTreasury(e.target.checked)}
+                          className="w-3.5 h-3.5 rounded accent-emerald-600 cursor-pointer"
+                        />
+                        <span>Registrar ingreso automáticamente en Tesorería</span>
+                      </label>
+
+                      <button
+                        type="submit"
+                        className={`px-4 py-2 rounded-xl font-bold text-xs text-white shadow-xs cursor-pointer flex items-center gap-1.5 ${
+                          paymentModalMode === 'PAGADO'
+                            ? 'bg-emerald-600 hover:bg-emerald-700'
+                            : 'bg-blue-600 hover:bg-blue-700'
+                        }`}
+                      >
+                        {paymentModalMode === 'PAGADO' ? (
+                          <>
+                            <CheckCircle2 className="w-4 h-4" />
+                            <span>Confirmar Pago Total</span>
+                          </>
+                        ) : (
+                          <>
+                            <Plus className="w-4 h-4" />
+                            <span>Guardar Abono</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </form>
+                )}
+
+                {/* Payment History */}
+                <div className="space-y-2">
+                  <h4 className="font-bold text-slate-900 uppercase tracking-wider text-[11px] flex items-center gap-1.5">
+                    <CreditCard className="w-3.5 h-3.5 text-slate-500" />
+                    <span>Historial de Abonos y Pagos ({paymentsHistory.length})</span>
+                  </h4>
+
+                  {paymentsHistory.length === 0 ? (
+                    <div className="p-4 rounded-xl border border-dashed border-slate-200 text-center text-slate-400 text-xs">
+                      Aún no se han registrado abonos ni pagos en esta orden.
+                    </div>
+                  ) : (
+                    <div className="border border-slate-200 rounded-xl overflow-hidden divide-y divide-slate-100">
+                      {paymentsHistory.map((pay) => (
+                        <div
+                          key={pay.id}
+                          className="p-3 bg-white hover:bg-slate-50 flex flex-col sm:flex-row sm:items-center justify-between gap-2"
+                        >
+                          <div className="space-y-0.5 min-w-0">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="font-mono font-bold text-emerald-800 text-xs">
+                                {pay.currencyMode === 'BS'
+                                  ? `${formatBs(pay.amountBs)} (${formatUSD(pay.amountUSD)})`
+                                  : `${formatUSD(pay.amountUSD)} (${formatBs(pay.amountBs)})`}
+                              </span>
+                              <span className="px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 font-semibold text-[10px]">
+                                {pay.paymentMethod}
+                              </span>
+                              {pay.treasuryAccountName && (
+                                <span className="px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200 font-semibold text-[10px]">
+                                  Tesorería: {pay.treasuryAccountName}
+                                </span>
+                              )}
+                            </div>
+                            <div className="flex flex-wrap items-center gap-2 text-[11px] text-slate-500">
+                              <span>
+                                {new Date(pay.date).toLocaleString('es-VE', {
+                                  dateStyle: 'short',
+                                  timeStyle: 'short',
+                                })}
+                              </span>
+                              {pay.reference && (
+                                <>
+                                  <span>·</span>
+                                  <span className="font-mono">Ref: {pay.reference}</span>
+                                </>
+                              )}
+                              {pay.notes && (
+                                <>
+                                  <span>·</span>
+                                  <span className="italic">{pay.notes}</span>
+                                </>
+                              )}
+                            </div>
+                          </div>
+
+                          <div className="shrink-0">
+                            {confirmDeletePaymentId === pay.id ? (
+                              <div className="inline-flex items-center gap-1 bg-rose-50 border border-rose-200 p-1 rounded-lg">
+                                <span className="text-[10px] text-rose-700 font-semibold px-1">
+                                  ¿Eliminar?
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => handleDeleteOrderPayment(paymentModalOrder.id, pay.id)}
+                                  className="px-2 py-0.5 bg-rose-600 text-white rounded text-[10px] font-bold cursor-pointer"
+                                >
+                                  Sí
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setConfirmDeletePaymentId(null)}
+                                  className="p-0.5 text-slate-500 hover:text-slate-800 cursor-pointer"
+                                >
+                                  <X className="w-3 h-3" />
+                                </button>
+                              </div>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => setConfirmDeletePaymentId(pay.id)}
+                                className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg cursor-pointer transition-colors"
+                                title="Eliminar pago y revertir movimiento de tesorería"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Footer */}
+              <div className="px-4 py-3 bg-slate-50 border-t border-slate-200 flex items-center justify-between gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const { message, url } = buildServiceStatusWhatsAppMessage(
+                      paymentModalOrder,
+                      settings
+                    );
+                    setWhatsappModalData({
+                      title: `Estado de Pago Orden #${paymentModalOrder.orderNumber}`,
+                      message,
+                      url,
+                      phone: paymentModalOrder.customerPhone,
+                      recipientName: paymentModalOrder.customerName,
+                    });
+                  }}
+                  className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs cursor-pointer"
+                >
+                  <MessageSquare className="w-3.5 h-3.5" />
+                  <span>Enviar Estado por WhatsApp</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPaymentModalOrderId(null)}
+                  className="px-4 py-2 rounded-lg border border-slate-200 bg-white hover:bg-slate-100 text-slate-700 font-semibold text-xs cursor-pointer"
+                >
+                  Cerrar
+                </button>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Modal: Vista Ampliada de Foto del Asiento */}
       {lightboxPhoto && (

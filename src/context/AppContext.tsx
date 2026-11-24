@@ -4,6 +4,9 @@ import {
   Customer,
   Sale,
   ServiceOrder,
+  ServiceOrderPaymentStatus,
+  ServiceOrderPaymentRecord,
+  getServiceOrderPaymentSummary,
   OnlineOrder,
   BusinessSettings,
   SaleItem,
@@ -348,6 +351,17 @@ interface AppContextType {
     orderData: Omit<ServiceOrder, 'id' | 'orderNumber' | 'createdAt' | 'updatedAt'> & {
       customerCity?: string;
       customerAddress?: string;
+      initialPayment?: {
+        mode: 'PENDIENTE' | 'ABONO' | 'PAGADO';
+        amountUSD?: number;
+        amountBs?: number;
+        currencyMode?: PaymentCurrencyMode;
+        paymentMethod: PaymentMethod;
+        pagoMovilAccount?: PagoMovilAccountOption;
+        reference?: string;
+        notes?: string;
+        syncToTreasury?: boolean;
+      };
     }
   ) => ServiceOrder;
   updateServiceOrderStatus: (id: string, newStatus: ServiceOrderStatus, notes?: string) => ServiceOrder | undefined;
@@ -355,6 +369,21 @@ interface AppContextType {
     id: string,
     updates: Partial<ServiceOrder> & { customerCity?: string; customerAddress?: string }
   ) => ServiceOrder | undefined;
+  recordServiceOrderPayment: (
+    orderId: string,
+    payment: {
+      amountUSD: number;
+      amountBs?: number;
+      currencyMode?: PaymentCurrencyMode;
+      paymentMethod: PaymentMethod;
+      pagoMovilAccount?: PagoMovilAccountOption;
+      reference?: string;
+      notes?: string;
+      syncToTreasury?: boolean;
+      markAsFullPayment?: boolean;
+    }
+  ) => { updatedOrder: ServiceOrder; paymentRecord: ServiceOrderPaymentRecord } | null;
+  deleteServiceOrderPayment: (orderId: string, paymentId: string) => ServiceOrder | undefined;
   deleteServiceOrder: (id: string, restoreStock?: boolean) => void;
 
   // Online Store Orders
@@ -5946,9 +5975,20 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     orderData: Omit<ServiceOrder, 'id' | 'orderNumber' | 'createdAt' | 'updatedAt'> & {
       customerCity?: string;
       customerAddress?: string;
+      initialPayment?: {
+        mode: 'PENDIENTE' | 'ABONO' | 'PAGADO';
+        amountUSD?: number;
+        amountBs?: number;
+        currencyMode?: PaymentCurrencyMode;
+        paymentMethod: PaymentMethod;
+        pagoMovilAccount?: PagoMovilAccountOption;
+        reference?: string;
+        notes?: string;
+        syncToTreasury?: boolean;
+      };
     }
   ): ServiceOrder => {
-    const { customerCity, customerAddress, ...serviceOrderFields } = orderData;
+    const { customerCity, customerAddress, initialPayment, ...serviceOrderFields } = orderData;
     const customer = ensureCustomer(
       serviceOrderFields.customerName,
       serviceOrderFields.customerPhone,
@@ -5982,12 +6022,100 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     }
 
     const year = new Date().getFullYear();
+    const orderId = `ord-${Date.now()}`;
     const orderNum = `ORD-${year}-${String(serviceOrders.length + 1).padStart(4, '0')}`;
-    const rate = settings.bcvRate;
+    const rate = settingsRef.current.bcvRate || settings.bcvRate;
+    const totalCostUSD = Math.max(0, Math.round((Number(serviceOrderFields.totalCost) || 0) * 100) / 100);
+    const totalCostBs = Math.round(totalCostUSD * rate * 100) / 100;
+
+    let paymentStatus: ServiceOrderPaymentStatus = serviceOrderFields.paymentStatus || 'PENDIENTE';
+    let paidAmountUSD = Number(serviceOrderFields.paidAmountUSD) || 0;
+    let paidAmountBs = Number(serviceOrderFields.paidAmountBs) || 0;
+    let payments: ServiceOrderPaymentRecord[] = Array.isArray(serviceOrderFields.payments)
+      ? [...serviceOrderFields.payments]
+      : [];
+
+    if (initialPayment && initialPayment.mode !== 'PENDIENTE') {
+      const isFull = initialPayment.mode === 'PAGADO';
+      const rawUSD = isFull
+        ? totalCostUSD
+        : Math.max(0, Math.round((Number(initialPayment.amountUSD) || 0) * 100) / 100);
+      const explicitBs = Number(initialPayment.amountBs);
+      const rawBs = isFull
+        ? totalCostBs
+        : !Number.isNaN(explicitBs) && explicitBs > 0
+        ? Math.round(explicitBs * 100) / 100
+        : Math.round(rawUSD * rate * 100) / 100;
+
+      if (rawUSD > 0) {
+        const resolvedPagoMovilAccount: PagoMovilAccountOption | undefined =
+          initialPayment.paymentMethod === 'Pago Móvil'
+            ? initialPayment.pagoMovilAccount || 'BANESCO_PERSONAL'
+            : undefined;
+        const resolvedCurrencyMode: PaymentCurrencyMode =
+          initialPayment.currencyMode ||
+          (initialPayment.paymentMethod === 'Pago Móvil' ||
+          initialPayment.paymentMethod === 'Punto de Venta (Bs)' ||
+          initialPayment.paymentMethod === 'Transferencia Bancaria Bs'
+            ? 'BS'
+            : 'USD');
+
+        const treasuryIncome =
+          initialPayment.syncToTreasury !== false
+            ? recordAutomaticSaleIncomeInTreasury({
+                saleId: orderId,
+                invoiceNumber: orderNum,
+                customerName: customer.name,
+                amountUSD: rawUSD,
+                amountBs: rawBs,
+                bcvRate: rate,
+                paymentMethod: initialPayment.paymentMethod,
+                pagoMovilAccount: resolvedPagoMovilAccount,
+                category: 'Servicios de Taller',
+                reference: initialPayment.reference || orderNum,
+                notes:
+                  initialPayment.notes ||
+                  (isFull
+                    ? `Pago total orden ${orderNum} (${serviceOrderFields.entryType === 'ASIENTO' ? 'Tapicería / Asiento' : serviceOrderFields.serviceType})`
+                    : `Abono inicial orden ${orderNum} (${serviceOrderFields.entryType === 'ASIENTO' ? 'Tapicería / Asiento' : serviceOrderFields.serviceType})`),
+              })
+            : null;
+
+        const record: ServiceOrderPaymentRecord = {
+          id: `ordpay-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+          date: new Date().toISOString(),
+          amountUSD: rawUSD,
+          amountBs: rawBs,
+          currencyMode: resolvedCurrencyMode,
+          bcvRate: rate,
+          paymentMethod: initialPayment.paymentMethod,
+          pagoMovilAccount: resolvedPagoMovilAccount,
+          treasuryAccountId: treasuryIncome?.account.id,
+          treasuryAccountName: treasuryIncome?.account.name,
+          treasuryMovementId: treasuryIncome?.movement.id,
+          reference: initialPayment.reference?.trim() || undefined,
+          notes:
+            initialPayment.notes?.trim() ||
+            (isFull ? 'Pago total al ingresar la orden' : 'Abono inicial al ingresar la orden'),
+        };
+
+        payments = [record];
+        paidAmountUSD = rawUSD;
+        paidAmountBs = rawBs;
+        paymentStatus =
+          isFull || (totalCostUSD > 0 && paidAmountUSD >= totalCostUSD - 0.02)
+            ? 'PAGADO'
+            : 'ABONO';
+      } else if (isFull) {
+        paymentStatus = 'PAGADO';
+        paidAmountUSD = totalCostUSD;
+        paidAmountBs = totalCostBs;
+      }
+    }
 
     const newOrder: ServiceOrder = {
       ...serviceOrderFields,
-      id: `ord-${Date.now()}`,
+      id: orderId,
       orderNumber: orderNum,
       customerId: customer.id,
       customerName: customer.name,
@@ -5997,7 +6125,12 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
         customer.documentId ||
         undefined,
       bcvRate: rate,
-      totalCostBs: serviceOrderFields.totalCost * rate,
+      totalCost: totalCostUSD,
+      totalCostBs,
+      paymentStatus,
+      paidAmountUSD,
+      paidAmountBs,
+      payments,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
     };
@@ -6116,7 +6249,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
           const currentTotal = cleanUpdates.totalCost !== undefined ? cleanUpdates.totalCost : order.totalCost;
           const currentTotalBs = cleanUpdates.totalCostBs !== undefined ? cleanUpdates.totalCostBs : currentTotal * currentRate;
 
-          updatedOrder = {
+          const mergedDraft: ServiceOrder = {
             ...order,
             ...cleanUpdates,
             customerId: resolvedCustomer ? resolvedCustomer.id : (cleanUpdates.customerId ?? order.customerId),
@@ -6134,6 +6267,16 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
             totalCostBs: currentTotalBs,
             updatedAt: new Date().toISOString(),
           };
+
+          // Reconcile paymentStatus if totalCost changed and payments exist (unless explicitly set)
+          if (cleanUpdates.paymentStatus === undefined && (mergedDraft.payments?.length || (mergedDraft.paidAmountUSD || 0) > 0)) {
+            const summary = getServiceOrderPaymentSummary(mergedDraft, currentRate);
+            mergedDraft.paymentStatus = summary.paymentStatus;
+            mergedDraft.paidAmountUSD = summary.paidUSD;
+            mergedDraft.paidAmountBs = summary.paidBs;
+          }
+
+          updatedOrder = mergedDraft;
           syncServiceOrderToFirestore(updatedOrder).catch(() => {});
           return updatedOrder;
         }
@@ -6145,7 +6288,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       const currentRate = cleanUpdates.bcvRate || existingOrder.bcvRate || settings.bcvRate;
       const currentTotal = cleanUpdates.totalCost !== undefined ? cleanUpdates.totalCost : existingOrder.totalCost;
       const currentTotalBs = cleanUpdates.totalCostBs !== undefined ? cleanUpdates.totalCostBs : currentTotal * currentRate;
-      updatedOrder = {
+      const mergedDraft: ServiceOrder = {
         ...existingOrder,
         ...cleanUpdates,
         customerId: resolvedCustomer ? resolvedCustomer.id : (cleanUpdates.customerId ?? existingOrder.customerId),
@@ -6163,6 +6306,13 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
         totalCostBs: currentTotalBs,
         updatedAt: new Date().toISOString(),
       };
+      if (cleanUpdates.paymentStatus === undefined && (mergedDraft.payments?.length || (mergedDraft.paidAmountUSD || 0) > 0)) {
+        const summary = getServiceOrderPaymentSummary(mergedDraft, currentRate);
+        mergedDraft.paymentStatus = summary.paymentStatus;
+        mergedDraft.paidAmountUSD = summary.paidUSD;
+        mergedDraft.paidAmountBs = summary.paidBs;
+      }
+      updatedOrder = mergedDraft;
     }
 
     if (updatedOrder && (updatedOrder.status === 'CULMINADA' || updatedOrder.status === 'ENTREGADA')) {
@@ -6175,7 +6325,179 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     return updatedOrder;
   };
 
+  const recordServiceOrderPayment = (
+    orderId: string,
+    payment: {
+      amountUSD: number;
+      amountBs?: number;
+      currencyMode?: PaymentCurrencyMode;
+      paymentMethod: PaymentMethod;
+      pagoMovilAccount?: PagoMovilAccountOption;
+      reference?: string;
+      notes?: string;
+      syncToTreasury?: boolean;
+      markAsFullPayment?: boolean;
+    }
+  ): { updatedOrder: ServiceOrder; paymentRecord: ServiceOrderPaymentRecord } | null => {
+    const existing = serviceOrdersRef.current.find((o) => o.id === orderId);
+    if (!existing) return null;
+
+    const rate = settingsRef.current.bcvRate || existing.bcvRate || 1;
+    const prevSummary = getServiceOrderPaymentSummary(existing, rate);
+    const cleanUSD = Math.max(0, Math.round((Number(payment.amountUSD) || 0) * 100) / 100);
+    const explicitBs = Number(payment.amountBs);
+    const cleanBs =
+      !Number.isNaN(explicitBs) && explicitBs > 0
+        ? Math.round(explicitBs * 100) / 100
+        : Math.round(cleanUSD * rate * 100) / 100;
+
+    const resolvedPagoMovilAccount: PagoMovilAccountOption | undefined =
+      payment.paymentMethod === 'Pago Móvil'
+        ? payment.pagoMovilAccount || 'BANESCO_PERSONAL'
+        : undefined;
+
+    const resolvedCurrencyMode: PaymentCurrencyMode =
+      payment.currencyMode ||
+      (payment.paymentMethod === 'Pago Móvil' ||
+      payment.paymentMethod === 'Punto de Venta (Bs)' ||
+      payment.paymentMethod === 'Transferencia Bancaria Bs'
+        ? 'BS'
+        : 'USD');
+
+    const treasuryIncome =
+      cleanUSD > 0 && payment.syncToTreasury !== false
+        ? recordAutomaticSaleIncomeInTreasury({
+            saleId: existing.id,
+            invoiceNumber: existing.orderNumber,
+            customerName: existing.customerName,
+            amountUSD: cleanUSD,
+            amountBs: cleanBs,
+            bcvRate: rate,
+            paymentMethod: payment.paymentMethod,
+            pagoMovilAccount: resolvedPagoMovilAccount,
+            category: 'Servicios de Taller',
+            reference: payment.reference?.trim() || existing.orderNumber,
+            notes:
+              payment.notes?.trim() ||
+              `${payment.markAsFullPayment ? 'Pago total' : 'Abono'} orden ${existing.orderNumber} (${existing.entryType === 'ASIENTO' ? 'Tapicería / Asiento' : existing.serviceType})`,
+          })
+        : null;
+
+    const paymentRecord: ServiceOrderPaymentRecord = {
+      id: `ordpay-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      date: new Date().toISOString(),
+      amountUSD: cleanUSD,
+      amountBs: cleanBs,
+      currencyMode: resolvedCurrencyMode,
+      bcvRate: rate,
+      paymentMethod: payment.paymentMethod,
+      pagoMovilAccount: resolvedPagoMovilAccount,
+      treasuryAccountId: treasuryIncome?.account.id,
+      treasuryAccountName: treasuryIncome?.account.name,
+      treasuryMovementId: treasuryIncome?.movement.id,
+      reference: payment.reference?.trim() || undefined,
+      notes: payment.notes?.trim() || undefined,
+    };
+
+    const existingPayments = Array.isArray(existing.payments) ? existing.payments : [];
+    const nextPayments = cleanUSD > 0 ? [...existingPayments, paymentRecord] : existingPayments;
+    const nextPaidUSD =
+      cleanUSD > 0
+        ? Math.round((prevSummary.paidUSD + cleanUSD) * 100) / 100
+        : payment.markAsFullPayment
+        ? existing.totalCost
+        : prevSummary.paidUSD;
+    const nextPaidBs =
+      cleanUSD > 0
+        ? Math.round((prevSummary.paidBs + cleanBs) * 100) / 100
+        : payment.markAsFullPayment
+        ? existing.totalCostBs || Math.round(existing.totalCost * rate * 100) / 100
+        : prevSummary.paidBs;
+
+    const isPaidFull =
+      Boolean(payment.markAsFullPayment) ||
+      (existing.totalCost > 0 && nextPaidUSD >= existing.totalCost - 0.02);
+
+    const nextStatus: ServiceOrderPaymentStatus = isPaidFull
+      ? 'PAGADO'
+      : nextPaidUSD > 0.009
+      ? 'ABONO'
+      : 'PENDIENTE';
+
+    const updatedOrder: ServiceOrder = {
+      ...existing,
+      paymentStatus: nextStatus,
+      paidAmountUSD: nextPaidUSD,
+      paidAmountBs: nextPaidBs,
+      payments: nextPayments,
+      updatedAt: new Date().toISOString(),
+    };
+
+    const nextList = serviceOrdersRef.current.map((o) => (o.id === orderId ? updatedOrder : o));
+    serviceOrdersRef.current = nextList;
+    setServiceOrders(nextList);
+    try {
+      localStorage.setItem(STORAGE_KEYS.SERVICE_ORDERS, JSON.stringify(nextList));
+    } catch {}
+    syncServiceOrderToFirestore(updatedOrder).catch((err) =>
+      console.warn('Firestore service order payment sync error:', err)
+    );
+
+    return { updatedOrder, paymentRecord };
+  };
+
+  const deleteServiceOrderPayment = (orderId: string, paymentId: string): ServiceOrder | undefined => {
+    const existing = serviceOrdersRef.current.find((o) => o.id === orderId);
+    if (!existing) return undefined;
+
+    const existingPayments = Array.isArray(existing.payments) ? existing.payments : [];
+    const targetPayment = existingPayments.find((p) => p.id === paymentId);
+    if (targetPayment?.treasuryMovementId) {
+      deleteTreasuryMovement(targetPayment.treasuryMovementId, true);
+    }
+
+    const nextPayments = existingPayments.filter((p) => p.id !== paymentId);
+    const rate = existing.bcvRate || settingsRef.current.bcvRate || 1;
+    const nextPaidUSD = Math.round(nextPayments.reduce((s, p) => s + (Number(p.amountUSD) || 0), 0) * 100) / 100;
+    const nextPaidBs = Math.round(nextPayments.reduce((s, p) => s + (Number(p.amountBs) || 0), 0) * 100) / 100;
+    const nextStatus: ServiceOrderPaymentStatus =
+      existing.totalCost > 0 && nextPaidUSD >= existing.totalCost - 0.02
+        ? 'PAGADO'
+        : nextPaidUSD > 0.009
+        ? 'ABONO'
+        : 'PENDIENTE';
+
+    const updatedOrder: ServiceOrder = {
+      ...existing,
+      paymentStatus: nextStatus,
+      paidAmountUSD: nextPaidUSD,
+      paidAmountBs: nextPaidBs,
+      payments: nextPayments,
+      updatedAt: new Date().toISOString(),
+    };
+
+    const nextList = serviceOrdersRef.current.map((o) => (o.id === orderId ? updatedOrder : o));
+    serviceOrdersRef.current = nextList;
+    setServiceOrders(nextList);
+    try {
+      localStorage.setItem(STORAGE_KEYS.SERVICE_ORDERS, JSON.stringify(nextList));
+    } catch {}
+    syncServiceOrderToFirestore(updatedOrder).catch((err) =>
+      console.warn('Firestore service order payment delete sync error:', err)
+    );
+
+    return updatedOrder;
+  };
+
   const deleteServiceOrder = (id: string, restoreStock: boolean = true) => {
+    const targetOrder = serviceOrdersRef.current.find((o) => o.id === id);
+    if (targetOrder && Array.isArray(targetOrder.payments)) {
+      targetOrder.payments.forEach((pay) => {
+        if (pay.treasuryMovementId) {
+          deleteTreasuryMovement(pay.treasuryMovementId, true);
+        }
+      });
+    }
     recordDeleted('serviceOrders', [id]);
     removeServiceOrderFromFirestore(id).catch((err) =>
       console.warn('Firestore service order delete error:', err)
@@ -11150,6 +11472,8 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
         createServiceOrder,
         updateServiceOrderStatus,
         updateServiceOrder,
+        recordServiceOrderPayment,
+        deleteServiceOrderPayment,
         deleteServiceOrder,
         technicians,
         addTechnician,

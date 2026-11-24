@@ -28,7 +28,7 @@ import {
 } from 'lucide-react';
 
 export const WhatsAppModal: React.FC = () => {
-  const { whatsappModalData, setWhatsappModalData, settings } = useApp();
+  const { whatsappModalData, setWhatsappModalData, settings, products } = useApp();
   const [copied, setCopied] = useState(false);
   const [downloadedPdf, setDownloadedPdf] = useState(false);
   const [isGeneratingPdf, setIsGeneratingPdf] = useState(false);
@@ -112,28 +112,29 @@ export const WhatsAppModal: React.FC = () => {
     }));
 
     if (!hasPdf) return;
-    if (sale) {
-      downloadInvoicePDF(sale, settings);
-      setDownloadedPdf(true);
-      setTimeout(() => setDownloadedPdf(false), 4000);
-    } else if (technicianPayout) {
+    if (technicianPayout) {
       downloadTechnicianPayoutPDF(technicianPayout, settings);
       setDownloadedPdf(true);
       setTimeout(() => setDownloadedPdf(false), 4000);
-    } else if (purchaseOrder) {
-      downloadPurchaseOrderPDF(purchaseOrder, settings);
-      setDownloadedPdf(true);
-      setTimeout(() => setDownloadedPdf(false), 4000);
-    } else if (serviceOrder) {
-      setIsGeneratingPdf(true);
-      downloadServiceOrderPDF(serviceOrder, settings)
-        .then(() => {
-          setDownloadedPdf(true);
-          setTimeout(() => setDownloadedPdf(false), 4000);
-        })
-        .catch((err) => console.warn('Error generando PDF de orden de servicio:', err))
-        .finally(() => setIsGeneratingPdf(false));
+      return;
     }
+
+    setIsGeneratingPdf(true);
+    const task = sale
+      ? downloadInvoicePDF(sale, settings, products)
+      : purchaseOrder
+      ? downloadPurchaseOrderPDF(purchaseOrder, settings, products)
+      : serviceOrder
+      ? downloadServiceOrderPDF(serviceOrder, settings, products)
+      : Promise.resolve();
+
+    task
+      .then(() => {
+        setDownloadedPdf(true);
+        setTimeout(() => setDownloadedPdf(false), 4000);
+      })
+      .catch((err) => console.warn('Error generando PDF:', err))
+      .finally(() => setIsGeneratingPdf(false));
   };
 
   const handleDownloadPDF = async () => {
@@ -141,13 +142,13 @@ export const WhatsAppModal: React.FC = () => {
     setIsGeneratingPdf(true);
     try {
       if (sale) {
-        downloadInvoicePDF(sale, settings);
+        await downloadInvoicePDF(sale, settings, products);
       } else if (technicianPayout) {
         downloadTechnicianPayoutPDF(technicianPayout, settings);
       } else if (purchaseOrder) {
-        downloadPurchaseOrderPDF(purchaseOrder, settings);
+        await downloadPurchaseOrderPDF(purchaseOrder, settings, products);
       } else if (serviceOrder) {
-        await downloadServiceOrderPDF(serviceOrder, settings);
+        await downloadServiceOrderPDF(serviceOrder, settings, products);
       }
       setDownloadedPdf(true);
       setTimeout(() => setDownloadedPdf(false), 4000);
@@ -168,7 +169,7 @@ export const WhatsAppModal: React.FC = () => {
       let shareTitle: string;
 
       if (sale) {
-        blob = getInvoicePDFBlob(sale, settings);
+        blob = await getInvoicePDFBlob(sale, settings, products);
         const isCredit = sale.paymentType === 'CREDITO';
         pdfFileName = isCredit
           ? `Nota_Credito_${sale.invoiceNumber}_MotoCristoc.pdf`
@@ -179,11 +180,11 @@ export const WhatsAppModal: React.FC = () => {
         pdfFileName = `Factura_Comision_${technicianPayout.payoutNumber}.pdf`;
         shareTitle = `Comprobante Comisión ${technicianPayout.payoutNumber} - ${technicianPayout.technicianName}`;
       } else if (purchaseOrder) {
-        blob = getPurchaseOrderPDFBlob(purchaseOrder, settings);
+        blob = await getPurchaseOrderPDFBlob(purchaseOrder, settings, products);
         pdfFileName = `Orden_Compra_${purchaseOrder.orderNumber}_${purchaseOrder.supplierCode || 'Proveedor'}.pdf`;
         shareTitle = `Orden de Compra ${purchaseOrder.orderNumber} - ${purchaseOrder.supplierName}`;
       } else if (serviceOrder) {
-        blob = await getServiceOrderPDFBlob(serviceOrder, settings);
+        blob = await getServiceOrderPDFBlob(serviceOrder, settings, products);
         pdfFileName = `Factura_Servicio_${serviceOrder.orderNumber}_MotoCristoc.pdf`;
         shareTitle = `Factura de Servicio ${serviceOrder.orderNumber} - ${settings.commercialName}`;
       } else {

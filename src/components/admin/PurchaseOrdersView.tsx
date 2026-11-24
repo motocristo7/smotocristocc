@@ -1642,7 +1642,11 @@ export const PurchaseOrdersView: React.FC = () => {
 
                           <button
                             type="button"
-                            onClick={() => downloadPurchaseOrderPDF(po, settings)}
+                            onClick={() => {
+                              downloadPurchaseOrderPDF(po, settings, products).catch((err) =>
+                                console.warn('Error descargando PDF de orden de compra:', err)
+                              );
+                            }}
                             className="inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 text-[11px] font-semibold rounded-lg transition-colors cursor-pointer"
                             title="Descargar PDF de la orden de compra"
                           >
@@ -4090,7 +4094,11 @@ export const PurchaseOrdersView: React.FC = () => {
               <div className="flex items-center gap-2">
                 <button
                   type="button"
-                  onClick={() => downloadPurchaseOrderPDF(detailOrder, settings)}
+                  onClick={() => {
+                    downloadPurchaseOrderPDF(detailOrder, settings, products).catch((err) =>
+                      console.warn('Error descargando PDF de orden de compra:', err)
+                    );
+                  }}
                   className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-white hover:bg-slate-100 border border-slate-300 text-slate-800 font-semibold text-xs rounded-xl cursor-pointer"
                 >
                   <FileDown className="w-4 h-4" />

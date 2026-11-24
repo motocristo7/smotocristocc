@@ -1,7 +1,185 @@
 import { jsPDF } from 'jspdf';
 import QRCode from 'qrcode';
-import { Sale, BusinessSettings, Product, ServiceOrder, TechnicianPayout, PurchaseOrder, isSaleWithCredit } from '../types';
+import { Sale, BusinessSettings, Product, ServiceOrder, TechnicianPayout, PurchaseOrder, isSaleWithCredit, getServiceOrderPaymentSummary } from '../types';
 import { formatUSD, formatBs, getPublicAppOrigin } from './whatsapp';
+import { normalizeImageUrl, extractGoogleDriveId, getGoogleDriveThumbnailUrl } from './imageUrl';
+
+const PRODUCTS_STORAGE_KEY = 'servimotos_products_ve_v2';
+
+interface LoadedImageInfo {
+  dataUrl: string;
+  width: number;
+  height: number;
+}
+
+function getCachedProductsCatalog(explicitProducts?: Product[]): Product[] {
+  if (explicitProducts && explicitProducts.length > 0) return explicitProducts;
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = window.localStorage.getItem(PRODUCTS_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function resolveProductImageUrl(
+  item: { productId?: string; sku?: string; name?: string; imageUrl?: string },
+  catalog: Product[]
+): string {
+  if (item.imageUrl && item.imageUrl.trim()) {
+    return normalizeImageUrl(item.imageUrl);
+  }
+  if (catalog.length === 0) return '';
+
+  if (item.productId) {
+    const byId = catalog.find((p) => p.id === item.productId);
+    if (byId?.imageUrl) return normalizeImageUrl(byId.imageUrl);
+  }
+
+  const normSku = (item.sku || '').trim().toLowerCase();
+  if (normSku) {
+    const bySku = catalog.find((p) => (p.sku || '').trim().toLowerCase() === normSku);
+    if (bySku?.imageUrl) return normalizeImageUrl(bySku.imageUrl);
+  }
+
+  const normName = (item.name || '').trim().toLowerCase();
+  if (normName) {
+    const byName = catalog.find((p) => (p.name || '').trim().toLowerCase() === normName);
+    if (byName?.imageUrl) return normalizeImageUrl(byName.imageUrl);
+  }
+
+  return '';
+}
+
+function tryLoadImageToCanvas(
+  src: string,
+  maxDimension: number,
+  timeoutMs = 4500
+): Promise<LoadedImageInfo | null> {
+  if (typeof window === 'undefined' || !src) return Promise.resolve(null);
+
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (result: LoadedImageInfo | null) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      resolve(result);
+    };
+
+    const timer = window.setTimeout(() => finish(null), timeoutMs);
+    const img = new Image();
+    if (!src.startsWith('data:')) {
+      img.crossOrigin = 'anonymous';
+    }
+
+    img.onload = () => {
+      try {
+        const naturalW = img.naturalWidth || img.width || 400;
+        const naturalH = img.naturalHeight || img.height || 400;
+        const scale = Math.min(1, maxDimension / Math.max(naturalW, naturalH));
+        const targetW = Math.max(1, Math.round(naturalW * scale));
+        const targetH = Math.max(1, Math.round(naturalH * scale));
+
+        const canvas = document.createElement('canvas');
+        canvas.width = targetW;
+        canvas.height = targetH;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          finish(null);
+          return;
+        }
+        ctx.fillStyle = '#FFFFFF';
+        ctx.fillRect(0, 0, targetW, targetH);
+        ctx.drawImage(img, 0, 0, targetW, targetH);
+
+        finish({
+          dataUrl: canvas.toDataURL('image/jpeg', 0.88),
+          width: targetW,
+          height: targetH,
+        });
+      } catch {
+        finish(null);
+      }
+    };
+
+    img.onerror = () => finish(null);
+    img.src = src;
+  });
+}
+
+async function loadPdfImage(rawUrl?: string, maxDimension = 420): Promise<LoadedImageInfo | null> {
+  if (!rawUrl || !rawUrl.trim()) return null;
+  const normalized = normalizeImageUrl(rawUrl);
+  if (!normalized) return null;
+
+  const primary = await tryLoadImageToCanvas(normalized, maxDimension);
+  if (primary) return primary;
+
+  const driveId = extractGoogleDriveId(rawUrl);
+  if (driveId) {
+    const thumbUrl = getGoogleDriveThumbnailUrl(driveId, Math.max(400, maxDimension));
+    if (thumbUrl !== normalized) {
+      return tryLoadImageToCanvas(thumbUrl, maxDimension);
+    }
+  }
+
+  return null;
+}
+
+async function preloadPdfImageMap(
+  urls: string[],
+  maxDimension = 360
+): Promise<Map<string, LoadedImageInfo>> {
+  const uniqueUrls = Array.from(new Set(urls.filter((u) => Boolean(u && u.trim()))));
+  const loaded = await Promise.all(
+    uniqueUrls.map(async (url) => ({ url, img: await loadPdfImage(url, maxDimension) }))
+  );
+  const map = new Map<string, LoadedImageInfo>();
+  loaded.forEach(({ url, img }) => {
+    if (img) map.set(url, img);
+  });
+  return map;
+}
+
+function drawImageFitInBox(
+  doc: jsPDF,
+  img: LoadedImageInfo,
+  x: number,
+  y: number,
+  boxW: number,
+  boxH: number,
+  padding = 0.6,
+  borderRadius = 1.2
+): boolean {
+  try {
+    doc.setFillColor(255, 255, 255);
+    doc.setDrawColor(226, 232, 240);
+    doc.setLineWidth(0.25);
+    doc.roundedRect(x, y, boxW, boxH, borderRadius, borderRadius, 'FD');
+
+    const availW = Math.max(1, boxW - padding * 2);
+    const availH = Math.max(1, boxH - padding * 2);
+    const aspect = img.width > 0 && img.height > 0 ? img.width / img.height : 1;
+
+    let drawW = availW;
+    let drawH = drawW / aspect;
+    if (drawH > availH) {
+      drawH = availH;
+      drawW = drawH * aspect;
+    }
+
+    const drawX = x + (boxW - drawW) / 2;
+    const drawY = y + (boxH - drawH) / 2;
+    doc.addImage(img.dataUrl, 'JPEG', drawX, drawY, drawW, drawH, undefined, 'FAST');
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Draws a sharp, vector QR code directly into jsPDF synchronously without external images
@@ -62,16 +240,21 @@ function drawProductThumbnailPlaceholder(doc: jsPDF, x: number, y: number, size:
  * incluyendo tabla con Foto, Repuesto, Cantidad, Precio, Subtotal,
  * colores característicos y discriminación estricta entre Contado y Crédito.
  */
-export function generateInvoicePDF(
+export async function generateInvoicePDF(
   sale: Sale,
   settings: BusinessSettings,
   products?: Product[]
-): jsPDF {
+): Promise<jsPDF> {
   const doc = new jsPDF({
     orientation: 'portrait',
     unit: 'mm',
     format: 'a4',
   });
+
+  const catalog = getCachedProductsCatalog(products);
+  const repuestosAll = sale.items.filter((item) => !item.isService && item.sku !== 'MAN-OBRA');
+  const repuestoUrlList = repuestosAll.map((item) => resolveProductImageUrl(item, catalog));
+  const repuestoImageMap = await preloadPdfImageMap(repuestoUrlList, 360);
 
   const rate = sale.bcvRate || settings.bcvRate;
   const totalBs = sale.totalBs || sale.total * rate;
@@ -269,9 +452,9 @@ export function generateInvoicePDF(
 
     // Table Header: Foto | Repuesto | Cantidad | Precio | Subtotal
     const colFotoX = margin;
-    const colFotoW = 16;
+    const colFotoW = 18;
     const colRepuestoX = margin + colFotoW;
-    const colRepuestoW = 88;
+    const colRepuestoW = 86;
     const colCantX = colRepuestoX + colRepuestoW;
     const colCantW = 20;
     const colPrecioX = colCantX + colCantW;
@@ -300,7 +483,7 @@ export function generateInvoicePDF(
     let repuestosSubtotal = 0;
 
     repuestos.forEach((item) => {
-      const rowHeight = 11.5;
+      const rowHeight = 15;
       ensureSpace(rowHeight);
 
       const itemTotal = item.unitPrice * item.quantity;
@@ -317,37 +500,47 @@ export function generateInvoicePDF(
       doc.line(colPrecioX, y, colPrecioX, y + rowHeight);
       doc.line(colSubtotalX, y, colSubtotalX, y + rowHeight);
 
-      // Foto column: thumbnail
-      const thumbSize = 8.5;
+      // Foto column: real spare part photo (or clean placeholder if unavailable)
+      const thumbSize = 12.5;
       const thumbX = colFotoX + (colFotoW - thumbSize) / 2;
       const thumbY = y + (rowHeight - thumbSize) / 2;
-      drawProductThumbnailPlaceholder(doc, thumbX, thumbY, thumbSize, false);
+      const resolvedUrl = resolveProductImageUrl(item, catalog);
+      const loadedImg = resolvedUrl ? repuestoImageMap.get(resolvedUrl) : undefined;
+      if (!loadedImg || !drawImageFitInBox(doc, loadedImg, thumbX, thumbY, thumbSize, thumbSize, 0.5, 1)) {
+        drawProductThumbnailPlaceholder(doc, thumbX, thumbY, thumbSize, false);
+      }
 
       // Repuesto name
-      doc.setFont('helvetica', 'normal');
+      doc.setFont('helvetica', 'bold');
       doc.setFontSize(7.5);
       doc.setTextColor(15, 23, 42);
       const nameLines: string[] = doc.splitTextToSize((item.name || '').toUpperCase(), colRepuestoW - 4);
-      doc.text(nameLines[0] || '', colRepuestoX + 2, y + 5);
-      if (item.sku || nameLines.length > 1) {
-        doc.setFontSize(6.5);
+      doc.text(nameLines[0] || '', colRepuestoX + 2.2, y + 5.8);
+      if (nameLines.length > 1) {
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(6.8);
+        doc.setTextColor(51, 65, 85);
+        doc.text(nameLines[1], colRepuestoX + 2.2, y + 9.4);
+      }
+      if (item.sku) {
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(6.3);
         doc.setTextColor(100, 116, 139);
-        const secondLine = nameLines.length > 1 ? nameLines[1] : `SKU: ${item.sku}`;
-        doc.text(secondLine, colRepuestoX + 2, y + 8.5);
+        doc.text(`SKU: ${item.sku}`, colRepuestoX + 2.2, nameLines.length > 1 ? y + 12.8 : y + 10.2);
       }
 
       // Cantidad
       doc.setFont('helvetica', 'normal');
       doc.setFontSize(8);
       doc.setTextColor(15, 23, 42);
-      doc.text(item.quantity.toString(), colCantX + colCantW / 2, y + 6.8, { align: 'center' });
+      doc.text(item.quantity.toString(), colCantX + colCantW / 2, y + 8.5, { align: 'center' });
 
       // Precio
-      doc.text(formatUSD(item.unitPrice), colPrecioX + colPrecioW - 2, y + 6.8, { align: 'right' });
+      doc.text(formatUSD(item.unitPrice), colPrecioX + colPrecioW - 2, y + 8.5, { align: 'right' });
 
       // Subtotal
       doc.setFont('helvetica', 'bold');
-      doc.text(formatUSD(itemTotal), colSubtotalX + colSubtotalW - 2, y + 6.8, { align: 'right' });
+      doc.text(formatUSD(itemTotal), colSubtotalX + colSubtotalW - 2, y + 8.5, { align: 'right' });
 
       y += rowHeight;
     });
@@ -825,12 +1018,12 @@ export function generateInvoicePDF(
 /**
  * Descarga directamente el archivo PDF de la factura al dispositivo
  */
-export function downloadInvoicePDF(
+export async function downloadInvoicePDF(
   sale: Sale,
   settings: BusinessSettings,
   products?: Product[]
-): void {
-  const doc = generateInvoicePDF(sale, settings, products);
+): Promise<void> {
+  const doc = await generateInvoicePDF(sale, settings, products);
   const isCredit = sale.paymentType === 'CREDITO';
   const isApartado = sale.paymentType === 'APARTADO';
   const prefix = isApartado
@@ -845,70 +1038,34 @@ export function downloadInvoicePDF(
 /**
  * Retorna el PDF en formato Blob para compartir o adjuntar
  */
-export function getInvoicePDFBlob(
+export async function getInvoicePDFBlob(
   sale: Sale,
   settings: BusinessSettings,
   products?: Product[]
-): Blob {
-  const doc = generateInvoicePDF(sale, settings, products);
+): Promise<Blob> {
+  const doc = await generateInvoicePDF(sale, settings, products);
   return doc.output('blob');
 }
 
-interface LoadedImageInfo {
-  dataUrl: string;
-  width: number;
-  height: number;
-}
-
-async function loadImageAsDataUrl(url: string): Promise<LoadedImageInfo | null> {
-  if (typeof window === 'undefined' || !url) return null;
-
-  const tryLoad = (src: string): Promise<LoadedImageInfo | null> =>
-    new Promise((resolve) => {
-      const img = new Image();
-      img.crossOrigin = 'anonymous';
-      img.onload = () => {
-        try {
-          const canvas = document.createElement('canvas');
-          canvas.width = img.naturalWidth || img.width || 600;
-          canvas.height = img.naturalHeight || img.height || 750;
-          const ctx = canvas.getContext('2d');
-          if (!ctx) {
-            resolve(null);
-            return;
-          }
-          ctx.fillStyle = '#FFFFFF';
-          ctx.fillRect(0, 0, canvas.width, canvas.height);
-          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-          resolve({
-            dataUrl: canvas.toDataURL('image/jpeg', 0.92),
-            width: canvas.width,
-            height: canvas.height,
-          });
-        } catch {
-          resolve(null);
-        }
-      };
-      img.onerror = () => resolve(null);
-      img.src = src;
-    });
-
-  const primary = await tryLoad(url);
+async function loadQrImage(url: string): Promise<LoadedImageInfo | null> {
+  const primary = await loadPdfImage(url, 800);
   if (primary) return primary;
 
   if (url !== '/assets/pagomovil_qr.jpeg') {
-    return tryLoad('/assets/pagomovil_qr.jpeg');
+    return loadPdfImage('/assets/pagomovil_qr.jpeg', 800);
   }
   return null;
 }
 
 /**
- * Genera el documento PDF de Factura de Orden de Servicio de Taller (culminada / lista para entrega),
- * detallando lo realizado a la moto, servicios, repuestos, datos bancarios para el pago y el QR de Pago Móvil.
+ * Genera el documento PDF de Factura de Orden de Servicio de Taller (mecánica y tapicería),
+ * detallando lo realizado a la moto o asiento, fotos Antes y Después de tapicería,
+ * servicios, repuestos con foto, datos bancarios para el pago y el QR de Pago Móvil.
  */
 export async function generateServiceOrderInvoicePDF(
   order: ServiceOrder,
-  settings: BusinessSettings
+  settings: BusinessSettings,
+  products?: Product[]
 ): Promise<jsPDF> {
   const doc = new jsPDF({
     orientation: 'portrait',
@@ -930,9 +1087,17 @@ export async function generateServiceOrderInvoicePDF(
   const waPhone = cleanPhone.startsWith('58') ? cleanPhone : `58${cleanPhone.replace(/^0/, '')}`;
   const qrContactUrl = `https://wa.me/${waPhone}`;
 
-  // Preload official PagoMóvil QR image
+  const catalog = getCachedProductsCatalog(products);
+  const partUrlList = (order.partsUsed || []).map((part) => resolveProductImageUrl(part, catalog));
+
+  // Preload official PagoMóvil QR image, part photos, and upholstery before/after seat photos in parallel
   const qrImageUrl = settings.bankDetails.pagoMovilQrUrl || '/assets/pagomovil_qr.jpeg';
-  const loadedQrImage = await loadImageAsDataUrl(qrImageUrl);
+  const [loadedQrImage, partImageMap, loadedSeatIntakePhoto, loadedSeatDeliveryPhoto] = await Promise.all([
+    loadQrImage(qrImageUrl),
+    preloadPdfImageMap(partUrlList, 360),
+    order.seatIntakePhoto ? loadPdfImage(order.seatIntakePhoto, 960) : Promise.resolve(null),
+    order.seatDeliveryPhoto ? loadPdfImage(order.seatDeliveryPhoto, 960) : Promise.resolve(null),
+  ]);
 
   const drawPageHeader = (): number => {
     const headerY = 14;
@@ -1175,6 +1340,92 @@ export async function generateServiceOrderInvoicePDF(
 
   y += workBoxHeight + 5;
 
+  // --- REGISTRO FOTOGRÁFICO DE TAPICERÍA (ANTES Y DESPUÉS DEL ASIENTO) ---
+  if (isSeatOrder || Boolean(order.seatIntakePhoto) || Boolean(order.seatDeliveryPhoto)) {
+    const cardGap = 6;
+    const cardW = (contentWidth - cardGap) / 2; // 87mm each
+    const headerBarH = 6.5;
+    const photoAreaH = 49;
+    const cardH = headerBarH + photoAreaH + 3.5; // 59mm
+
+    ensureSpace(cardH + 10);
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(8.8);
+    doc.setTextColor(109, 40, 217); // purple-700
+    doc.text('REGISTRO FOTOGRÁFICO DE TAPICERÍA · ANTES Y DESPUÉS DEL ASIENTO', margin, y);
+    y += 3;
+
+    const drawSeatPhotoCard = (
+      x: number,
+      title: string,
+      headerRgb: [number, number, number],
+      borderRgb: [number, number, number],
+      bgRgb: [number, number, number],
+      loadedPhoto: LoadedImageInfo | null,
+      emptyText: string
+    ) => {
+      // Card outer container
+      doc.setFillColor(bgRgb[0], bgRgb[1], bgRgb[2]);
+      doc.setDrawColor(borderRgb[0], borderRgb[1], borderRgb[2]);
+      doc.setLineWidth(0.35);
+      doc.roundedRect(x, y, cardW, cardH, 2, 2, 'FD');
+
+      // Top colored badge header
+      doc.setFillColor(headerRgb[0], headerRgb[1], headerRgb[2]);
+      doc.roundedRect(x, y, cardW, headerBarH, 2, 2, 'F');
+      // Square off bottom corners of header bar
+      doc.rect(x, y + headerBarH - 2, cardW, 2, 'F');
+
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(7.2);
+      doc.setTextColor(255, 255, 255);
+      doc.text(title, x + cardW / 2, y + 4.4, { align: 'center' });
+
+      const photoBoxX = x + 2;
+      const photoBoxY = y + headerBarH + 1.8;
+      const photoBoxW = cardW - 4;
+      const photoBoxH = photoAreaH;
+
+      if (loadedPhoto) {
+        drawImageFitInBox(doc, loadedPhoto, photoBoxX, photoBoxY, photoBoxW, photoBoxH, 1, 1.2);
+      } else {
+        doc.setFillColor(255, 255, 255);
+        doc.setDrawColor(203, 213, 225);
+        doc.setLineWidth(0.25);
+        doc.roundedRect(photoBoxX, photoBoxY, photoBoxW, photoBoxH, 1.2, 1.2, 'FD');
+        doc.setFont('helvetica', 'italic');
+        doc.setFontSize(7.4);
+        doc.setTextColor(148, 163, 184);
+        doc.text(emptyText, photoBoxX + photoBoxW / 2, photoBoxY + photoBoxH / 2 + 1, { align: 'center' });
+      }
+    };
+
+    // Left Card: ANTES (Recibido)
+    drawSeatPhotoCard(
+      margin,
+      'ANTES · ASIENTO RECIBIDO',
+      [109, 40, 217], // purple-700
+      [196, 181, 253], // purple-300
+      [250, 245, 255], // purple-50
+      loadedSeatIntakePhoto,
+      'Sin foto de recepción registrada'
+    );
+
+    // Right Card: DESPUÉS (Entregado)
+    drawSeatPhotoCard(
+      margin + cardW + cardGap,
+      'DESPUÉS · ASIENTO ENTREGADO',
+      [5, 150, 105], // emerald-600
+      [167, 243, 208], // emerald-200
+      [236, 253, 245], // emerald-50
+      loadedSeatDeliveryPhoto,
+      'Foto de entrega pendiente por subir'
+    );
+
+    y += cardH + 6;
+  }
+
   // --- SERVICIOS Y MANO DE OBRA REALIZADOS ---
   const serviceRows: { name: string; technician: string; cost: number }[] =
     order.servicesList && order.servicesList.length > 0
@@ -1264,15 +1515,17 @@ export async function generateServiceOrderInvoicePDF(
   // --- REPUESTOS UTILIZADOS ---
   let partsSubtotal = 0;
   if (order.partsUsed && order.partsUsed.length > 0) {
-    ensureSpace(20);
+    ensureSpace(24);
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(9);
     doc.setTextColor(15, 23, 42);
     doc.text('Repuestos e Insumos Instalados', margin, y);
     y += 3;
 
-    const colPNameX = margin;
-    const colPNameW = 104;
+    const colPFotoX = margin;
+    const colPFotoW = 18;
+    const colPNameX = colPFotoX + colPFotoW;
+    const colPNameW = 86;
     const colPCantX = colPNameX + colPNameW;
     const colPCantW = 20;
     const colPUnitX = colPCantX + colPCantW;
@@ -1288,6 +1541,7 @@ export async function generateServiceOrderInvoicePDF(
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(7.2);
     doc.setTextColor(15, 23, 42);
+    doc.text('Foto', colPFotoX + colPFotoW / 2, y + 4, { align: 'center' });
     doc.text('Repuesto / Pieza', colPNameX + 2.5, y + 4);
     doc.text('Cant.', colPCantX + colPCantW / 2, y + 4, { align: 'center' });
     doc.text('Precio Unit.', colPUnitX + colPUnitW - 2, y + 4, { align: 'right' });
@@ -1295,7 +1549,7 @@ export async function generateServiceOrderInvoicePDF(
     y += 6;
 
     order.partsUsed.forEach((part) => {
-      const rowH = 8;
+      const rowH = 15;
       ensureSpace(rowH);
       const lineTotal = part.total ?? part.unitPrice * part.quantity;
       partsSubtotal += lineTotal;
@@ -1303,20 +1557,46 @@ export async function generateServiceOrderInvoicePDF(
       doc.setDrawColor(226, 232, 240);
       doc.setLineWidth(0.2);
       doc.rect(margin, y, contentWidth, rowH, 'S');
+      doc.line(colPNameX, y, colPNameX, y + rowH);
       doc.line(colPCantX, y, colPCantX, y + rowH);
       doc.line(colPUnitX, y, colPUnitX, y + rowH);
       doc.line(colPTotX, y, colPTotX, y + rowH);
 
-      doc.setFont('helvetica', 'normal');
+      // Foto column: real spare part photo or clean placeholder
+      const thumbSize = 12.5;
+      const thumbX = colPFotoX + (colPFotoW - thumbSize) / 2;
+      const thumbY = y + (rowH - thumbSize) / 2;
+      const resolvedUrl = resolveProductImageUrl(part, catalog);
+      const loadedImg = resolvedUrl ? partImageMap.get(resolvedUrl) : undefined;
+      if (!loadedImg || !drawImageFitInBox(doc, loadedImg, thumbX, thumbY, thumbSize, thumbSize, 0.5, 1)) {
+        drawProductThumbnailPlaceholder(doc, thumbX, thumbY, thumbSize, false);
+      }
+
+      doc.setFont('helvetica', 'bold');
       doc.setFontSize(7.4);
       doc.setTextColor(15, 23, 42);
-      const label = `${part.name}${part.sku ? ` (${part.sku})` : ''}`;
-      doc.text(doc.splitTextToSize(label, colPNameW - 4)[0] || '', colPNameX + 2.5, y + 5.2);
+      const nameLines: string[] = doc.splitTextToSize((part.name || '').toUpperCase(), colPNameW - 4.5);
+      doc.text(nameLines[0] || '', colPNameX + 2.5, y + 5.8);
+      if (nameLines.length > 1) {
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(6.7);
+        doc.setTextColor(51, 65, 85);
+        doc.text(nameLines[1], colPNameX + 2.5, y + 9.4);
+      }
+      if (part.sku) {
+        doc.setFont('helvetica', 'normal');
+        doc.setFontSize(6.3);
+        doc.setTextColor(100, 116, 139);
+        doc.text(`SKU: ${part.sku}`, colPNameX + 2.5, nameLines.length > 1 ? y + 12.8 : y + 10.2);
+      }
 
-      doc.text(String(part.quantity), colPCantX + colPCantW / 2, y + 5.2, { align: 'center' });
-      doc.text(formatUSD(part.unitPrice), colPUnitX + colPUnitW - 2, y + 5.2, { align: 'right' });
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(7.8);
+      doc.setTextColor(15, 23, 42);
+      doc.text(String(part.quantity), colPCantX + colPCantW / 2, y + 8.5, { align: 'center' });
+      doc.text(formatUSD(part.unitPrice), colPUnitX + colPUnitW - 2, y + 8.5, { align: 'right' });
       doc.setFont('helvetica', 'bold');
-      doc.text(formatUSD(lineTotal), colPTotX + colPTotW - 2, y + 5.2, { align: 'right' });
+      doc.text(formatUSD(lineTotal), colPTotX + colPTotW - 2, y + 8.5, { align: 'right' });
 
       y += rowH;
     });
@@ -1338,10 +1618,12 @@ export async function generateServiceOrderInvoicePDF(
   doc.line(margin + 95, y, totalsRightX, y);
   y += 5;
 
+  const paySummary = getServiceOrderPaymentSummary(order, rate);
+
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(12.5);
   doc.setTextColor(15, 23, 42);
-  doc.text(`TOTAL A PAGAR: ${formatUSD(totalCost)}`, totalsRightX, y, { align: 'right' });
+  doc.text(`TOTAL ORDEN: ${formatUSD(totalCost)}`, totalsRightX, y, { align: 'right' });
   y += 5;
 
   doc.setFont('helvetica', 'bold');
@@ -1353,7 +1635,47 @@ export async function generateServiceOrderInvoicePDF(
     y,
     { align: 'right' }
   );
-  y += 7;
+  y += 5;
+
+  if (paySummary.paymentStatus === 'PAGADO') {
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(9.5);
+    doc.setTextColor(5, 150, 105);
+    doc.text(
+      `ESTADO DE PAGO: PAGADO EN SU TOTALIDAD (${formatUSD(paySummary.paidUSD)} · Saldo: $0.00)`,
+      totalsRightX,
+      y,
+      { align: 'right' }
+    );
+    y += 6;
+  } else if (paySummary.paymentStatus === 'ABONO') {
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(8.5);
+    doc.setTextColor(37, 99, 235);
+    doc.text(
+      `ABONADO: -${formatUSD(paySummary.paidUSD)} (${formatBs(paySummary.paidBs)})`,
+      totalsRightX,
+      y,
+      { align: 'right' }
+    );
+    y += 4.5;
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(10);
+    doc.setTextColor(180, 83, 9);
+    doc.text(
+      `SALDO RESTANTE POR PAGAR: ${formatUSD(paySummary.remainingUSD)} (${formatBs(paySummary.remainingBs)})`,
+      totalsRightX,
+      y,
+      { align: 'right' }
+    );
+    y += 6;
+  } else {
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(8.5);
+    doc.setTextColor(180, 83, 9);
+    doc.text('ESTADO DE PAGO: PENDIENTE POR PAGAR', totalsRightX, y, { align: 'right' });
+    y += 5.5;
+  }
 
   // --- DATOS PARA REALIZAR EL PAGO + QR OFICIAL PAGO MÓVIL ---
   const paymentBoxHeight = 64;
@@ -1442,7 +1764,15 @@ export async function generateServiceOrderInvoicePDF(
   py += 4.2;
   doc.setFont('helvetica', 'bold');
   doc.setTextColor(5, 150, 105);
-  doc.text(`Monto exacto a cancelar: ${formatBs(totalBs)}  (${formatUSD(totalCost)})`, payTextX, py);
+  doc.text(
+    paySummary.paymentStatus === 'PAGADO'
+      ? `ORDEN PAGADA EN SU TOTALIDAD (${formatUSD(paySummary.paidUSD)})`
+      : paySummary.paymentStatus === 'ABONO'
+      ? `Saldo restante a cancelar: ${formatBs(paySummary.remainingBs)}  (${formatUSD(paySummary.remainingUSD)})`
+      : `Monto exacto a cancelar: ${formatBs(totalBs)}  (${formatUSD(totalCost)})`,
+    payTextX,
+    py
+  );
   py += 6.2;
 
   // Transferencia Bancaria Block
@@ -1515,13 +1845,14 @@ export async function generateServiceOrderInvoicePDF(
 }
 
 /**
- * Descarga directamente el archivo PDF de la factura de servicio de taller (culminada)
+ * Descarga directamente el archivo PDF de la factura de servicio de taller
  */
 export async function downloadServiceOrderPDF(
   order: ServiceOrder,
-  settings: BusinessSettings
+  settings: BusinessSettings,
+  products?: Product[]
 ): Promise<void> {
-  const doc = await generateServiceOrderInvoicePDF(order, settings);
+  const doc = await generateServiceOrderInvoicePDF(order, settings, products);
   const fileName = `Factura_Servicio_${order.orderNumber}_MotoCristoc.pdf`;
   doc.save(fileName);
 }
@@ -1531,9 +1862,10 @@ export async function downloadServiceOrderPDF(
  */
 export async function getServiceOrderPDFBlob(
   order: ServiceOrder,
-  settings: BusinessSettings
+  settings: BusinessSettings,
+  products?: Product[]
 ): Promise<Blob> {
-  const doc = await generateServiceOrderInvoicePDF(order, settings);
+  const doc = await generateServiceOrderInvoicePDF(order, settings, products);
   return doc.output('blob');
 }
 
@@ -1952,15 +2284,20 @@ export function getTechnicianPayoutPDFBlob(
 /**
  * Genera el documento PDF de Orden de Compra / Estado de Deuda y Abonos para el Proveedor / Vendedor
  */
-export function generatePurchaseOrderPDF(
+export async function generatePurchaseOrderPDF(
   order: PurchaseOrder,
-  settings: BusinessSettings
-): jsPDF {
+  settings: BusinessSettings,
+  products?: Product[]
+): Promise<jsPDF> {
   const doc = new jsPDF({
     orientation: 'portrait',
     unit: 'mm',
     format: 'a4',
   });
+
+  const catalog = getCachedProductsCatalog(products);
+  const poItemUrlList = (order.items || []).map((item) => resolveProductImageUrl(item, catalog));
+  const poImageMap = await preloadPdfImageMap(poItemUrlList, 360);
 
   const totalUSD = Number(order.totalUSD || 0);
   const paidUSD = Number(order.paidAmountUSD || 0);
@@ -2145,12 +2482,15 @@ export function generatePurchaseOrderPDF(
   doc.setFontSize(7.2);
   doc.setTextColor(255, 255, 255);
 
-  const cSku = margin + 3;
-  const cName = margin + 28;
-  const cQty = margin + 122;
-  const cCost = margin + 148;
+  const cFotoX = margin;
+  const cFotoW = 17;
+  const cSku = margin + cFotoW + 2;
+  const cName = margin + 41;
+  const cQty = margin + 125;
+  const cCost = margin + 150;
   const cSub = pageWidth - margin - 3;
 
+  doc.text('FOTO', cFotoX + cFotoW / 2, y + 5, { align: 'center' });
   doc.text('CÓD/SKU', cSku, y + 5);
   doc.text('REPUESTO / DESCRIPCIÓN', cName, y + 5);
   doc.text('CANT.', cQty, y + 5, { align: 'center' });
@@ -2159,8 +2499,8 @@ export function generatePurchaseOrderPDF(
   y += 7.5;
 
   order.items.forEach((item, idx) => {
-    const wrappedName: string[] = doc.splitTextToSize((item.name || '').toUpperCase(), 78);
-    const rowH = Math.max(8.5, wrappedName.length * 3.8 + 3.5);
+    const wrappedName: string[] = doc.splitTextToSize((item.name || '').toUpperCase(), 74);
+    const rowH = Math.max(15, wrappedName.length * 3.8 + 4.5);
     ensureSpace(rowH + 2);
 
     doc.setFillColor(idx % 2 === 0 ? 255 : 248, idx % 2 === 0 ? 255 : 250, idx % 2 === 0 ? 255 : 252);
@@ -2169,24 +2509,35 @@ export function generatePurchaseOrderPDF(
     doc.setLineWidth(0.2);
     doc.line(margin, y + rowH, margin + contentWidth, y + rowH);
 
+    // Spare part photo thumbnail
+    const thumbSize = 12;
+    const thumbX = cFotoX + (cFotoW - thumbSize) / 2;
+    const thumbY = y + (rowH - thumbSize) / 2;
+    const resolvedUrl = resolveProductImageUrl(item, catalog);
+    const loadedImg = resolvedUrl ? poImageMap.get(resolvedUrl) : undefined;
+    if (!loadedImg || !drawImageFitInBox(doc, loadedImg, thumbX, thumbY, thumbSize, thumbSize, 0.5, 1)) {
+      drawProductThumbnailPlaceholder(doc, thumbX, thumbY, thumbSize, false);
+    }
+
+    const textMidY = y + Math.min(rowH / 2 + 1.2, 8.2);
     doc.setFont('helvetica', 'normal');
-    doc.setFontSize(7);
+    doc.setFontSize(6.8);
     doc.setTextColor(100, 116, 139);
-    doc.text((item.sku || 'EXT').slice(0, 14), cSku, y + 5);
+    doc.text((item.sku || 'EXT').slice(0, 12), cSku, textMidY);
 
     doc.setFont('helvetica', 'normal');
-    doc.setFontSize(7.5);
+    doc.setFontSize(7.4);
     doc.setTextColor(15, 23, 42);
-    doc.text(wrappedName, cName, y + 5);
+    doc.text(wrappedName, cName, wrappedName.length > 1 ? y + 5.2 : textMidY);
 
     doc.setFont('helvetica', 'bold');
-    doc.text(String(item.quantity), cQty, y + 5, { align: 'center' });
+    doc.text(String(item.quantity), cQty, textMidY, { align: 'center' });
 
     doc.setFont('helvetica', 'normal');
-    doc.text(formatUSD(item.unitCostUSD), cCost, y + 5, { align: 'right' });
+    doc.text(formatUSD(item.unitCostUSD), cCost, textMidY, { align: 'right' });
 
     doc.setFont('helvetica', 'bold');
-    doc.text(formatUSD(item.totalCostUSD), cSub, y + 5, { align: 'right' });
+    doc.text(formatUSD(item.totalCostUSD), cSub, textMidY, { align: 'right' });
 
     y += rowH;
   });
@@ -2341,11 +2692,12 @@ export function generatePurchaseOrderPDF(
   return doc;
 }
 
-export function downloadPurchaseOrderPDF(
+export async function downloadPurchaseOrderPDF(
   order: PurchaseOrder,
-  settings: BusinessSettings
-): void {
-  const doc = generatePurchaseOrderPDF(order, settings);
+  settings: BusinessSettings,
+  products?: Product[]
+): Promise<void> {
+  const doc = await generatePurchaseOrderPDF(order, settings, products);
   const safeNum = String(order.orderNumber || 'OC').replace(/[^a-zA-Z0-9_-]/g, '_');
   const safeSupplier = String(order.supplierCode || order.supplierName || 'Proveedor')
     .replace(/[^a-zA-Z0-9_-]/g, '_')
@@ -2372,11 +2724,12 @@ export function downloadPurchaseOrderPDF(
   doc.save(fileName);
 }
 
-export function getPurchaseOrderPDFBlob(
+export async function getPurchaseOrderPDFBlob(
   order: PurchaseOrder,
-  settings: BusinessSettings
-): Blob {
-  const doc = generatePurchaseOrderPDF(order, settings);
+  settings: BusinessSettings,
+  products?: Product[]
+): Promise<Blob> {
+  const doc = await generatePurchaseOrderPDF(order, settings, products);
   return doc.output('blob');
 }
 

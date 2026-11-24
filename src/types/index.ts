@@ -254,6 +254,24 @@ export type FuelLevel = 'Vacío' | '1/4' | '1/2' | '3/4' | 'Lleno';
 
 export type ServiceOrderEntryType = 'MOTOCICLETA' | 'ASIENTO';
 
+export type ServiceOrderPaymentStatus = 'PENDIENTE' | 'ABONO' | 'PAGADO';
+
+export interface ServiceOrderPaymentRecord {
+  id: string;
+  date: string; // ISO string
+  amountUSD: number;
+  amountBs: number;
+  currencyMode?: PaymentCurrencyMode; // 'BS' | 'USD'
+  bcvRate: number;
+  paymentMethod: PaymentMethod;
+  pagoMovilAccount?: PagoMovilAccountOption;
+  treasuryAccountId?: string;
+  treasuryAccountName?: string;
+  treasuryMovementId?: string;
+  reference?: string;
+  notes?: string;
+}
+
 export interface ServiceOrder {
   id: string;
   orderNumber: string; // e.g., ORD-2026-0045
@@ -275,6 +293,10 @@ export interface ServiceOrder {
   totalCost: number; // Total en USD
   bcvRate?: number; // Tasa BCV aplicada
   totalCostBs?: number; // Total equivalente en Bs.
+  paymentStatus?: ServiceOrderPaymentStatus; // 'PENDIENTE' | 'ABONO' | 'PAGADO'
+  paidAmountUSD?: number; // Monto total abonado / pagado acumulado en USD
+  paidAmountBs?: number; // Monto total abonado / pagado acumulado en Bs.
+  payments?: ServiceOrderPaymentRecord[]; // Historial de abonos o pago total
   status: ServiceOrderStatus;
   assignedTechnician?: string;
   assignedTechnicianId?: string;
@@ -284,6 +306,67 @@ export interface ServiceOrder {
   createdAt: string;
   updatedAt: string;
   notes?: string;
+}
+
+export function getServiceOrderPaymentSummary(
+  order: Pick<ServiceOrder, 'totalCost' | 'bcvRate' | 'totalCostBs' | 'paymentStatus' | 'paidAmountUSD' | 'paidAmountBs' | 'payments'>,
+  fallbackRate: number = 1
+): {
+  paymentStatus: ServiceOrderPaymentStatus;
+  totalUSD: number;
+  totalBs: number;
+  paidUSD: number;
+  paidBs: number;
+  remainingUSD: number;
+  remainingBs: number;
+  paymentsCount: number;
+} {
+  const rate = order.bcvRate && order.bcvRate > 0 ? order.bcvRate : fallbackRate > 0 ? fallbackRate : 1;
+  const totalUSD = Math.max(0, Math.round((Number(order.totalCost) || 0) * 100) / 100);
+  const totalBs = Math.round(((order.totalCostBs !== undefined && order.totalCostBs > 0 ? order.totalCostBs : totalUSD * rate)) * 100) / 100;
+  const records = Array.isArray(order.payments) ? order.payments : [];
+  const sumRecordsUSD = records.reduce((s, p) => s + (Number(p.amountUSD) || 0), 0);
+  const sumRecordsBs = records.reduce((s, p) => s + (Number(p.amountBs) || 0), 0);
+
+  let paidUSD = records.length > 0
+    ? Math.round(sumRecordsUSD * 100) / 100
+    : Math.max(0, Math.round((Number(order.paidAmountUSD) || 0) * 100) / 100);
+  let paidBs = records.length > 0
+    ? Math.round(sumRecordsBs * 100) / 100
+    : order.paidAmountBs !== undefined
+    ? Math.max(0, Math.round((Number(order.paidAmountBs) || 0) * 100) / 100)
+    : Math.round(paidUSD * rate * 100) / 100;
+
+  let paymentStatus: ServiceOrderPaymentStatus;
+  if (order.paymentStatus === 'PAGADO' && (records.length === 0 || totalUSD === 0 || paidUSD >= totalUSD - 0.02)) {
+    paymentStatus = 'PAGADO';
+    if (records.length === 0 && paidUSD < totalUSD) {
+      paidUSD = totalUSD;
+      paidBs = totalBs;
+    }
+  } else if (totalUSD > 0 && paidUSD >= totalUSD - 0.02) {
+    paymentStatus = 'PAGADO';
+  } else if (paidUSD > 0.009) {
+    paymentStatus = 'ABONO';
+  } else if (order.paymentStatus === 'PAGADO') {
+    paymentStatus = 'PAGADO';
+  } else {
+    paymentStatus = 'PENDIENTE';
+  }
+
+  const remainingUSD = paymentStatus === 'PAGADO' ? 0 : Math.max(0, Math.round((totalUSD - paidUSD) * 100) / 100);
+  const remainingBs = paymentStatus === 'PAGADO' ? 0 : Math.max(0, Math.round(remainingUSD * rate * 100) / 100);
+
+  return {
+    paymentStatus,
+    totalUSD,
+    totalBs,
+    paidUSD,
+    paidBs,
+    remainingUSD,
+    remainingBs,
+    paymentsCount: records.length,
+  };
 }
 
 export type OnlineOrderStatus = 'PENDIENTE_PAGO' | 'CONFIRMADO' | 'EN_ALISTAMIENTO' | 'LISTO_ENTREGA' | 'ENTREGADO' | 'CANCELADO';

@@ -298,6 +298,14 @@ export const SalesDatabaseView: React.FC = () => {
         ''
       );
     }
+    if (method === 'Efectivo Bs') {
+      return (
+        treasuryAccounts.find((a) => a.id === 'acc-efectivo-bs')?.id ||
+        treasuryAccounts.find((a) => /caja\s*efectivo\s*bs/i.test(a.name))?.id ||
+        treasuryAccounts.find((a) => a.currency === 'BS' && a.group === 'EFECTIVO')?.id ||
+        ''
+      );
+    }
     if (method === 'Binance Pay (USDT)') {
       return (
         treasuryAccounts.find((a) => a.id === 'acc-billetera-usdt')?.id ||
@@ -321,6 +329,7 @@ export const SalesDatabaseView: React.FC = () => {
     if (method === 'Pago Móvil') {
       return pmAccount === 'PROVINCIAL' ? 'Provincial (Bs)' : 'Banesco Personal (Bs)';
     }
+    if (method === 'Efectivo Bs') return 'Caja Efectivo Bs';
     if (method === 'Punto de Venta (Bs)') return 'Banesco SMCC (Bs)';
     if (method === 'Dólares Efectivo (USD)') return 'Caja Efectivo USD ($)';
     if (method === 'Binance Pay (USDT)') return 'Billetera USDT (Binance)';
@@ -1170,6 +1179,7 @@ export const SalesDatabaseView: React.FC = () => {
                             </span>
                             {(sale.treasuryAccountName ||
                               (sale.paymentMethod === 'Pago Móvil' && sale.pagoMovilAccount) ||
+                              sale.paymentMethod === 'Efectivo Bs' ||
                               sale.paymentMethod === 'Punto de Venta (Bs)') && (
                               <span className="text-slate-500 block">
                                 →{' '}
@@ -1178,7 +1188,9 @@ export const SalesDatabaseView: React.FC = () => {
                                     ? sale.pagoMovilAccount === 'PROVINCIAL'
                                       ? 'Provincial (Bs)'
                                       : 'Banesco Personal (Bs)'
-                                    : 'Banesco SMCC (Bs)')}
+                                    : sale.paymentMethod === 'Efectivo Bs'
+                                      ? 'Caja Efectivo Bs'
+                                      : 'Banesco SMCC (Bs)')}
                               </span>
                             )}
                           </div>
@@ -1437,6 +1449,7 @@ export const SalesDatabaseView: React.FC = () => {
                         const isBsMethod =
                           !isCreditLeg &&
                           (sp.paymentMethod === 'Pago Móvil' ||
+                            sp.paymentMethod === 'Efectivo Bs' ||
                             sp.paymentMethod === 'Punto de Venta (Bs)' ||
                             sp.paymentMethod === 'Transferencia Bancaria Bs');
                         const exactBs = sp.amountBs || sp.amountUSD * (selectedSaleDetail.bcvRate || rate);
@@ -1582,6 +1595,7 @@ export const SalesDatabaseView: React.FC = () => {
                         p.currencyMode === 'BS' ||
                         (!p.currencyMode &&
                           (p.paymentMethod === 'Pago Móvil' ||
+                            p.paymentMethod === 'Efectivo Bs' ||
                             p.paymentMethod === 'Punto de Venta (Bs)' ||
                             p.paymentMethod === 'Transferencia Bancaria Bs'));
                       return (
@@ -1983,6 +1997,7 @@ export const SalesDatabaseView: React.FC = () => {
                                       className="w-full p-2 rounded-lg border border-slate-300 bg-slate-50 font-semibold text-slate-900"
                                     >
                                       <option value="Pago Móvil">Pago Móvil</option>
+                                      <option value="Efectivo Bs">Efectivo Bs</option>
                                       <option value="Punto de Venta (Bs)">Punto de Venta (Bs)</option>
                                       <option value="Dólares Efectivo (USD)">Dólares Efectivo (USD)</option>
                                       <option value="Transferencia Bancaria Bs">Transferencia Bs</option>
@@ -2111,6 +2126,7 @@ export const SalesDatabaseView: React.FC = () => {
                         {(
                           [
                             { id: 'Pago Móvil', label: 'Pago Móvil' },
+                            { id: 'Efectivo Bs', label: 'Efectivo Bs' },
                             { id: 'Punto de Venta (Bs)', label: 'Punto de Venta (Bs)' },
                             { id: 'Dólares Efectivo (USD)', label: 'Efectivo USD ($)' },
                             { id: 'Transferencia Bancaria Bs', label: 'Transferencia Bs' },

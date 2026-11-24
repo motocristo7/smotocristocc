@@ -4935,6 +4935,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       isDeferredSingle && collectedUSD > 0
         ? saleData.creditInitialPaymentCurrency ||
           (resolvedPaymentMethod === 'Pago Móvil' ||
+          resolvedPaymentMethod === 'Efectivo Bs' ||
           resolvedPaymentMethod === 'Punto de Venta (Bs)' ||
           resolvedPaymentMethod === 'Transferencia Bancaria Bs'
             ? 'BS'
@@ -5617,6 +5618,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     const resolvedCurrencyMode: PaymentCurrencyMode =
       payment.currencyMode ||
       (payment.paymentMethod === 'Pago Móvil' ||
+      payment.paymentMethod === 'Efectivo Bs' ||
       payment.paymentMethod === 'Punto de Venta (Bs)' ||
       payment.paymentMethod === 'Transferencia Bancaria Bs'
         ? 'BS'
@@ -6283,6 +6285,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
         const resolvedCurrencyMode: PaymentCurrencyMode =
           initialPayment.currencyMode ||
           (initialPayment.paymentMethod === 'Pago Móvil' ||
+          initialPayment.paymentMethod === 'Efectivo Bs' ||
           initialPayment.paymentMethod === 'Punto de Venta (Bs)' ||
           initialPayment.paymentMethod === 'Transferencia Bancaria Bs'
             ? 'BS'
@@ -6587,6 +6590,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     const resolvedCurrencyMode: PaymentCurrencyMode =
       payment.currencyMode ||
       (payment.paymentMethod === 'Pago Móvil' ||
+      payment.paymentMethod === 'Efectivo Bs' ||
       payment.paymentMethod === 'Punto de Venta (Bs)' ||
       payment.paymentMethod === 'Transferencia Bancaria Bs'
         ? 'BS'
@@ -9390,6 +9394,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       | 'BANESCO_PERSONAL'
       | 'PROVINCIAL'
       | 'BANESCO_SMCC'
+      | 'EFECTIVO_BS'
       | 'EFECTIVO_USD'
       | 'BILLETERA_USDT'
   ): TreasuryAccount => {
@@ -9412,6 +9417,13 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
         return (
           accounts.find((a) => a.id === 'acc-banesco-smcc') ||
           accounts.find((a) => /banesco\s*smcc|\bsmcc\b/i.test(a.name))
+        );
+      }
+      if (preset === 'EFECTIVO_BS') {
+        return (
+          accounts.find((a) => a.id === 'acc-efectivo-bs') ||
+          accounts.find((a) => /caja\s*efectivo\s*bs/i.test(a.name)) ||
+          accounts.find((a) => a.currency === 'BS' && a.group === 'EFECTIVO')
         );
       }
       if (preset === 'EFECTIVO_USD') {
@@ -9459,6 +9471,14 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
         currency: 'BS',
         institution: 'Banesco',
         notes: 'Cuenta para ingresos automáticos por Punto de Venta (Bs)',
+      },
+      EFECTIVO_BS: {
+        id: 'acc-efectivo-bs',
+        name: 'Caja Efectivo Bs',
+        group: 'EFECTIVO',
+        currency: 'BS',
+        institution: 'Caja Mostrador',
+        notes: 'Efectivo en Bolívares disponible en caja mostrador',
       },
       EFECTIVO_USD: {
         id: 'acc-efectivo-usd',
@@ -9520,6 +9540,9 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       return ensureSalesTreasuryAccount(
         pagoMovilAccount === 'PROVINCIAL' ? 'PROVINCIAL' : 'BANESCO_PERSONAL'
       );
+    }
+    if (paymentMethod === 'Efectivo Bs') {
+      return ensureSalesTreasuryAccount('EFECTIVO_BS');
     }
     if (paymentMethod === 'Punto de Venta (Bs)') {
       return ensureSalesTreasuryAccount('BANESCO_SMCC');

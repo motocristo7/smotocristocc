@@ -35,6 +35,7 @@ interface RecordCreditPaymentModalProps {
 
 const isBsMethod = (method: PaymentMethod): boolean =>
   method === 'Pago Móvil' ||
+  method === 'Efectivo Bs' ||
   method === 'Punto de Venta (Bs)' ||
   method === 'Transferencia Bancaria Bs';
 
@@ -146,11 +147,13 @@ export const RecordCreditPaymentModal: React.FC<RecordCreditPaymentModalProps> =
       ? pagoMovilAccount === 'PROVINCIAL'
         ? 'Provincial (Bs)'
         : 'Banesco Personal (Bs)'
-      : paymentMethod === 'Punto de Venta (Bs)' || paymentMethod === 'Transferencia Bancaria Bs'
-        ? 'Banesco SMCC (Bs)'
-        : paymentMethod === 'Binance Pay (USDT)'
-          ? 'Billetera USDT (Binance)'
-          : 'Caja Efectivo USD ($)';
+      : paymentMethod === 'Efectivo Bs'
+        ? 'Caja Efectivo Bs'
+        : paymentMethod === 'Punto de Venta (Bs)' || paymentMethod === 'Transferencia Bancaria Bs'
+          ? 'Banesco SMCC (Bs)'
+          : paymentMethod === 'Binance Pay (USDT)'
+            ? 'Billetera USDT (Binance)'
+            : 'Caja Efectivo USD ($)';
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -491,6 +494,7 @@ export const RecordCreditPaymentModal: React.FC<RecordCreditPaymentModalProps> =
               {currencyMode === 'BS' ? (
                 <>
                   <option value="Pago Móvil">Pago Móvil (Bs.)</option>
+                  <option value="Efectivo Bs">Efectivo en Bolívares (Bs.)</option>
                   <option value="Punto de Venta (Bs)">Punto de Venta (Bs.)</option>
                   <option value="Transferencia Bancaria Bs">Transferencia Bancaria (Bs.)</option>
                 </>

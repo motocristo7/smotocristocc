@@ -100,6 +100,7 @@ export interface SaleItem {
 
 export type PaymentMethod = 
   | 'Pago Móvil'
+  | 'Efectivo Bs'
   | 'Dólares Efectivo (USD)'
   | 'Transferencia Bancaria Bs'
   | 'Punto de Venta (Bs)'

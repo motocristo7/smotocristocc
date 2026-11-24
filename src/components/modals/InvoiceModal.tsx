@@ -328,6 +328,7 @@ export const InvoiceModal: React.FC = () => {
                       selectedInvoice.creditInitialPaymentCurrency === 'BS' ||
                       (!selectedInvoice.creditInitialPaymentCurrency &&
                         (selectedInvoice.paymentMethod === 'Pago Móvil' ||
+                          selectedInvoice.paymentMethod === 'Efectivo Bs' ||
                           selectedInvoice.paymentMethod === 'Punto de Venta (Bs)' ||
                           selectedInvoice.paymentMethod === 'Transferencia Bancaria Bs'));
                     const remainingUSD = Math.max(0, selectedInvoice.total - paidUSD);
@@ -391,6 +392,7 @@ export const InvoiceModal: React.FC = () => {
                                 p.currencyMode === 'BS' ||
                                 (!p.currencyMode &&
                                   (p.paymentMethod === 'Pago Móvil' ||
+                                    p.paymentMethod === 'Efectivo Bs' ||
                                     p.paymentMethod === 'Punto de Venta (Bs)' ||
                                     p.paymentMethod === 'Transferencia Bancaria Bs'));
                               return (
@@ -560,6 +562,7 @@ export const InvoiceModal: React.FC = () => {
                       const isBsMethod =
                         !isCreditLeg &&
                         (sp.paymentMethod === 'Pago Móvil' ||
+                          sp.paymentMethod === 'Efectivo Bs' ||
                           sp.paymentMethod === 'Punto de Venta (Bs)' ||
                           sp.paymentMethod === 'Transferencia Bancaria Bs');
                       const exactBs = sp.amountBs || sp.amountUSD * rate;
@@ -751,6 +754,7 @@ export const InvoiceModal: React.FC = () => {
                     const isBsMethod =
                       !isCreditLeg &&
                       (sp.paymentMethod === 'Pago Móvil' ||
+                        sp.paymentMethod === 'Efectivo Bs' ||
                         sp.paymentMethod === 'Punto de Venta (Bs)' ||
                         sp.paymentMethod === 'Transferencia Bancaria Bs');
                     const exactBs = sp.amountBs || sp.amountUSD * rate;
@@ -822,6 +826,7 @@ export const InvoiceModal: React.FC = () => {
                   const isBsMethod =
                     sp.splitType !== 'CREDITO' &&
                     (sp.paymentMethod === 'Pago Móvil' ||
+                      sp.paymentMethod === 'Efectivo Bs' ||
                       sp.paymentMethod === 'Punto de Venta (Bs)' ||
                       sp.paymentMethod === 'Transferencia Bancaria Bs');
                   const exactBs = sp.amountBs || sp.amountUSD * rate;

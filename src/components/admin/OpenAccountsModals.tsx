@@ -45,6 +45,7 @@ import {
 
 const isBsMethod = (method: PaymentMethod): boolean =>
   method === 'Pago Móvil' ||
+  method === 'Efectivo Bs' ||
   method === 'Punto de Venta (Bs)' ||
   method === 'Transferencia Bancaria Bs';
 
@@ -1250,6 +1251,7 @@ export const SettleOpenAccountModal: React.FC<SettleOpenAccountModalProps> = ({
                   className="w-full p-2.5 rounded-xl border border-slate-300 bg-white text-xs font-bold text-slate-900"
                 >
                   <option value="Pago Móvil">Pago Móvil (Bs.)</option>
+                  <option value="Efectivo Bs">Efectivo en Bolívares (Bs.)</option>
                   <option value="Dólares Efectivo (USD)">Dólares Efectivo ($ USD)</option>
                   <option value="Punto de Venta (Bs)">Punto de Venta (Bs.)</option>
                   <option value="Transferencia Bancaria Bs">Transferencia Bancaria Bs</option>
@@ -1395,6 +1397,7 @@ export const SettleOpenAccountModal: React.FC<SettleOpenAccountModalProps> = ({
                       className="p-2 rounded-lg border border-slate-200 text-xs font-semibold bg-slate-50"
                     >
                       <option value="Pago Móvil">Pago Móvil (Bs.)</option>
+                      <option value="Efectivo Bs">Efectivo Bs</option>
                       <option value="Dólares Efectivo (USD)">Dólares Efectivo ($)</option>
                       <option value="Punto de Venta (Bs)">Punto de Venta (Bs.)</option>
                       <option value="Transferencia Bancaria Bs">Transferencia Bs</option>
@@ -1564,6 +1567,7 @@ export const SettleOpenAccountModal: React.FC<SettleOpenAccountModalProps> = ({
                     className="w-full p-2 rounded-lg border border-amber-300 bg-white text-xs font-semibold"
                   >
                     <option value="Pago Móvil">Pago Móvil (Bs.)</option>
+                    <option value="Efectivo Bs">Efectivo Bs</option>
                     <option value="Dólares Efectivo (USD)">Dólares Efectivo ($)</option>
                     <option value="Punto de Venta (Bs)">Punto de Venta (Bs.)</option>
                     <option value="Transferencia Bancaria Bs">Transferencia Bs</option>

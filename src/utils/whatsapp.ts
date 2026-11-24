@@ -144,6 +144,7 @@ export function buildInvoiceWhatsAppMessage(sale: Sale, settings: BusinessSettin
       sale.creditInitialPaymentCurrency === 'BS' ||
       (!sale.creditInitialPaymentCurrency &&
         (sale.paymentMethod === 'Pago Móvil' ||
+          sale.paymentMethod === 'Efectivo Bs' ||
           sale.paymentMethod === 'Punto de Venta (Bs)' ||
           sale.paymentMethod === 'Transferencia Bancaria Bs'));
     const abonoLine =
@@ -178,6 +179,7 @@ ${abonoLine}⚠️ *Saldo Restante para Retirar:* *${formatUSD(pendingBalanceUSD
       sale.creditInitialPaymentCurrency === 'BS' ||
       (!sale.creditInitialPaymentCurrency &&
         (sale.paymentMethod === 'Pago Móvil' ||
+          sale.paymentMethod === 'Efectivo Bs' ||
           sale.paymentMethod === 'Punto de Venta (Bs)' ||
           sale.paymentMethod === 'Transferencia Bancaria Bs'));
     const abonoLine =
@@ -213,6 +215,7 @@ ${abonoLine}⚠️ *Saldo Pendiente por Pagar:* *${formatUSD(pendingBalanceUSD)}
         const isBsMethod =
           sp.splitType !== 'CREDITO' &&
           (sp.paymentMethod === 'Pago Móvil' ||
+            sp.paymentMethod === 'Efectivo Bs' ||
             sp.paymentMethod === 'Punto de Venta (Bs)' ||
             sp.paymentMethod === 'Transferencia Bancaria Bs');
         const amountText = isBsMethod
@@ -251,6 +254,7 @@ ${mixtoLines}
             const isBsMethod =
               sp.splitType !== 'CREDITO' &&
               (sp.paymentMethod === 'Pago Móvil' ||
+                sp.paymentMethod === 'Efectivo Bs' ||
                 sp.paymentMethod === 'Punto de Venta (Bs)' ||
                 sp.paymentMethod === 'Transferencia Bancaria Bs');
             const amountText = isBsMethod
@@ -620,6 +624,7 @@ export function buildCreditPaymentReceiptWhatsAppMessage(
     payment.currencyMode === 'BS' ||
     (!payment.currencyMode &&
       (payment.paymentMethod === 'Pago Móvil' ||
+        payment.paymentMethod === 'Efectivo Bs' ||
         payment.paymentMethod === 'Punto de Venta (Bs)' ||
         payment.paymentMethod === 'Transferencia Bancaria Bs'));
   const paidTodayDisplay = paidInBs

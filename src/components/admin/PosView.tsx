@@ -242,6 +242,7 @@ export const PosView: React.FC = () => {
   type MixtoCurrencyMode = 'BS' | 'USD';
   const isBsPaymentMethod = (method: PaymentMethod): boolean =>
     method === 'Pago Móvil' ||
+    method === 'Efectivo Bs' ||
     method === 'Punto de Venta (Bs)' ||
     method === 'Transferencia Bancaria Bs';
 
@@ -3161,11 +3162,13 @@ export const PosView: React.FC = () => {
                             ? leg.pagoMovilAccount === 'PROVINCIAL'
                               ? 'Provincial (Bs.)'
                               : 'Banesco Personal (Bs.)'
-                            : leg.paymentMethod === 'Dólares Efectivo (USD)'
-                              ? 'Caja Efectivo USD ($)'
-                              : leg.paymentMethod === 'Binance Pay (USDT)'
-                                ? 'Billetera USDT (Binance)'
-                                : 'Banesco SMCC (Bs.)';
+                            : leg.paymentMethod === 'Efectivo Bs'
+                              ? 'Caja Efectivo Bs'
+                              : leg.paymentMethod === 'Dólares Efectivo (USD)'
+                                ? 'Caja Efectivo USD ($)'
+                                : leg.paymentMethod === 'Binance Pay (USDT)'
+                                  ? 'Billetera USDT (Binance)'
+                                  : 'Banesco SMCC (Bs.)';
 
                         const handleSelectCurrencyMode = (nextMode: MixtoCurrencyMode) => {
                           setMixtoSplits((prev) =>
@@ -3379,6 +3382,7 @@ export const PosView: React.FC = () => {
                                     {isBsLeg ? (
                                       <>
                                         <option value="Pago Móvil">Pago Móvil (Bs.)</option>
+                                        <option value="Efectivo Bs">Efectivo en Bolívares (Bs.)</option>
                                         <option value="Punto de Venta (Bs)">Punto de Venta (Bs.)</option>
                                         <option value="Transferencia Bancaria Bs">Transferencia Bancaria (Bs.)</option>
                                       </>
@@ -4178,6 +4182,7 @@ export const PosView: React.FC = () => {
                         className="w-full p-2 border border-slate-200 rounded-lg text-xs bg-slate-50 font-medium"
                       >
                         <option value="Pago Móvil">Pago Móvil (Bs.)</option>
+                        <option value="Efectivo Bs">Efectivo en Bolívares (Bs.)</option>
                         <option value="Dólares Efectivo (USD)">Dólares Efectivo ($ USD)</option>
                         <option value="Transferencia Bancaria Bs">Transferencia Bs</option>
                         <option value="Punto de Venta (Bs)">Punto de Venta (Bs.)</option>
@@ -4258,11 +4263,13 @@ export const PosView: React.FC = () => {
                       <span>
                         Ingreso automático en Tesorería:{' '}
                         <strong className="text-slate-800">
-                          {paymentMethod === 'Dólares Efectivo (USD)'
-                            ? 'Caja Efectivo USD ($)'
-                            : paymentMethod === 'Binance Pay (USDT)'
-                              ? 'Billetera USDT (Binance)'
-                              : 'Banesco SMCC (Bs)'}
+                          {paymentMethod === 'Efectivo Bs'
+                            ? 'Caja Efectivo Bs'
+                            : paymentMethod === 'Dólares Efectivo (USD)'
+                              ? 'Caja Efectivo USD ($)'
+                              : paymentMethod === 'Binance Pay (USDT)'
+                                ? 'Billetera USDT (Binance)'
+                                : 'Banesco SMCC (Bs)'}
                         </strong>
                       </span>
                     </div>

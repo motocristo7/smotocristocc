@@ -72,6 +72,7 @@ import {
 
 const SERVICE_PAYMENT_METHODS: PaymentMethod[] = [
   'Pago Móvil',
+  'Efectivo Bs',
   'Dólares Efectivo (USD)',
   'Transferencia Bancaria Bs',
   'Punto de Venta (Bs)',
@@ -80,6 +81,7 @@ const SERVICE_PAYMENT_METHODS: PaymentMethod[] = [
 
 const isBsPaymentMethod = (method: PaymentMethod): boolean =>
   method === 'Pago Móvil' ||
+  method === 'Efectivo Bs' ||
   method === 'Transferencia Bancaria Bs' ||
   method === 'Punto de Venta (Bs)';
 
@@ -5033,12 +5035,14 @@ export const ServiceOrdersView: React.FC = () => {
                                 </label>
                                 <select
                                   value={orderForm.initialPaymentMethod}
-                                  onChange={(e) =>
+                                  onChange={(e) => {
+                                    const nextMethod = e.target.value as PaymentMethod;
                                     setOrderForm((prev) => ({
                                       ...prev,
-                                      initialPaymentMethod: e.target.value as PaymentMethod,
-                                    }))
-                                  }
+                                      initialPaymentMethod: nextMethod,
+                                      initialPaymentCurrency: isBsPaymentMethod(nextMethod) ? 'BS' : 'USD',
+                                    }));
+                                  }}
                                   className="w-full p-2.5 rounded-lg border border-slate-300 bg-white font-semibold text-xs"
                                 >
                                   {SERVICE_PAYMENT_METHODS.map((m) => (

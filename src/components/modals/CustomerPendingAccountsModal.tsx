@@ -537,6 +537,7 @@ export const CustomerPendingAccountsModal: React.FC<CustomerPendingAccountsModal
                                       p.currencyMode === 'BS' ||
                                       (!p.currencyMode &&
                                         (p.paymentMethod === 'Pago Móvil' ||
+                                          p.paymentMethod === 'Efectivo Bs' ||
                                           p.paymentMethod === 'Punto de Venta (Bs)' ||
                                           p.paymentMethod === 'Transferencia Bancaria Bs'));
                                     return (

@@ -14,6 +14,8 @@ import {
   Customer,
   FuelLevel,
   Product,
+  productTracksInventory,
+  DEFAULT_PRODUCTION_TIME_LABEL,
   Technician,
   PaymentMethod,
   PagoMovilAccountOption,
@@ -678,7 +680,7 @@ const ServicePartsPicker: React.FC<ServicePartsPickerProps> = ({
         const combined = `${nameNorm} ${skuNorm} ${barcodeNorm} ${brandNorm} ${compatNorm} ${locNorm} ${catNorm}`;
 
         if (tokens.length === 0) {
-          return { product: p, score: p.stock > 0 ? 10 : 1 };
+          return { product: p, score: !productTracksInventory(p) || p.stock > 0 ? 10 : 1 };
         }
 
         if (!tokens.every((t) => combined.includes(t))) {
@@ -689,7 +691,7 @@ const ServicePartsPicker: React.FC<ServicePartsPickerProps> = ({
         if (skuNorm === q || barcodeNorm === q) score += 100;
         else if (nameNorm.startsWith(q)) score += 70;
         else if (nameNorm.includes(q)) score += 50;
-        if (p.stock > 0) score += 15;
+        if (!productTracksInventory(p) || p.stock > 0) score += 15;
         return { product: p, score };
       })
       .filter((entry) => entry.score > 0)
@@ -702,9 +704,10 @@ const ServicePartsPicker: React.FC<ServicePartsPickerProps> = ({
     setLocalError(null);
     const qty = Math.max(1, Number(qtyByProduct[prod.id]) || 1);
     const alreadyUsed = selectedQtyMap.get(prod.id) || 0;
+    const tracksInv = productTracksInventory(prod);
     const remaining = prod.stock - alreadyUsed;
 
-    if (validateStock && qty > remaining) {
+    if (tracksInv && validateStock && qty > remaining) {
       setLocalError(
         remaining <= 0
           ? `"${prod.name}" ya no tiene stock disponible (${prod.stock} en almacén, ${alreadyUsed} en la orden).`
@@ -765,7 +768,7 @@ const ServicePartsPicker: React.FC<ServicePartsPickerProps> = ({
                 : 'text-slate-600 hover:text-slate-900'
             }`}
           >
-            Del Inventario ({products.filter((p) => p.stock > 0).length})
+            Del Inventario ({products.filter((p) => !productTracksInventory(p) || p.stock > 0).length})
           </button>
           <button
             type="button"
@@ -823,10 +826,11 @@ const ServicePartsPicker: React.FC<ServicePartsPickerProps> = ({
           <div className="bg-white border border-slate-200 rounded-xl max-h-52 overflow-y-auto divide-y divide-slate-100 shadow-2xs">
             {matchingProducts.length > 0 ? (
               matchingProducts.map((prod) => {
+                const tracksInv = productTracksInventory(prod);
                 const alreadyInOrder = selectedQtyMap.get(prod.id) || 0;
                 const availableNow = prod.stock - alreadyInOrder;
                 const rowQty = Math.max(1, Number(qtyByProduct[prod.id]) || 1);
-                const isOutOfStock = validateStock ? availableNow <= 0 : prod.stock <= 0;
+                const isOutOfStock = tracksInv && (validateStock ? availableNow <= 0 : prod.stock <= 0);
 
                 return (
                   <div
@@ -853,15 +857,18 @@ const ServicePartsPicker: React.FC<ServicePartsPickerProps> = ({
                       <div className="flex items-center gap-2 text-[10px] text-slate-500 mt-0.5 flex-wrap">
                         <span
                           className={`font-bold px-1.5 py-0.5 rounded tabular-nums ${
-                            availableNow > 3
+                            !tracksInv
+                              ? 'bg-indigo-50 text-indigo-800 border border-indigo-200'
+                              : availableNow > 3
                               ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
                               : availableNow > 0
                               ? 'bg-amber-50 text-amber-800 border border-amber-200'
                               : 'bg-rose-50 text-rose-700 border border-rose-200'
                           }`}
                         >
-                          Stock: {prod.stock}
-                          {alreadyInOrder > 0 ? ` (${alreadyInOrder} en orden)` : ''}
+                          {!tracksInv
+                            ? `Bajo pedido (${prod.productionTimeLabel || DEFAULT_PRODUCTION_TIME_LABEL})`
+                            : `Stock: ${prod.stock}${alreadyInOrder > 0 ? ` (${alreadyInOrder} en orden)` : ''}`}
                         </span>
                         {prod.warehouseLocation && (
                           <span className="text-slate-600 font-medium">
@@ -2614,7 +2621,7 @@ export const ServiceOrdersView: React.FC = () => {
     const target = orderForm.selectedParts[index];
     if (target?.productId) {
       const prod = products.find((p) => p.id === target.productId);
-      if (prod && newQty > prod.stock) {
+      if (prod && productTracksInventory(prod) && newQty > prod.stock) {
         setNewOrderError(`Stock máximo disponible para "${prod.name}": ${prod.stock} unidades.`);
         return;
       }

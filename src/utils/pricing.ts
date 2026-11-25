@@ -313,6 +313,9 @@ export function sanitizeProductForPublic(product: Product): Product {
     description: product.description,
     costPrice: 0, // Campo interno oculto en catálogo público
     salePrice: product.salePrice, // Precio comercial BCV (USD BCV para conversión oficial BCV)
+    tracksInventory: product.tracksInventory !== false,
+    ...(product.productionTimeLabel ? { productionTimeLabel: product.productionTimeLabel } : {}),
+    ...(product.productionTimeNote ? { productionTimeNote: product.productionTimeNote } : {}),
     stock: product.stock,
     minStock: product.minStock,
     brand: product.brand,
@@ -344,6 +347,9 @@ export function serializePublicProductForApi(product: Record<string, any>, bcvRa
     description: product.description || '',
     salePrice: safeSalePrice,
     ...(safeBcv > 0 ? { salePriceBsBcv: round2(safeSalePrice * safeBcv) } : {}),
+    tracksInventory: product.tracksInventory !== false,
+    ...(product.productionTimeLabel ? { productionTimeLabel: product.productionTimeLabel } : {}),
+    ...(product.productionTimeNote ? { productionTimeNote: product.productionTimeNote } : {}),
     stock: Number(product.stock) || 0,
     minStock: Number(product.minStock) || 0,
     brand: product.brand || '',

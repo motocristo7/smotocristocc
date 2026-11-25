@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useRef, useMemo } from 'react';
 import {
   Product,
+  productTracksInventory,
   Customer,
   Sale,
   ServiceOrder,
@@ -328,7 +329,11 @@ interface AppContextType {
   }) => Sale;
   updateSale: (
     saleId: string,
-    updates: Partial<Sale> & { reassignCustomer?: boolean; syncTreasuryPayment?: boolean }
+    updates: Partial<Sale> & {
+      reassignCustomer?: boolean;
+      syncTreasuryPayment?: boolean;
+      syncInventoryOnItemsChange?: boolean;
+    }
   ) => Sale | null;
   updateSaleCreditStatus: (saleId: string, status: 'PENDIENTE' | 'PAGADO', paidAmount?: number) => void;
   recordCreditPayment: (
@@ -4050,10 +4055,10 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     };
   }, [settings, products, customers, sales, serviceOrders, onlineOrders, technicians, serviceCommissions, technicianPayouts, suppliers, purchaseOrders, expenses, treasuryAccounts, treasuryCommitments, treasuryMovements, treasuryDebts, openAccounts, deletedIds]);
 
-  // Online products: strictly filter where stock > 0, sanitize internal pricing fields, and sort A-Z
+  // Online products: show items with stock > 0 OR made-to-order (tracksInventory === false), sanitize internal pricing fields, and sort A-Z
   const onlineProducts = useMemo(() => {
     return products
-      .filter((p) => p.stock > 0)
+      .filter((p) => !productTracksInventory(p) || p.stock > 0)
       .map((p) => sanitizeProductForPublic(p))
       .sort((a, b) => a.name.localeCompare(b.name, 'es', { sensitivity: 'base' }));
   }, [products]);
@@ -4735,6 +4740,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     setProducts((prev) =>
       prev.map((p) => {
         if (p.id === id) {
+          if (!productTracksInventory(p)) return p;
           const newStock = Math.max(0, p.stock + delta);
           const updated = { ...p, stock: newStock };
           syncProductToFirestore(updated).catch((err) => console.warn('Firestore sync error:', err));
@@ -5044,6 +5050,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
         const touched: Product[] = [];
         const prevProdIdSet = new Set(prevProducts.map((p) => p.id));
         const next = prevProducts.map((prod) => {
+          if (!productTracksInventory(prod)) return prod;
           const matchingItems = saleData.items.filter((item) => {
             if (item.isService) return false;
             if (item.productId && prevProdIdSet.has(item.productId)) {
@@ -5349,12 +5356,22 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
 
   const updateSale = (
     saleId: string,
-    updates: Partial<Sale> & { reassignCustomer?: boolean; syncTreasuryPayment?: boolean }
+    updates: Partial<Sale> & {
+      reassignCustomer?: boolean;
+      syncTreasuryPayment?: boolean;
+      syncInventoryOnItemsChange?: boolean;
+    }
   ): Sale | null => {
     const existing = salesRef.current.find((s) => s.id === saleId);
     if (!existing) return null;
 
-    const { reassignCustomer, syncTreasuryPayment, ...saleUpdates } = updates;
+    const {
+      reassignCustomer,
+      syncTreasuryPayment,
+      syncInventoryOnItemsChange,
+      ...saleUpdates
+    } = updates;
+    const isVoidedExisting = Boolean(existing.isVoided || existing.creditStatus === 'ANULADO');
     const nextName =
       saleUpdates.customerName !== undefined ? saleUpdates.customerName.trim() : existing.customerName;
     const nextPhone =
@@ -5384,9 +5401,125 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       if (!nextDoc && cust.documentId) resolvedCustomerDoc = cust.documentId;
     }
 
+    // Normalizar ítems y sincronizar inventario (reponer lo quitado / descontar lo agregado)
+    const itemsWereProvided = Array.isArray(saleUpdates.items);
+    const normalizedItems: SaleItem[] = itemsWereProvided
+      ? (saleUpdates.items as SaleItem[]).map((it) => {
+          const qty = Math.max(1, Math.round(Number(it.quantity) || 1));
+          const unitPrice = Math.max(0, Math.round((Number(it.unitPrice) || 0) * 100) / 100);
+          return {
+            ...it,
+            quantity: qty,
+            unitPrice,
+            total: Math.round(qty * unitPrice * 100) / 100,
+          };
+        })
+      : existing.items;
+
+    if (itemsWereProvided && !isVoidedExisting && syncInventoryOnItemsChange !== false) {
+      const resolveProductIdForSaleItem = (item: SaleItem, catalog: Product[]): string | null => {
+        if (item.isService) return null;
+        if (item.productId) {
+          const byId = catalog.find((p) => p.id === item.productId);
+          if (byId) return byId.id;
+        }
+        const normSku = (item.sku || '').trim().toLowerCase();
+        if (normSku) {
+          const bySku = catalog.find((p) => (p.sku || '').trim().toLowerCase() === normSku);
+          if (bySku) return bySku.id;
+        }
+        return null;
+      };
+
+      const oldQtyByProdId = new Map<string, number>();
+      const newQtyByProdId = new Map<string, number>();
+      const currentCatalog = productsRef.current;
+
+      (existing.items || []).forEach((it) => {
+        const pid = resolveProductIdForSaleItem(it, currentCatalog);
+        if (!pid) return;
+        oldQtyByProdId.set(pid, (oldQtyByProdId.get(pid) || 0) + Math.max(0, Number(it.quantity) || 0));
+      });
+
+      normalizedItems.forEach((it) => {
+        const pid = resolveProductIdForSaleItem(it, currentCatalog);
+        if (!pid) return;
+        newQtyByProdId.set(pid, (newQtyByProdId.get(pid) || 0) + Math.max(0, Number(it.quantity) || 0));
+      });
+
+      const affectedIds = new Set<string>([
+        ...Array.from(oldQtyByProdId.keys()),
+        ...Array.from(newQtyByProdId.keys()),
+      ]);
+
+      const deltaByProdId = new Map<string, number>();
+      affectedIds.forEach((pid) => {
+        const oldQty = oldQtyByProdId.get(pid) || 0;
+        const newQty = newQtyByProdId.get(pid) || 0;
+        const stockDelta = oldQty - newQty; // positivo = reponer al inventario, negativo = descontar del inventario
+        if (stockDelta !== 0) {
+          deltaByProdId.set(pid, stockDelta);
+        }
+      });
+
+      if (deltaByProdId.size > 0) {
+        setProducts((prev) => {
+          const touched: Product[] = [];
+          const next = prev.map((prod) => {
+            if (!productTracksInventory(prod)) return prod;
+            const delta = deltaByProdId.get(prod.id);
+            if (!delta) return prod;
+            const updatedProd: Product = {
+              ...prod,
+              stock: Math.max(0, prod.stock + delta),
+            };
+            touched.push(updatedProd);
+            return updatedProd;
+          });
+          productsRef.current = next;
+          queueMicrotask(() => {
+            touched.forEach((p) =>
+              syncProductToFirestore(p).catch((err) =>
+                console.warn('Firestore sync error al editar venta:', err)
+              )
+            );
+          });
+          return next;
+        });
+      }
+    }
+
     const nextRate = saleUpdates.bcvRate ?? existing.bcvRate ?? settingsRef.current.bcvRate;
-    const nextSubtotal = saleUpdates.subtotal ?? existing.subtotal;
-    const nextTotal = saleUpdates.total ?? existing.total;
+    const nextDiscount =
+      saleUpdates.discount !== undefined
+        ? Math.max(0, Math.round((Number(saleUpdates.discount) || 0) * 100) / 100)
+        : existing.discount || 0;
+    const nextShippingUSD =
+      saleUpdates.shippingCostUSD !== undefined
+        ? Math.max(0, Math.round((Number(saleUpdates.shippingCostUSD) || 0) * 100) / 100)
+        : existing.shippingCostUSD || 0;
+    const nextTax =
+      saleUpdates.tax !== undefined
+        ? Math.max(0, Math.round((Number(saleUpdates.tax) || 0) * 100) / 100)
+        : existing.tax || 0;
+
+    const computedItemsSubtotal = Math.round(
+      normalizedItems.reduce((sum, it) => sum + (Number(it.total) || 0), 0) * 100
+    ) / 100;
+    const nextSubtotal =
+      saleUpdates.subtotal !== undefined
+        ? Math.round((Number(saleUpdates.subtotal) || 0) * 100) / 100
+        : itemsWereProvided
+          ? computedItemsSubtotal
+          : existing.subtotal;
+    const nextTotal =
+      saleUpdates.total !== undefined
+        ? Math.max(0, Math.round((Number(saleUpdates.total) || 0) * 100) / 100)
+        : itemsWereProvided || saleUpdates.discount !== undefined || saleUpdates.shippingCostUSD !== undefined
+          ? Math.max(0, Math.round((nextSubtotal - nextDiscount + nextShippingUSD + nextTax) * 100) / 100)
+          : existing.total;
+
+    const totalChanged = Math.abs(nextTotal - existing.total) > 0.005;
 
     // Resolve payment type, payment method, payment splits, Pago Móvil destination & Treasury reconciliation
     const nextPaymentType: SalePaymentType = (saleUpdates.paymentType ?? existing.paymentType ?? 'CONTADO') as SalePaymentType;
@@ -5422,8 +5555,10 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       existing.paymentType === 'MIXTO' ||
       (Array.isArray(existing.paymentSplits) && existing.paymentSplits.length > 0);
 
+    const isNextDeferred = nextPaymentType === 'CREDITO' || nextPaymentType === 'APARTADO';
     const paymentChanged =
       Boolean(syncTreasuryPayment) ||
+      (totalChanged && !isNextDeferred) ||
       (saleUpdates.paymentType !== undefined && saleUpdates.paymentType !== existing.paymentType) ||
       saleUpdates.paymentSplits !== undefined ||
       (saleUpdates.paymentMethod !== undefined && saleUpdates.paymentMethod !== existing.paymentMethod) ||
@@ -5442,6 +5577,12 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     let nextCreditStatus = saleUpdates.creditStatus ?? existing.creditStatus;
     let nextCreditDays = saleUpdates.creditDays ?? existing.creditDays;
     let nextCreditDueDate = saleUpdates.creditDueDate ?? existing.creditDueDate;
+
+    // Recalcular estado de crédito/apartado si cambió el total de la venta
+    if (totalChanged && !isVoidedExisting && isNextDeferred) {
+      const paidNow = Math.max(0, Number(nextCreditPaidAmount || 0));
+      nextCreditStatus = paidNow >= nextTotal - 0.01 && nextTotal > 0 ? 'PAGADO' : 'PENDIENTE';
+    }
 
     if (paymentChanged) {
       const isVoidedSale = Boolean(existing.isVoided || existing.creditStatus === 'ANULADO');
@@ -5691,6 +5832,15 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
             const movAmountBs =
               Math.round((Number(linkedMovement.amountBs) || movAmountUSD * movRate) * 100) / 100;
 
+            const isDeferredSingle = nextPaymentType === 'CREDITO' || nextPaymentType === 'APARTADO';
+            const desiredMovUSD = isDeferredSingle
+              ? movAmountUSD
+              : Math.max(0, Math.round((Number(nextTotal) || 0) * 100) / 100);
+            const desiredMovBs =
+              Math.abs(desiredMovUSD - movAmountUSD) < 0.005
+                ? movAmountBs
+                : Math.round(desiredMovUSD * movRate * 100) / 100;
+
             // 1. Revert income from previous Treasury account
             const oldAccount = treasuryAccountsRef.current.find(
               (a) => a.id === linkedMovement.accountId
@@ -5700,13 +5850,13 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
               applyAccountDelta(oldAccount, -movAmountUSD, movRate, oldNativeRevert);
             }
 
-            // 2. Credit income to new destination Treasury account (re-fetch fresh reference)
+            // 2. Credit updated income to destination Treasury account (re-fetch fresh reference)
             const freshTarget =
               treasuryAccountsRef.current.find((a) => a.id === targetAccount.id) || targetAccount;
-            const newNativeDelta = freshTarget.currency === 'BS' ? movAmountBs : movAmountUSD;
+            const newNativeDelta = freshTarget.currency === 'BS' ? desiredMovBs : desiredMovUSD;
             const updatedTargetAcc =
-              movAmountUSD > 0
-                ? applyAccountDelta(freshTarget, movAmountUSD, movRate, newNativeDelta)
+              desiredMovUSD > 0
+                ? applyAccountDelta(freshTarget, desiredMovUSD, movRate, newNativeDelta)
                 : freshTarget;
 
             const methodDetail =
@@ -5718,6 +5868,8 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
 
             const updatedMovement: TreasuryMovement = {
               ...linkedMovement,
+              amountUSD: desiredMovUSD,
+              amountBs: desiredMovBs,
               accountId: updatedTargetAcc.id,
               accountName: updatedTargetAcc.name,
               accountGroup: updatedTargetAcc.group,
@@ -5798,18 +5950,30 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       }
     }
 
+    const nextMercadoLibreCommissionUSD =
+      nextPaymentType === 'MERCADOLIBRE' &&
+      totalChanged &&
+      existing.mercadolibreCommissionRate &&
+      existing.mercadolibreFeeStatus !== 'PAGADO'
+        ? Math.round(nextTotal * (existing.mercadolibreCommissionRate / 100) * 100) / 100
+        : saleUpdates.mercadolibreCommissionUSD ?? existing.mercadolibreCommissionUSD;
+
     const updatedSale: Sale = {
       ...existing,
       ...saleUpdates,
+      items: normalizedItems,
       customerId: resolvedCustomerId,
       customerName: nextName || existing.customerName,
       customerPhone: resolvedCustomerPhone,
       customerDocument: resolvedCustomerDoc || undefined,
       bcvRate: nextRate,
+      discount: nextDiscount,
+      shippingCostUSD: nextShippingUSD > 0 ? nextShippingUSD : existing.shippingCostUSD,
+      tax: nextTax,
       subtotal: nextSubtotal,
       total: nextTotal,
-      subtotalBs: nextSubtotal * nextRate,
-      totalBs: nextTotal * nextRate,
+      subtotalBs: Math.round(nextSubtotal * nextRate * 100) / 100,
+      totalBs: Math.round(nextTotal * nextRate * 100) / 100,
       paymentType: nextPaymentType,
       paymentMethod: nextPaymentMethod,
       pagoMovilAccount: nextPagoMovilAccount,
@@ -5821,6 +5985,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       creditDueDate: nextCreditDueDate,
       creditPaidAmount: nextCreditPaidAmount,
       creditStatus: nextCreditStatus,
+      mercadolibreCommissionUSD: nextMercadoLibreCommissionUSD,
     };
 
     setSales((prev) => {
@@ -6054,6 +6219,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       setProducts((prev) => {
         const touched: Product[] = [];
         const next = prev.map((prod) => {
+          if (!productTracksInventory(prod)) return prod;
           const item = saleToDelete.items.find((it) => it.productId === prod.id || it.sku === prod.sku);
           if (item && !item.isService) {
             const updatedProd = { ...prod, stock: prod.stock + (item.quantity || 1) };
@@ -6106,6 +6272,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       setProducts((prev) => {
         const touched: Product[] = [];
         const next = prev.map((prod) => {
+          if (!productTracksInventory(prod)) return prod;
           const item = saleToVoid.items.find((it) => it.productId === prod.id || it.sku === prod.sku);
           if (item && !item.isService) {
             const updatedProd = { ...prod, stock: prod.stock + (item.quantity || 1) };
@@ -6236,6 +6403,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       setProducts((prev) => {
         const touched: Product[] = [];
         const next = prev.map((prod) => {
+          if (!productTracksInventory(prod)) return prod;
           const totalRestored = targetSales.reduce((acc, s) => {
             const it = (s.items || []).find((i) => i.productId === prod.id || i.sku === prod.sku);
             return it && !it.isService ? acc + (it.quantity || 1) : acc;
@@ -6315,6 +6483,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       setProducts((prev) => {
         const touched: Product[] = [];
         const next = prev.map((prod) => {
+          if (!productTracksInventory(prod)) return prod;
           const totalRestored = targetSales.reduce((acc, s) => {
             const it = (s.items || []).find((i) => i.productId === prod.id || i.sku === prod.sku);
             return it && !it.isService ? acc + (it.quantity || 1) : acc;
@@ -6549,6 +6718,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       setProducts((prevProducts) => {
         const touched: Product[] = [];
         const next = prevProducts.map((prod) => {
+          if (!productTracksInventory(prod)) return prod;
           const totalUsedQty = serviceOrderFields.partsUsed
             .filter((item) => item.productId === prod.id || (prod.sku && item.sku === prod.sku))
             .reduce((sum, item) => sum + (Number(item.quantity) || 0), 0);
@@ -11824,6 +11994,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       const touched: Product[] = [];
       const prevProdIdSet = new Set(prevProducts.map((p) => p.id));
       const next = prevProducts.map((prod) => {
+        if (!productTracksInventory(prod)) return prod;
         const matchingItems = items.filter((item) => {
           if (item.isService) return false;
           if (item.productId && prevProdIdSet.has(item.productId)) {
@@ -12304,6 +12475,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     setProducts((prevProducts) => {
       const touched: Product[] = [];
       const next = prevProducts.map((prod) => {
+        if (!productTracksInventory(prod)) return prod;
         const itemOrdered = orderData.items.find(
           (item) => item.productId === prod.id || item.sku === prod.sku
         );
@@ -12352,6 +12524,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       setProducts((prev) => {
         const touched: Product[] = [];
         const next = prev.map((prod) => {
+          if (!productTracksInventory(prod)) return prod;
           const item = order.items.find((i) => i.productId === prod.id || i.sku === prod.sku);
           if (item) {
             const updatedProd = { ...prod, stock: prod.stock + item.quantity };
@@ -12379,17 +12552,21 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
 
   // Cart operations
   const addToCart = (product: Product, quantity = 1) => {
-    if (product.stock <= 0) return;
+    const tracksInv = productTracksInventory(product);
+    if (tracksInv && product.stock <= 0) return;
 
     setCart((prevCart) => {
       const existing = prevCart.find((item) => item.product.id === product.id);
       if (existing) {
-        const newQty = Math.min(product.stock, existing.quantity + quantity);
+        const nextQty = tracksInv
+          ? Math.min(product.stock, existing.quantity + quantity)
+          : Math.max(1, existing.quantity + quantity);
         return prevCart.map((item) =>
-          item.product.id === product.id ? { ...item, quantity: newQty } : item
+          item.product.id === product.id ? { ...item, product, quantity: nextQty } : item
         );
       }
-      return [...prevCart, { product, quantity: Math.min(product.stock, quantity) }];
+      const initialQty = tracksInv ? Math.min(product.stock, quantity) : Math.max(1, quantity);
+      return [...prevCart, { product, quantity: initialQty }];
     });
   };
 
@@ -12405,7 +12582,9 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     setCart((prev) =>
       prev.map((item) => {
         if (item.product.id === productId) {
-          const validQty = Math.min(item.product.stock, quantity);
+          const validQty = productTracksInventory(item.product)
+            ? Math.min(item.product.stock, quantity)
+            : Math.max(1, quantity);
           return { ...item, quantity: validQty };
         }
         return item;

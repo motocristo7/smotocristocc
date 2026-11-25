@@ -1,6 +1,12 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { useApp } from '../../context/AppContext';
-import { Product, ProductCategory } from '../../types';
+import {
+  Product,
+  ProductCategory,
+  productTracksInventory,
+  DEFAULT_PRODUCTION_TIME_LABEL,
+  DEFAULT_PRODUCTION_TIME_NOTE,
+} from '../../types';
 import { formatUSD, formatBs } from '../../utils/whatsapp';
 import {
   calculateProductPricing,
@@ -39,6 +45,7 @@ import {
   Star,
   ChevronLeft,
   ChevronRight,
+  Clock,
 } from 'lucide-react';
 import {
   normalizeImageUrl,
@@ -79,7 +86,7 @@ export const InventoryView: React.FC = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
   const [selectedModelCategory, setSelectedModelCategory] = useState<string>('all');
-  const [filterStockStatus, setFilterStockStatus] = useState<'all' | 'low' | 'out'>('all');
+  const [filterStockStatus, setFilterStockStatus] = useState<'all' | 'low' | 'out' | 'made_to_order'>('all');
   const [filterPhotoStatus, setFilterPhotoStatus] = useState<'all' | 'missing' | 'uploaded'>('all');
 
   // Modals state
@@ -121,6 +128,9 @@ export const InventoryView: React.FC = () => {
     targetProfitPct: 30,
     stock: 10,
     minStock: 2,
+    tracksInventory: true,
+    productionTimeLabel: DEFAULT_PRODUCTION_TIME_LABEL,
+    productionTimeNote: DEFAULT_PRODUCTION_TIME_NOTE,
     brand: '',
     compatibility: '',
     modelCategories: [] as string[],
@@ -147,8 +157,10 @@ export const InventoryView: React.FC = () => {
       ) {
         return false;
       }
-      if (filterStockStatus === 'low' && p.stock > p.minStock) return false;
-      if (filterStockStatus === 'out' && p.stock > 0) return false;
+      const tracksInv = productTracksInventory(p);
+      if (filterStockStatus === 'low' && (!tracksInv || p.stock > p.minStock)) return false;
+      if (filterStockStatus === 'out' && (!tracksInv || p.stock > 0)) return false;
+      if (filterStockStatus === 'made_to_order' && tracksInv) return false;
       if (filterPhotoStatus === 'uploaded' && !hasAnyEmbeddedImage(p)) return false;
       if (filterPhotoStatus === 'missing' && hasAnyEmbeddedImage(p)) return false;
 
@@ -191,6 +203,80 @@ export const InventoryView: React.FC = () => {
     sortOrder,
   ]);
 
+  // Paginación del inventario (25, 50, 75 o 100 artículos por página)
+  const PAGE_SIZE_OPTIONS = [25, 50, 75, 100] as const;
+  const [pageSize, setPageSize] = useState<number>(() => {
+    try {
+      const saved = Number(localStorage.getItem('servimotos_inventory_page_size'));
+      return PAGE_SIZE_OPTIONS.includes(saved as (typeof PAGE_SIZE_OPTIONS)[number]) ? saved : 25;
+    } catch {
+      return 25;
+    }
+  });
+  const [currentPage, setCurrentPage] = useState<number>(1);
+  const inventoryListTopRef = useRef<HTMLDivElement | null>(null);
+
+  const handleChangePageSize = (nextSize: number) => {
+    setPageSize(nextSize);
+    setCurrentPage(1);
+    try {
+      localStorage.setItem('servimotos_inventory_page_size', String(nextSize));
+    } catch {
+      // ignore storage errors
+    }
+  };
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [
+    searchTerm,
+    selectedCategory,
+    selectedModelCategory,
+    filterStockStatus,
+    filterPhotoStatus,
+    sortOrder,
+  ]);
+
+  const totalPages = Math.max(1, Math.ceil(filteredProducts.length / pageSize));
+  const safeCurrentPage = Math.min(currentPage, totalPages);
+
+  useEffect(() => {
+    if (currentPage > totalPages) {
+      setCurrentPage(totalPages);
+    }
+  }, [currentPage, totalPages]);
+
+  const paginatedProducts = useMemo(() => {
+    const startIdx = (safeCurrentPage - 1) * pageSize;
+    return filteredProducts.slice(startIdx, startIdx + pageSize);
+  }, [filteredProducts, safeCurrentPage, pageSize]);
+
+  const pageRangeStart =
+    filteredProducts.length === 0 ? 0 : (safeCurrentPage - 1) * pageSize + 1;
+  const pageRangeEnd = Math.min(safeCurrentPage * pageSize, filteredProducts.length);
+
+  const visiblePageNumbers = useMemo<(number | 'ellipsis')[]>(() => {
+    if (totalPages <= 7) {
+      return Array.from({ length: totalPages }, (_, i) => i + 1);
+    }
+    const pages: (number | 'ellipsis')[] = [1];
+    const start = Math.max(2, safeCurrentPage - 1);
+    const end = Math.min(totalPages - 1, safeCurrentPage + 1);
+    if (start > 2) pages.push('ellipsis');
+    for (let i = start; i <= end; i++) pages.push(i);
+    if (end < totalPages - 1) pages.push('ellipsis');
+    pages.push(totalPages);
+    return pages;
+  }, [totalPages, safeCurrentPage]);
+
+  const handleGoToPage = (page: number, shouldScrollTop = true) => {
+    const clamped = Math.max(1, Math.min(page, totalPages));
+    setCurrentPage(clamped);
+    if (shouldScrollTop && inventoryListTopRef.current) {
+      inventoryListTopRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  };
+
   const [imagePreviewError, setImagePreviewError] = useState(false);
   const [isCompressingUpload, setIsCompressingUpload] = useState(false);
   const [quickUploadingId, setQuickUploadingId] = useState<string | null>(null);
@@ -229,18 +315,26 @@ export const InventoryView: React.FC = () => {
     showToast(`✓ ${count} repuestos eliminados del inventario.`);
   };
 
+  const allPageSelected =
+    paginatedProducts.length > 0 &&
+    paginatedProducts.every((p) => selectedProductIds.includes(p.id));
+
   const allFilteredSelected =
     filteredProducts.length > 0 &&
     filteredProducts.every((p) => selectedProductIds.includes(p.id));
 
-  const handleToggleSelectAll = () => {
-    if (allFilteredSelected) {
-      const filteredIdSet = new Set(filteredProducts.map((p) => p.id));
-      setSelectedProductIds((prev) => prev.filter((id) => !filteredIdSet.has(id)));
+  const handleToggleSelectAllPage = () => {
+    if (allPageSelected) {
+      const pageIdSet = new Set(paginatedProducts.map((p) => p.id));
+      setSelectedProductIds((prev) => prev.filter((id) => !pageIdSet.has(id)));
     } else {
-      const newIds = new Set([...selectedProductIds, ...filteredProducts.map((p) => p.id)]);
+      const newIds = new Set([...selectedProductIds, ...paginatedProducts.map((p) => p.id)]);
       setSelectedProductIds(Array.from(newIds));
     }
+  };
+
+  const handleSelectAllFiltered = () => {
+    setSelectedProductIds(filteredProducts.map((p) => p.id));
   };
 
   const handleToggleSelectOne = (id: string) => {
@@ -278,6 +372,9 @@ export const InventoryView: React.FC = () => {
       targetProfitPct: product.targetProfitPct ?? 30,
       stock: product.stock,
       minStock: product.minStock,
+      tracksInventory: productTracksInventory(product),
+      productionTimeLabel: product.productionTimeLabel || DEFAULT_PRODUCTION_TIME_LABEL,
+      productionTimeNote: product.productionTimeNote || DEFAULT_PRODUCTION_TIME_NOTE,
       brand: product.brand,
       compatibility: product.compatibility,
       modelCategories: Array.isArray(product.modelCategories) ? [...product.modelCategories] : [],
@@ -715,8 +812,15 @@ export const InventoryView: React.FC = () => {
       salePriceRefUSD: finalSalePriceRefUSD,
       salePriceBsBcv: finalSalePriceBsBcv,
       targetProfitPct: parseFloat(targetProfitInput) || formData.targetProfitPct,
-      stock: formData.stock,
-      minStock: formData.minStock,
+      tracksInventory: formData.tracksInventory,
+      productionTimeLabel: !formData.tracksInventory
+        ? (formData.productionTimeLabel || '').trim() || DEFAULT_PRODUCTION_TIME_LABEL
+        : undefined,
+      productionTimeNote: !formData.tracksInventory
+        ? (formData.productionTimeNote || '').trim() || DEFAULT_PRODUCTION_TIME_NOTE
+        : undefined,
+      stock: formData.tracksInventory ? Math.max(0, Number(formData.stock) || 0) : 0,
+      minStock: formData.tracksInventory ? Math.max(0, Number(formData.minStock) || 0) : 0,
       brand: formData.brand,
       compatibility: formData.compatibility,
       modelCategories:
@@ -755,9 +859,11 @@ export const InventoryView: React.FC = () => {
 
     products.forEach((p) => {
       const pricing = calculateProductPricing(p, rate, usdtRate);
-      totalSaleBcvUSD += p.salePrice * p.stock;
-      totalRefCostUSD += pricing.referenceCostUSD * p.stock;
-      totalSaleRefUSD += pricing.salePriceRefUSD * p.stock;
+      if (productTracksInventory(p)) {
+        totalSaleBcvUSD += p.salePrice * p.stock;
+        totalRefCostUSD += pricing.referenceCostUSD * p.stock;
+        totalSaleRefUSD += pricing.salePriceRefUSD * p.stock;
+      }
       if (pricing.status === 'negative' || pricing.status === 'low') {
         lowOrNegMarginCount += 1;
       }
@@ -771,7 +877,8 @@ export const InventoryView: React.FC = () => {
     };
   }, [products, rate, usdtRate]);
 
-  const outOfStockCount = products.filter((p) => p.stock === 0).length;
+  const outOfStockCount = products.filter((p) => productTracksInventory(p) && p.stock === 0).length;
+  const madeToOrderCount = products.filter((p) => !productTracksInventory(p)).length;
 
   return (
     <div className="space-y-6">
@@ -785,7 +892,7 @@ export const InventoryView: React.FC = () => {
             Inventario de Repuestos ($ USD y Bs BCV)
           </h1>
           <p className="text-xs text-slate-500">
-            Valores en dólares calculados a tasa oficial BCV (Bs. {rate.toFixed(2)}). Los ítems con stock &gt; 0 se muestran en la tienda online y los agotados se ocultan.
+            Valores en dólares calculados a tasa oficial BCV (Bs. {rate.toFixed(2)}). Los ítems con stock &gt; 0 y los artículos bajo pedido (sin inventario) se muestran en la tienda online; los agotados con inventario se ocultan.
           </p>
         </div>
 
@@ -894,7 +1001,8 @@ export const InventoryView: React.FC = () => {
             <span className="text-xs font-normal text-slate-500">visibles</span>
           </p>
           <p className="text-[11px] text-slate-400 mt-1">
-            {outOfStockCount} agotado(s) ocultos automáticamente
+            {outOfStockCount} agotado(s) ocultos
+            {madeToOrderCount > 0 ? ` · ${madeToOrderCount} bajo pedido` : ' automáticamente'}
           </p>
         </div>
 
@@ -1022,6 +1130,7 @@ export const InventoryView: React.FC = () => {
               <option value="all">Todo el stock</option>
               <option value="low">Stock bajo / crítico</option>
               <option value="out">Agotados (Stock 0)</option>
+              <option value="made_to_order">Bajo pedido / Sin inventario ({madeToOrderCount})</option>
             </select>
 
             <select
@@ -1049,6 +1158,15 @@ export const InventoryView: React.FC = () => {
                 ? '1 repuesto seleccionado'
                 : `${selectedProductIds.length} repuestos seleccionados`}
             </span>
+            {allPageSelected && !allFilteredSelected && filteredProducts.length > paginatedProducts.length && (
+              <button
+                type="button"
+                onClick={handleSelectAllFiltered}
+                className="text-xs font-bold text-amber-800 hover:text-amber-950 underline cursor-pointer"
+              >
+                Seleccionar todos los {filteredProducts.length} filtrados
+              </button>
+            )}
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
@@ -1094,123 +1212,274 @@ export const InventoryView: React.FC = () => {
         </div>
       )}
 
-      {/* Table of Products */}
-      <div className="bg-white rounded-xl border border-slate-200 shadow-2xs overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs">
-            <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 font-semibold uppercase text-[10px] tracking-wider">
-              <tr>
-                <th className="py-3 px-3 w-10 text-center">
-                  <input
-                    type="checkbox"
-                    checked={allFilteredSelected}
-                    onChange={handleToggleSelectAll}
-                    className="rounded border-slate-300 text-amber-500 focus:ring-amber-500 cursor-pointer w-4 h-4"
-                    title={allFilteredSelected ? 'Deseleccionar todos' : 'Seleccionar todos los visibles'}
-                  />
-                </th>
-                <th className="py-3 px-4">
+      {/* Paginated Full-Visibility Inventory List (Zero Horizontal Scroll) */}
+      <div
+        ref={inventoryListTopRef}
+        className="bg-white rounded-xl border border-slate-200 shadow-2xs overflow-hidden"
+      >
+        {/* Top List Toolbar: Select Page, Sort, Range Counter & Page Size (25 / 50 / 75 / 100) */}
+        <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 flex flex-wrap items-center justify-between gap-3 text-xs">
+          <div className="flex flex-wrap items-center gap-3">
+            <label className="inline-flex items-center gap-2 cursor-pointer select-none font-semibold text-slate-700">
+              <input
+                type="checkbox"
+                checked={allPageSelected}
+                onChange={handleToggleSelectAllPage}
+                className="rounded border-slate-300 text-amber-500 focus:ring-amber-500 cursor-pointer w-4 h-4"
+                title={allPageSelected ? 'Deseleccionar esta página' : 'Seleccionar todos los artículos de esta página'}
+              />
+              <span>Página ({paginatedProducts.length})</span>
+            </label>
+
+            <span className="text-slate-300" aria-hidden="true">|</span>
+
+            <button
+              type="button"
+              onClick={() => setSortOrder((prev) => (prev === 'asc' ? 'desc' : 'asc'))}
+              className="inline-flex items-center gap-1.5 text-slate-700 hover:text-slate-950 transition-colors cursor-pointer font-semibold"
+              title="Cambiar orden alfabético (A-Z / Z-A)"
+            >
+              <span>Orden:</span>
+              <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-900 font-bold text-[11px]">
+                {sortOrder === 'asc' ? 'A-Z' : 'Z-A'}
+              </span>
+            </button>
+
+            <span className="text-slate-300 hidden sm:inline" aria-hidden="true">|</span>
+
+            <span className="text-slate-600 tabular-nums">
+              Mostrando{' '}
+              <strong className="text-slate-900">
+                {pageRangeStart}–{pageRangeEnd}
+              </strong>{' '}
+              de <strong className="text-slate-900">{filteredProducts.length}</strong> artículos
+            </span>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-3">
+            {/* Selector de artículos por página: 25, 50, 75, 100 */}
+            <div className="flex items-center gap-1.5">
+              <span className="text-[11px] font-semibold text-slate-500 whitespace-nowrap">
+                Por página:
+              </span>
+              <div className="inline-flex items-center rounded-lg border border-slate-200 bg-white p-0.5">
+                {PAGE_SIZE_OPTIONS.map((size) => (
                   <button
+                    key={size}
                     type="button"
-                    onClick={() => setSortOrder((prev) => (prev === 'asc' ? 'desc' : 'asc'))}
-                    className="inline-flex items-center gap-1.5 hover:text-slate-900 transition-colors cursor-pointer uppercase font-semibold"
-                    title="Cambiar orden alfabético (A-Z / Z-A)"
+                    onClick={() => handleChangePageSize(size)}
+                    className={`px-2.5 py-1 rounded-md text-xs font-mono font-bold transition-colors cursor-pointer tabular-nums ${
+                      pageSize === size
+                        ? 'bg-slate-900 text-white shadow-2xs'
+                        : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                    }`}
+                    title={`Mostrar ${size} artículos por página`}
                   >
-                    <span>Ítem / SKU</span>
-                    <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 font-bold">
-                      {sortOrder === 'asc' ? 'A-Z' : 'Z-A'}
-                    </span>
+                    {size}
                   </button>
-                </th>
-                <th className="py-3 px-3">Categoría &amp; Marca</th>
-                <th className="py-3 px-3">Ubicación</th>
-                <th className="py-3 px-3 text-right">
-                  <span className="block">Costo (Divisas)</span>
-                  <span className="text-[9px] text-slate-400 font-semibold">$ USD</span>
-                </th>
-                <th className="py-3 px-3 text-right bg-emerald-50/70">
-                  <span className="block text-emerald-900 font-extrabold">
-                    Precio Venta BCV (Tienda)
-                  </span>
-                  <span className="text-[9px] text-emerald-700 font-bold">
-                    Visible en Tienda · + Ref. Admin
-                  </span>
-                </th>
-                <th className="py-3 px-3 text-right">
-                  <span className="block">% Utilidad</span>
-                  <span className="text-[9px] text-amber-700 font-bold">Solo Admin</span>
-                </th>
-                <th className="py-3 px-3 text-center">Stock</th>
-                <th className="py-3 px-3 text-center">Tienda</th>
-                <th className="py-3 px-4 text-right">Acciones</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-100">
-              {filteredProducts.length === 0 ? (
-                <tr>
-                  <td colSpan={10} className="py-8 text-center text-slate-400">
-                    No se encontraron repuestos con los filtros seleccionados.
-                  </td>
-                </tr>
-              ) : (
-                filteredProducts.map((product) => {
-                  const isOutOfStock = product.stock === 0;
-                  const isLowStock = product.stock > 0 && product.stock <= product.minStock;
-                  const pricing = calculateProductPricing(product, rate, usdtRate);
-                  const isSelected = selectedProductIds.includes(product.id);
+                ))}
+              </div>
+            </div>
 
-                  return (
-                    <tr
-                      key={product.id}
-                      className={`hover:bg-slate-50/70 transition-colors ${
-                        isSelected ? 'bg-amber-50/40' : ''
-                      }`}
-                    >
-                      {/* Checkbox */}
-                      <td className="py-3 px-3 text-center">
-                        <input
-                          type="checkbox"
-                          checked={isSelected}
-                          onChange={() => handleToggleSelectOne(product.id)}
-                          className="rounded border-slate-300 text-amber-500 focus:ring-amber-500 cursor-pointer w-4 h-4"
-                        />
-                      </td>
+            {/* Navegación rápida superior de páginas */}
+            {totalPages > 1 && (
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => handleGoToPage(safeCurrentPage - 1, false)}
+                  disabled={safeCurrentPage <= 1}
+                  className="p-1.5 rounded-lg border border-slate-200 bg-white text-slate-700 hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+                  aria-label="Página anterior"
+                  title="Página anterior"
+                >
+                  <ChevronLeft className="w-3.5 h-3.5" />
+                </button>
+                <span className="px-2 text-xs font-mono font-semibold text-slate-700 tabular-nums whitespace-nowrap">
+                  Pág. {safeCurrentPage} / {totalPages}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => handleGoToPage(safeCurrentPage + 1, false)}
+                  disabled={safeCurrentPage >= totalPages}
+                  className="p-1.5 rounded-lg border border-slate-200 bg-white text-slate-700 hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+                  aria-label="Página siguiente"
+                  title="Página siguiente"
+                >
+                  <ChevronRight className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
 
-                      {/* Name, Direct Photo Upload & SKU */}
-                      <td className="py-3 px-4 min-w-[240px] max-w-[380px] align-top">
-                        <div className="flex items-start gap-3">
-                          <label
-                            className="relative group w-11 h-11 rounded-lg bg-slate-100 shrink-0 border border-slate-200 overflow-hidden cursor-pointer flex items-center justify-center mt-0.5"
-                            title="Haz clic para subir o agregar fotos de este repuesto (puedes seleccionar varias)"
-                          >
-                            {quickUploadingId === product.id ? (
-                              <Loader2 className="w-4 h-4 animate-spin text-amber-500" />
+        {/* Column Header Guide (Desktop, zero horizontal overflow) */}
+        <div className="hidden lg:grid lg:grid-cols-12 gap-3 px-4 py-2 bg-slate-50/70 border-b border-slate-200 text-[10px] font-bold uppercase tracking-wider text-slate-500">
+          <div className="lg:col-span-5">Artículo, Descripción, Categoría, Ubicación y Modelos</div>
+          <div className="lg:col-span-4 grid grid-cols-3 gap-2 text-right">
+            <span>Costo Divisas</span>
+            <span className="text-emerald-800">Venta BCV (Tienda)</span>
+            <span>Utilidad Admin</span>
+          </div>
+          <div className="lg:col-span-3 text-right">Stock · Tienda · Acciones</div>
+        </div>
+
+        {/* Product Rows — Every single field visible without any horizontal scrollbar */}
+        {paginatedProducts.length === 0 ? (
+          <div className="py-12 px-4 text-center text-slate-400 text-xs">
+            No se encontraron repuestos con los filtros seleccionados.
+          </div>
+        ) : (
+          <div className="divide-y divide-slate-200">
+            {paginatedProducts.map((product) => {
+              const tracksInv = productTracksInventory(product);
+              const isOutOfStock = tracksInv && product.stock === 0;
+              const isLowStock = tracksInv && product.stock > 0 && product.stock <= product.minStock;
+              const pricing = calculateProductPricing(product, rate, usdtRate);
+              const isSelected = selectedProductIds.includes(product.id);
+              const embeddedCount = getProductImages(product, false).length;
+
+              return (
+                <div
+                  key={product.id}
+                  className={`px-3 sm:px-4 py-3.5 transition-colors hover:bg-slate-50/80 ${
+                    isSelected ? 'bg-amber-50/50' : 'bg-white'
+                  }`}
+                >
+                  <div className="grid grid-cols-1 lg:grid-cols-12 gap-3 items-start">
+                    {/* ZONE 1 (5 cols): Checkbox + Photo + Name + FULL Description + Metadata + Location + Models */}
+                    <div className="lg:col-span-5 flex items-start gap-2.5 min-w-0">
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        onChange={() => handleToggleSelectOne(product.id)}
+                        className="mt-1 rounded border-slate-300 text-amber-500 focus:ring-amber-500 cursor-pointer w-4 h-4 shrink-0"
+                        aria-label={`Seleccionar ${product.name}`}
+                      />
+
+                      {/* Photo thumbnail + quick multi-photo upload */}
+                      <label
+                        className="relative group w-12 h-12 rounded-lg bg-slate-100 shrink-0 border border-slate-200 overflow-hidden cursor-pointer flex items-center justify-center mt-0.5"
+                        title="Haz clic para subir o agregar fotos de este repuesto (puedes seleccionar varias)"
+                      >
+                        {quickUploadingId === product.id ? (
+                          <Loader2 className="w-4 h-4 animate-spin text-amber-500" />
+                        ) : (
+                          <>
+                            {product.imageUrl ? (
+                              <img
+                                src={
+                                  normalizeImageUrl(product.imageUrl) ||
+                                  getFallbackProductImage(product.name, product.category)
+                                }
+                                alt={product.name}
+                                className="w-full h-full object-cover"
+                                referrerPolicy="no-referrer"
+                                onError={(e) => handleProductImageError(e, product)}
+                              />
                             ) : (
-                              <>
-                                {product.imageUrl ? (
-                                  <img
-                                    src={
-                                      normalizeImageUrl(product.imageUrl) ||
-                                      getFallbackProductImage(product.name, product.category)
-                                    }
-                                    alt={product.name}
-                                    className="w-full h-full object-cover"
-                                    referrerPolicy="no-referrer"
-                                    onError={(e) => handleProductImageError(e, product)}
-                                  />
-                                ) : (
-                                  <Boxes className="w-4 h-4 text-slate-400" />
-                                )}
-                                {getProductImages(product, false).length > 1 && (
-                                  <span className="absolute bottom-0.5 right-0.5 bg-slate-950/85 text-amber-300 text-[9px] font-bold px-1 rounded leading-tight tabular-nums">
-                                    {getProductImages(product, false).length}
-                                  </span>
-                                )}
-                                <div className="absolute inset-0 bg-slate-900/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
-                                  <Camera className="w-4 h-4 text-white" />
-                                </div>
-                              </>
+                              <Boxes className="w-4 h-4 text-slate-400" />
                             )}
+                            {embeddedCount > 1 && (
+                              <span className="absolute bottom-0.5 right-0.5 bg-slate-950/85 text-amber-300 text-[9px] font-bold px-1 rounded leading-tight tabular-nums">
+                                {embeddedCount}
+                              </span>
+                            )}
+                            <div className="absolute inset-0 bg-slate-900/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                              <Camera className="w-4 h-4 text-white" />
+                            </div>
+                          </>
+                        )}
+                        <input
+                          type="file"
+                          accept="image/*"
+                          multiple
+                          onChange={(e) => handleQuickRowImageUpload(product, e)}
+                          disabled={quickUploadingId === product.id}
+                          className="hidden"
+                        />
+                      </label>
+
+                      {/* Complete Text Info: Name, Full Description, SKU, Category, Brand, Location, Compatibility, Models */}
+                      <div className="min-w-0 flex-1 space-y-1">
+                        <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                          <button
+                            type="button"
+                            onClick={() => handleStartEdit(product)}
+                            className="text-left font-bold text-slate-900 hover:text-amber-700 text-[13px] leading-snug whitespace-normal break-words cursor-pointer transition-colors"
+                            title="Haz clic para editar este repuesto"
+                          >
+                            {product.name}
+                          </button>
+                        </div>
+
+                        {product.description && (
+                          <p className="text-xs text-slate-600 whitespace-normal break-words leading-snug">
+                            {product.description}
+                          </p>
+                        )}
+
+                        {/* Clean unboxed metadata row: SKU · Categoría · Marca · Código de barra · Ubicación */}
+                        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-slate-500">
+                          <span className="font-mono font-semibold text-slate-700">
+                            SKU: {product.sku}
+                          </span>
+                          <span aria-hidden="true" className="text-slate-300">·</span>
+                          <span className="font-semibold text-slate-700">{product.category}</span>
+                          {product.brand && (
+                            <>
+                              <span aria-hidden="true" className="text-slate-300">·</span>
+                              <span>{product.brand}</span>
+                            </>
+                          )}
+                          {product.barcode && (
+                            <>
+                              <span aria-hidden="true" className="text-slate-300">·</span>
+                              <span className="font-mono text-indigo-700 inline-flex items-center gap-0.5">
+                                <Barcode className="w-3 h-3 text-indigo-500 shrink-0" />
+                                {product.barcode}
+                              </span>
+                            </>
+                          )}
+                          {product.warehouseLocation && (
+                            <>
+                              <span aria-hidden="true" className="text-slate-300">·</span>
+                              <span className="inline-flex items-center gap-0.5 font-mono font-semibold text-amber-800">
+                                <MapPin className="w-3 h-3 text-amber-600 shrink-0" />
+                                {product.warehouseLocation}
+                              </span>
+                            </>
+                          )}
+                        </div>
+
+                        {product.compatibility && (
+                          <p className="text-[11px] text-slate-500 whitespace-normal break-words leading-snug">
+                            <span className="font-semibold text-slate-600">Compatibilidad:</span>{' '}
+                            {product.compatibility}
+                          </p>
+                        )}
+
+                        {/* Photo Quick Upload + Specialized Bike Models */}
+                        <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+                          <label
+                            className={`text-[10px] px-2 py-0.5 rounded inline-flex items-center gap-1 font-semibold cursor-pointer transition-colors ${
+                              hasAnyEmbeddedImage(product)
+                                ? 'text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200'
+                                : 'text-amber-800 bg-amber-50 hover:bg-amber-100 border border-amber-300'
+                            }`}
+                            title="Subir una o varias imágenes directamente desde tu dispositivo"
+                          >
+                            <Camera className="w-2.5 h-2.5 shrink-0" />
+                            <span>
+                              {quickUploadingId === product.id
+                                ? 'Subiendo...'
+                                : hasAnyEmbeddedImage(product)
+                                ? embeddedCount > 1
+                                  ? `${embeddedCount} fotos · + Agregar`
+                                  : '1 foto · + Agregar'
+                                : isGoogleDriveUrl(product.imageUrl)
+                                ? 'Subir fotos (reemplazar Drive)'
+                                : 'Subir fotos'}
+                            </span>
                             <input
                               type="file"
                               accept="image/*"
@@ -1220,185 +1489,99 @@ export const InventoryView: React.FC = () => {
                               className="hidden"
                             />
                           </label>
-                          <div className="min-w-0 flex-1">
-                            <p className="font-bold text-slate-900 whitespace-normal break-words leading-snug">
-                              {product.name}
-                            </p>
-                            {product.description && (
-                              <p className="text-[11px] text-slate-500 whitespace-normal break-words leading-snug mt-0.5">
-                                {product.description}
-                              </p>
-                            )}
-                            <div className="flex items-center gap-1.5 flex-wrap mt-1">
-                              <span className="font-mono text-[10px] text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded">
-                                SKU: {product.sku}
-                              </span>
-                              <label
-                                className={`text-[10px] px-1.5 py-0.5 rounded inline-flex items-center gap-1 font-semibold cursor-pointer transition-colors ${
-                                  hasAnyEmbeddedImage(product)
-                                    ? 'text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200'
-                                    : 'text-amber-800 bg-amber-50 hover:bg-amber-100 border border-amber-300'
-                                }`}
-                                title="Subir una o varias imágenes directamente desde tu dispositivo"
-                              >
-                                <Camera className="w-2.5 h-2.5" />
-                                <span>
-                                  {quickUploadingId === product.id
-                                    ? 'Subiendo...'
-                                    : hasAnyEmbeddedImage(product)
-                                    ? (() => {
-                                        const cnt = getProductImages(product, false).length;
-                                        return cnt > 1
-                                          ? `${cnt} fotos · + Agregar`
-                                          : '1 foto · + Agregar';
-                                      })()
-                                    : isGoogleDriveUrl(product.imageUrl)
-                                    ? 'Subir fotos (reemplazar Drive)'
-                                    : 'Subir fotos'}
-                                </span>
-                                <input
-                                  type="file"
-                                  accept="image/*"
-                                  multiple
-                                  onChange={(e) => handleQuickRowImageUpload(product, e)}
-                                  disabled={quickUploadingId === product.id}
-                                  className="hidden"
-                                />
-                              </label>
-                              {product.barcode && (
-                                <span
-                                  className="font-mono text-[10px] text-indigo-700 bg-indigo-50 border border-indigo-200/60 px-1.5 py-0.5 rounded inline-flex items-center gap-1"
-                                  title="Código de barra"
-                                >
-                                  <Barcode className="w-3 h-3 text-indigo-500" />
-                                  <span>{product.barcode}</span>
-                                </span>
-                              )}
-                            </div>
-                          </div>
-                        </div>
-                      </td>
 
-                      {/* Category & Brand */}
-                      <td className="py-3 px-3 text-slate-600">
-                        <p className="font-medium text-slate-800">{product.category}</p>
-                        <p className="text-[10px] text-slate-400">{product.brand}</p>
-                      </td>
-
-                      {/* Warehouse Location + Compatibility compact */}
-                      <td className="py-3 px-3 align-top max-w-[175px]">
-                        {product.warehouseLocation ? (
-                          <span
-                            className="inline-flex items-start gap-1 font-mono text-[11px] font-semibold text-amber-900 bg-amber-50 border border-amber-200 px-2 py-0.5 rounded-md whitespace-normal break-words"
-                            title={`Ubicación: ${product.warehouseLocation}`}
-                          >
-                            <MapPin className="w-3 h-3 text-amber-600 shrink-0 mt-0.5" />
-                            <span>{product.warehouseLocation}</span>
-                          </span>
-                        ) : (
-                          <span className="text-[11px] text-slate-400 italic block">Sin asignar</span>
-                        )}
-                        {product.compatibility && (
-                          <p
-                            className="text-[10px] text-slate-500 mt-1 line-clamp-2 leading-snug"
-                            title={product.compatibility}
-                          >
-                            {product.compatibility}
-                          </p>
-                        )}
-                        {Array.isArray(product.modelCategories) && product.modelCategories.length > 0 && (
-                          <div className="mt-1 flex flex-wrap gap-1">
-                            {product.modelCategories.map((mc) => (
+                          {Array.isArray(product.modelCategories) &&
+                            product.modelCategories.map((mc) => (
                               <span
                                 key={mc}
-                                className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-amber-50 border border-amber-200 text-[9px] font-bold text-amber-900 leading-none"
+                                className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-amber-50 border border-amber-200 text-[10px] font-semibold text-amber-900 leading-none"
                               >
                                 <Bike className="w-2.5 h-2.5 text-amber-600 shrink-0" />
                                 <span>{mc}</span>
                               </span>
                             ))}
-                          </div>
-                        )}
-                      </td>
+                        </div>
+                      </div>
+                    </div>
 
-                      {/* Costo Único en Divisas ($ USD) */}
-                      <td className="py-3 px-3 text-right align-top whitespace-nowrap">
+                    {/* ZONE 2 (4 cols): Costo Divisas + Precio Venta BCV (Tienda) + % Utilidad Admin */}
+                    <div className="lg:col-span-4 grid grid-cols-3 gap-2 items-start pt-2 lg:pt-0 border-t lg:border-t-0 border-slate-100">
+                      {/* Costo Divisas */}
+                      <div className="text-left lg:text-right min-w-0">
+                        <span className="lg:hidden block text-[10px] font-bold uppercase text-slate-400 mb-0.5">
+                          Costo
+                        </span>
                         <span
-                          className="font-mono font-bold text-slate-700 text-xs tabular-nums block mt-1"
+                          className="font-mono font-bold text-slate-800 text-xs tabular-nums block"
                           title="Costo único del repuesto en divisas ($ USD)"
                         >
                           {formatUSD(pricing.referenceCostUSD)}
                         </span>
-                        <span className="text-[9px] font-semibold text-slate-400 uppercase block">
+                        <span className="text-[10px] text-slate-400 font-medium block">
                           Divisas
                         </span>
-                      </td>
+                      </div>
 
-                      {/* Precio de Venta BCV (PRINCIPAL — Tienda Online) + Ref. Divisas (Solo Admin) */}
-                      <td className="py-3 px-3 text-right align-top whitespace-nowrap bg-emerald-50/25">
-                        <div className="inline-flex flex-col items-end">
-                          <div
-                            className="inline-flex items-baseline gap-1.5 bg-emerald-50 border border-emerald-300 px-2.5 py-1 rounded-lg shadow-2xs"
-                            title="Precio de Venta en Dólares a Tasa BCV — Precio principal visible en tu Tienda Online y Facturas"
-                          >
-                            <span className="font-mono font-black text-emerald-800 text-base leading-none tabular-nums">
-                              {formatUSD(pricing.salePriceUsdBcv)}
-                            </span>
-                            <span className="text-[9px] font-extrabold uppercase tracking-wider text-emerald-800 bg-emerald-200/80 px-1 py-0.5 rounded">
-                              BCV
-                            </span>
-                          </div>
-                          <span className="font-mono text-[11px] font-semibold text-slate-600 mt-1 tabular-nums">
-                            {formatBs(pricing.salePriceBsBcv)}
+                      {/* Precio Venta BCV (Tienda) + Ref. Divisas Solo Admin */}
+                      <div className="text-left lg:text-right min-w-0 bg-emerald-50/50 border border-emerald-200/80 rounded-lg px-2 py-1.5">
+                        <div className="flex items-baseline lg:justify-end gap-1 flex-wrap">
+                          <span className="font-mono font-black text-emerald-800 text-sm leading-none tabular-nums">
+                            {formatUSD(pricing.salePriceUsdBcv)}
                           </span>
-                          <div
-                            className="inline-flex items-center gap-1 mt-1 text-[10px] text-amber-800 font-mono tabular-nums"
-                            title="Precio de Venta de Referencia en Divisas — USO EXCLUSIVO PANEL ADMIN (nunca visible en tienda ni facturas)"
-                          >
-                            <Lock className="w-2.5 h-2.5 text-amber-600 shrink-0" />
-                            <span className="font-semibold">
-                              Ref. Divisas: {formatUSD(pricing.salePriceRefUSD)}
-                            </span>
-                          </div>
-                          {pricing.isBsLaggingRef && (
-                            <span
-                              className="inline-block text-[9px] font-bold text-amber-800 bg-amber-100 px-1.5 py-0.5 rounded mt-0.5"
-                              title={`A tasa Binance actual (${formatBs(usdtRate)}), tu precio BCV equivale a ${formatUSD(pricing.realRevenueDivisasUSD)} en divisas`}
-                            >
-                              Equiv. Binance: {formatUSD(pricing.realRevenueDivisasUSD)}
-                            </span>
-                          )}
+                          <span className="text-[9px] font-extrabold uppercase text-emerald-800">
+                            BCV
+                          </span>
                         </div>
-                      </td>
+                        <span className="font-mono text-[10px] font-semibold text-slate-600 block mt-0.5 tabular-nums truncate">
+                          {formatBs(pricing.salePriceBsBcv)}
+                        </span>
+                        <span
+                          className="inline-flex items-center lg:justify-end gap-0.5 text-[10px] text-amber-800 font-mono font-semibold tabular-nums mt-0.5"
+                          title="Precio de Referencia en Divisas (Solo Admin)"
+                        >
+                          <Lock className="w-2.5 h-2.5 text-amber-600 shrink-0" />
+                          <span>{formatUSD(pricing.salePriceRefUSD)}</span>
+                        </span>
+                        {pricing.isBsLaggingRef && (
+                          <span
+                            className="block text-[9px] font-bold text-amber-800 mt-0.5 tabular-nums"
+                            title={`A tasa Binance actual (${formatBs(usdtRate)}), tu precio BCV equivale a ${formatUSD(pricing.realRevenueDivisasUSD)} en divisas`}
+                          >
+                            Bin: {formatUSD(pricing.realRevenueDivisasUSD)}
+                          </span>
+                        )}
+                      </div>
 
-                      {/* % Utilidad (SOLO ADMIN) */}
-                      <td className="py-3 px-3 text-right align-top whitespace-nowrap">
+                      {/* % Utilidad (Solo Admin) */}
+                      <div className="text-left lg:text-right min-w-0">
+                        <span className="lg:hidden block text-[10px] font-bold uppercase text-slate-400 mb-0.5">
+                          Utilidad
+                        </span>
                         {pricing.realProfitMarginPct !== null ? (
-                          <div className="inline-flex flex-col items-end gap-0.5">
+                          <div className="flex flex-col items-start lg:items-end gap-0.5">
                             <span
-                              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-md font-mono font-bold text-[11px] border tabular-nums ${
+                              className={`inline-block px-1.5 py-0.5 rounded font-mono font-bold text-[11px] border tabular-nums ${
                                 pricing.status === 'healthy'
                                   ? 'bg-emerald-50 text-emerald-800 border-emerald-200'
                                   : pricing.status === 'low'
                                   ? 'bg-amber-50 text-amber-900 border-amber-300'
                                   : 'bg-rose-50 text-rose-700 border-rose-300'
                               }`}
-                              title="Utilidad (Margen % sobre venta) = ((Venta Ref. Divisas - Costo Ref. Divisas) / Venta Ref. Divisas) × 100"
+                              title="Margen % sobre venta"
                             >
-                              Margen {pricing.realProfitMarginPct.toFixed(1)}%
+                              {pricing.realProfitMarginPct.toFixed(1)}%
                             </span>
                             {pricing.realProfitMarkupPct !== null && (
-                              <span
-                                className="font-mono text-[10px] text-slate-500 tabular-nums"
-                                title="Utilidad (s/Costo %) = ((Venta - Costo) / Costo) × 100"
-                              >
-                                s/Costo: {pricing.realProfitMarkupPct >= 0 ? '+' : ''}
-                                {pricing.realProfitMarkupPct.toFixed(1)}%
+                              <span className="font-mono text-[10px] text-slate-500 tabular-nums">
+                                s/C: {pricing.realProfitMarkupPct >= 0 ? '+' : ''}
+                                {pricing.realProfitMarkupPct.toFixed(0)}%
                               </span>
                             )}
                             <span
                               className={`font-mono text-[10px] font-semibold tabular-nums ${
-                                pricing.realProfitAmountUSD >= 0 ? 'text-emerald-700' : 'text-rose-600'
+                                pricing.realProfitAmountUSD >= 0
+                                  ? 'text-emerald-700'
+                                  : 'text-rose-600'
                               }`}
                             >
                               {pricing.realProfitAmountUSD >= 0 ? '+' : ''}
@@ -1408,90 +1591,213 @@ export const InventoryView: React.FC = () => {
                         ) : (
                           <span className="text-[10px] text-slate-400 italic">Sin costo</span>
                         )}
-                      </td>
+                      </div>
+                    </div>
 
-                      {/* Stock Stepper */}
-                      <td className="py-3 px-3 text-center">
-                        <div className="inline-flex items-center border border-slate-200 rounded-lg bg-slate-50 overflow-hidden">
-                          <button
-                            onClick={() => adjustStock(product.id, -1)}
-                            className="px-2 py-1 hover:bg-slate-200 text-slate-600"
-                            title="Restar 1"
+                    {/* ZONE 3 (3 cols): Stock Stepper + Visibilidad Tienda + Editar & Eliminar */}
+                    <div className="lg:col-span-3 flex flex-wrap items-center justify-between lg:justify-end gap-2 pt-2 lg:pt-0 border-t lg:border-t-0 border-slate-100">
+                      {/* Stock Stepper OR Made-to-Order Status + Visibility */}
+                      <div className="flex items-center lg:flex-col lg:items-end gap-1.5">
+                        {tracksInv ? (
+                          <div className="inline-flex items-center border border-slate-200 rounded-lg bg-slate-50 overflow-hidden">
+                            <button
+                              type="button"
+                              onClick={() => adjustStock(product.id, -1)}
+                              className="px-2 py-1 hover:bg-slate-200 text-slate-700 font-bold cursor-pointer"
+                              title="Restar 1"
+                            >
+                              -
+                            </button>
+                            <span
+                              className={`px-2.5 py-1 font-mono font-bold text-xs tabular-nums ${
+                                isOutOfStock
+                                  ? 'text-rose-600 bg-rose-50'
+                                  : isLowStock
+                                  ? 'text-amber-700 bg-amber-50'
+                                  : 'text-slate-900'
+                              }`}
+                            >
+                              {product.stock}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => adjustStock(product.id, 1)}
+                              className="px-2 py-1 hover:bg-slate-200 text-slate-700 font-bold cursor-pointer"
+                              title="Sumar 1"
+                            >
+                              +
+                            </button>
+                          </div>
+                        ) : (
+                          <div
+                            className="text-left lg:text-right"
+                            title={product.productionTimeNote || DEFAULT_PRODUCTION_TIME_NOTE}
                           >
-                            -
-                          </button>
-                          <span
-                            className={`px-2.5 font-mono font-bold text-xs ${
-                              isOutOfStock
-                                ? 'text-rose-600 bg-rose-50'
-                                : isLowStock
-                                ? 'text-amber-700 bg-amber-50'
-                                : 'text-slate-900'
-                            }`}
-                          >
-                            {product.stock}
-                          </span>
-                          <button
-                            onClick={() => adjustStock(product.id, 1)}
-                            className="px-2 py-1 hover:bg-slate-200 text-slate-600"
-                            title="Sumar 1"
-                          >
-                            +
-                          </button>
-                        </div>
-                      </td>
+                            <span className="block text-[11px] font-bold text-indigo-800">
+                              Sin inventario · Bajo pedido
+                            </span>
+                            <span className="inline-flex items-center gap-1 text-[10px] font-medium text-amber-800">
+                              <Clock className="w-3 h-3 shrink-0" />
+                              <span>{product.productionTimeLabel || DEFAULT_PRODUCTION_TIME_LABEL}</span>
+                            </span>
+                          </div>
+                        )}
 
-                      {/* Store Visibility */}
-                      <td className="py-3 px-3 text-center">
                         {!isOutOfStock ? (
-                          <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
-                            <Eye className="w-3 h-3" />
-                            <span>Visible</span>
+                          <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-700">
+                            <Eye className="w-3 h-3 shrink-0" />
+                            <span>Visible en tienda</span>
                           </span>
                         ) : (
-                          <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-rose-700 bg-rose-50 px-2 py-0.5 rounded border border-rose-200">
-                            <EyeOff className="w-3 h-3" />
+                          <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-rose-700">
+                            <EyeOff className="w-3 h-3 shrink-0" />
                             <span>Oculto (Stock 0)</span>
                           </span>
                         )}
-                      </td>
+                      </div>
 
-                      {/* Actions */}
-                      <td className="py-3 px-4 text-right">
-                        <div className="flex items-center justify-end gap-1.5">
-                          <button
-                            onClick={() => handleStartEdit(product)}
-                            className="p-1.5 text-slate-500 hover:text-slate-900 hover:bg-slate-100 rounded transition-colors"
-                            title="Editar Repuesto"
-                          >
-                            <Edit2 className="w-3.5 h-3.5" />
-                          </button>
-                          <button
-                            onClick={() => setProductToDelete(product)}
-                            className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded transition-colors cursor-pointer"
-                            title="Eliminar repuesto"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-                      </td>
-                    </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
+                      {/* Editar y Eliminar siempre visibles a simple vista */}
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => handleStartEdit(product)}
+                          className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-semibold text-slate-900 bg-slate-100 hover:bg-amber-500 hover:text-slate-950 border border-slate-200 hover:border-amber-500 rounded-lg transition-colors cursor-pointer whitespace-nowrap"
+                          title="Editar este artículo"
+                        >
+                          <Edit2 className="w-3.5 h-3.5 shrink-0" />
+                          <span>Editar</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setProductToDelete(product)}
+                          className="inline-flex items-center gap-1 px-2 py-1.5 text-xs font-semibold text-rose-600 bg-rose-50/70 hover:bg-rose-600 hover:text-white border border-rose-200 hover:border-rose-600 rounded-lg transition-colors cursor-pointer whitespace-nowrap"
+                          title="Eliminar este artículo"
+                        >
+                          <Trash2 className="w-3.5 h-3.5 shrink-0" />
+                          <span className="hidden sm:inline lg:hidden xl:inline">Eliminar</span>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {/* Bottom Pagination Footer Bar */}
+        {filteredProducts.length > 0 && (
+          <div className="px-4 py-3.5 bg-slate-50 border-t border-slate-200 flex flex-wrap items-center justify-between gap-3 text-xs">
+            <div className="flex flex-wrap items-center gap-3">
+              <span className="text-slate-600 tabular-nums">
+                Mostrando{' '}
+                <strong className="text-slate-900">
+                  {pageRangeStart}–{pageRangeEnd}
+                </strong>{' '}
+                de <strong className="text-slate-900">{filteredProducts.length}</strong> artículos
+              </span>
+
+              <div className="flex items-center gap-1.5">
+                <span className="text-[11px] font-semibold text-slate-500">Ver:</span>
+                <div className="inline-flex items-center rounded-lg border border-slate-200 bg-white p-0.5">
+                  {PAGE_SIZE_OPTIONS.map((size) => (
+                    <button
+                      key={size}
+                      type="button"
+                      onClick={() => handleChangePageSize(size)}
+                      className={`px-2 py-0.5 rounded text-[11px] font-mono font-bold transition-colors cursor-pointer tabular-nums ${
+                        pageSize === size
+                          ? 'bg-slate-900 text-white'
+                          : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                      }`}
+                    >
+                      {size}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {totalPages > 1 && (
+              <div className="flex flex-wrap items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => handleGoToPage(1)}
+                  disabled={safeCurrentPage <= 1}
+                  className="px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-700 hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed font-semibold cursor-pointer"
+                >
+                  Primera
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleGoToPage(safeCurrentPage - 1)}
+                  disabled={safeCurrentPage <= 1}
+                  className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-700 hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed font-semibold cursor-pointer"
+                >
+                  <ChevronLeft className="w-3.5 h-3.5" />
+                  <span>Anterior</span>
+                </button>
+
+                {visiblePageNumbers.map((item, idx) =>
+                  item === 'ellipsis' ? (
+                    <span key={`el-${idx}`} className="px-1.5 text-slate-400 font-mono">
+                      …
+                    </span>
+                  ) : (
+                    <button
+                      key={item}
+                      type="button"
+                      onClick={() => handleGoToPage(item)}
+                      className={`min-w-[32px] px-2.5 py-1.5 rounded-lg border font-mono font-bold tabular-nums transition-colors cursor-pointer ${
+                        item === safeCurrentPage
+                          ? 'bg-amber-500 border-amber-500 text-slate-950 shadow-2xs'
+                          : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-100'
+                      }`}
+                    >
+                      {item}
+                    </button>
+                  )
+                )}
+
+                <button
+                  type="button"
+                  onClick={() => handleGoToPage(safeCurrentPage + 1)}
+                  disabled={safeCurrentPage >= totalPages}
+                  className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-700 hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed font-semibold cursor-pointer"
+                >
+                  <span>Siguiente</span>
+                  <ChevronRight className="w-3.5 h-3.5" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleGoToPage(totalPages)}
+                  disabled={safeCurrentPage >= totalPages}
+                  className="px-2.5 py-1.5 rounded-lg border border-slate-200 bg-white text-slate-700 hover:bg-slate-100 disabled:opacity-40 disabled:cursor-not-allowed font-semibold cursor-pointer"
+                >
+                  Última
+                </button>
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
-      {/* Add / Edit Product Modal */}
+      {/* Add / Edit Product Full-Viewport Workspace Modal */}
       {(isAddModalOpen || editingProduct) && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
-          <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-2xl overflow-hidden flex flex-col max-h-[90vh]">
-            <div className="p-4 sm:p-5 bg-slate-900 text-white flex items-center justify-between">
-              <h3 className="font-bold text-sm font-display">
-                {editingProduct ? 'Editar Repuesto de Motocicleta' : 'Registrar Nuevo Repuesto en Inventario'}
-              </h3>
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-0 sm:p-3 bg-slate-950/75 backdrop-blur-xs">
+          <div className="bg-white sm:rounded-2xl shadow-2xl border border-slate-200 w-full h-full sm:max-w-[1400px] sm:h-[96vh] sm:max-h-[96vh] overflow-hidden flex flex-col">
+            {/* Pinned Top Header */}
+            <div className="px-4 sm:px-6 py-3.5 bg-slate-900 text-white flex items-center justify-between gap-3 shrink-0 border-b border-slate-800">
+              <div className="min-w-0 flex items-center gap-3">
+                <h3 className="font-bold text-sm sm:text-base font-display truncate">
+                  {editingProduct ? 'Editar Repuesto de Motocicleta' : 'Registrar Nuevo Repuesto en Inventario'}
+                </h3>
+                {editingProduct && (
+                  <span className="hidden sm:inline-block font-mono text-xs text-amber-300 bg-slate-800 border border-slate-700 px-2 py-0.5 rounded truncate max-w-[360px]">
+                    {editingProduct.sku} · {editingProduct.name}
+                  </span>
+                )}
+              </div>
               <button
                 type="button"
                 onClick={() => {
@@ -1500,19 +1806,29 @@ export const InventoryView: React.FC = () => {
                   setIsAddingCategory(false);
                   setNewCategoryName('');
                 }}
-                className="p-1 text-slate-400 hover:text-white"
+                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-slate-300 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer text-xs font-semibold shrink-0"
               >
-                <X className="w-5 h-5" />
+                <X className="w-4 h-4" />
+                <span className="hidden sm:inline">Cerrar</span>
               </button>
             </div>
 
-            <form onSubmit={handleSaveProduct} className="p-6 overflow-y-auto space-y-4 text-xs">
-              {formError && (
-                <div className="p-3 bg-rose-50 border border-rose-200 text-rose-700 rounded-xl flex items-center gap-2">
-                  <AlertTriangle className="w-4 h-4 shrink-0 text-rose-500" />
-                  <span>{formError}</span>
-                </div>
-              )}
+            <form
+              onSubmit={handleSaveProduct}
+              className="flex-1 min-h-0 flex flex-col overflow-hidden text-xs"
+            >
+              <div className="flex-1 min-h-0 overflow-y-auto p-4 sm:p-6 bg-slate-50/50">
+                {formError && (
+                  <div className="mb-4 p-3 bg-rose-50 border border-rose-200 text-rose-700 rounded-xl flex items-center gap-2">
+                    <AlertTriangle className="w-4 h-4 shrink-0 text-rose-500" />
+                    <span>{formError}</span>
+                  </div>
+                )}
+
+                <div className="grid grid-cols-1 xl:grid-cols-12 gap-5 items-start">
+                  {/* Left Column: Datos Básicos, Modelos de Moto, Precios y Stock */}
+                  <div className="xl:col-span-7 space-y-4">
+                    <div className="bg-white rounded-xl border border-slate-200 p-4 space-y-3.5">
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5">
                 <div>
                   <label className="block font-semibold text-slate-700 mb-1">Código / SKU *</label>
@@ -1683,6 +1999,18 @@ export const InventoryView: React.FC = () => {
                   />
                 </div>
               </div>
+
+              <div>
+                <label className="block font-semibold text-slate-700 mb-1">Descripción y Detalles Técnicos</label>
+                <textarea
+                  rows={2}
+                  value={formData.description}
+                  onChange={(e) => setFormData({ ...formData, description: e.target.value })}
+                  placeholder="Materiales, especificaciones, garantía..."
+                  className="w-full p-2.5 rounded-lg border border-slate-200 bg-slate-50 focus:bg-white focus:border-amber-500"
+                />
+              </div>
+                    </div>
 
               {/* Categorías de Modelos de Motos Especializados (Filtro Tienda Online) */}
               <div className="rounded-xl border border-amber-200/90 bg-amber-50/40 p-3.5 space-y-2.5">
@@ -1992,30 +2320,171 @@ export const InventoryView: React.FC = () => {
                 </div>
               </div>
 
-              {/* Stock Inicial y Stock Mínimo */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <div>
-                  <label className="block font-semibold text-slate-700 mb-1">Stock Inicial *</label>
-                  <input
-                    type="number"
-                    required
-                    value={formData.stock}
-                    onChange={(e) => setFormData({ ...formData, stock: Number(e.target.value) })}
-                    className="w-full p-2.5 rounded-lg border border-slate-200 bg-slate-50 font-mono"
-                  />
+              {/* Control de Inventario vs Fabricación bajo pedido */}
+              <div className="bg-white rounded-xl border border-slate-200 p-4 space-y-3.5">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                  <div>
+                    <label className="block font-bold text-slate-800 text-xs">
+                      Control de Inventario
+                    </label>
+                    <p className="text-[11px] text-slate-500">
+                      Elige si este artículo descuenta stock físico o se fabrica bajo pedido (como forros de asiento).
+                    </p>
+                  </div>
                 </div>
 
-                <div>
-                  <label className="block font-semibold text-slate-700 mb-1">Stock Mínimo</label>
-                  <input
-                    type="number"
-                    value={formData.minStock}
-                    onChange={(e) => setFormData({ ...formData, minStock: Number(e.target.value) })}
-                    className="w-full p-2.5 rounded-lg border border-slate-200 bg-slate-50 font-mono"
-                  />
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setFormData((prev) => ({
+                        ...prev,
+                        tracksInventory: true,
+                      }))
+                    }
+                    className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
+                      formData.tracksInventory
+                        ? 'border-slate-900 bg-slate-900 text-white shadow-xs'
+                        : 'border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-bold text-xs">Usa inventario (Stock físico)</span>
+                      <Boxes className={`w-4 h-4 shrink-0 ${formData.tracksInventory ? 'text-amber-400' : 'text-slate-400'}`} />
+                    </div>
+                    <p className={`text-[10px] mt-1 leading-snug ${formData.tracksInventory ? 'text-slate-300' : 'text-slate-500'}`}>
+                      Controla existencias reales, alerta stock mínimo y oculta el producto en tienda al llegar a 0.
+                    </p>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setFormData((prev) => ({
+                        ...prev,
+                        tracksInventory: false,
+                        productionTimeLabel:
+                          (prev.productionTimeLabel || '').trim() || DEFAULT_PRODUCTION_TIME_LABEL,
+                        productionTimeNote:
+                          (prev.productionTimeNote || '').trim() || DEFAULT_PRODUCTION_TIME_NOTE,
+                      }))
+                    }
+                    className={`p-3 rounded-xl border text-left transition-all cursor-pointer ${
+                      !formData.tracksInventory
+                        ? 'border-indigo-700 bg-indigo-950 text-white shadow-xs'
+                        : 'border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-bold text-xs">Sin inventario (Bajo pedido)</span>
+                      <Clock className={`w-4 h-4 shrink-0 ${!formData.tracksInventory ? 'text-amber-400' : 'text-slate-400'}`} />
+                    </div>
+                    <p className={`text-[10px] mt-1 leading-snug ${!formData.tracksInventory ? 'text-indigo-200' : 'text-slate-500'}`}>
+                      Ideal para forros de asiento fabricados por nosotros. Siempre visible en tienda y POS, con aviso de fabricación.
+                    </p>
+                  </button>
                 </div>
+
+                {formData.tracksInventory ? (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5 pt-1">
+                    <div>
+                      <label className="block font-semibold text-slate-700 mb-1">Stock Actual *</label>
+                      <input
+                        type="number"
+                        min={0}
+                        required
+                        value={formData.stock}
+                        onChange={(e) => setFormData({ ...formData, stock: Number(e.target.value) })}
+                        className="w-full p-2.5 rounded-lg border border-slate-200 bg-slate-50 focus:bg-white font-mono"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block font-semibold text-slate-700 mb-1">Stock Mínimo</label>
+                      <input
+                        type="number"
+                        min={0}
+                        value={formData.minStock}
+                        onChange={(e) => setFormData({ ...formData, minStock: Number(e.target.value) })}
+                        className="w-full p-2.5 rounded-lg border border-slate-200 bg-slate-50 focus:bg-white font-mono"
+                      />
+                    </div>
+                  </div>
+                ) : (
+                  <div className="rounded-xl bg-amber-50/70 border border-amber-200 p-3.5 space-y-3">
+                    <div className="flex items-start gap-2">
+                      <Clock className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
+                      <div>
+                        <p className="text-xs font-bold text-amber-950">
+                          Tiempo de fabricación visible para clientes y vendedores
+                        </p>
+                        <p className="text-[11px] text-amber-900/80">
+                          Este artículo no descuenta inventario al venderse ni se oculta en la tienda online.
+                        </p>
+                      </div>
+                    </div>
+
+                    <div>
+                      <div className="flex flex-wrap items-center justify-between gap-1.5 mb-1">
+                        <label className="block font-semibold text-slate-800 text-[11px]">
+                          Tiempo estimado de fabricación *
+                        </label>
+                        <div className="flex items-center gap-1">
+                          {['12 a 24 horas', '24 a 48 horas', '2 a 3 días'].map((preset) => (
+                            <button
+                              key={preset}
+                              type="button"
+                              onClick={() =>
+                                setFormData((prev) => ({
+                                  ...prev,
+                                  productionTimeLabel: preset,
+                                  productionTimeNote: `Fabricación bajo pedido: tiempo estimado de ${preset} (sujeto a posibles retrasos por cortes de energía eléctrica).`,
+                                }))
+                              }
+                              className={`px-2 py-0.5 rounded text-[10px] font-semibold transition-colors cursor-pointer ${
+                                formData.productionTimeLabel === preset
+                                  ? 'bg-slate-900 text-amber-400'
+                                  : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-100'
+                              }`}
+                            >
+                              {preset}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                      <input
+                        type="text"
+                        required
+                        value={formData.productionTimeLabel}
+                        onChange={(e) =>
+                          setFormData({ ...formData, productionTimeLabel: e.target.value })
+                        }
+                        placeholder="Ej. 12 a 24 horas"
+                        className="w-full p-2.5 rounded-lg border border-amber-300 bg-white focus:outline-hidden focus:border-amber-500 text-xs font-semibold text-slate-900"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block font-semibold text-slate-800 text-[11px] mb-1">
+                        Aviso completo al cliente (incluye cortes de luz)
+                      </label>
+                      <textarea
+                        rows={2}
+                        value={formData.productionTimeNote}
+                        onChange={(e) =>
+                          setFormData({ ...formData, productionTimeNote: e.target.value })
+                        }
+                        placeholder={DEFAULT_PRODUCTION_TIME_NOTE}
+                        className="w-full p-2.5 rounded-lg border border-amber-300 bg-white focus:outline-hidden focus:border-amber-500 text-xs text-slate-800"
+                      />
+                    </div>
+                  </div>
+                )}
               </div>
+                  </div>
 
+                  {/* Right Column: Galería de Fotos del Repuesto (siempre visible al lado en pantalla grande) */}
+                  <div className="xl:col-span-5 xl:sticky xl:top-0">
               <div
                 onDragOver={(e) => {
                   e.preventDefault();
@@ -2406,35 +2875,61 @@ export const InventoryView: React.FC = () => {
                   );
                 })()}
               </div>
-
-              <div>
-                <label className="block font-semibold text-slate-700 mb-1">Descripción y Detalles Técnicos</label>
-                <textarea
-                  rows={2}
-                  value={formData.description}
-                  onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-                  placeholder="Materiales, especificaciones, garantía..."
-                  className="w-full p-2.5 rounded-lg border border-slate-200 bg-slate-50"
-                />
+                  </div>
+                </div>
               </div>
 
-              <div className="pt-4 border-t border-slate-200 flex items-center justify-end gap-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setIsAddModalOpen(false);
-                    setEditingProduct(null);
-                  }}
-                  className="px-4 py-2 text-slate-600 hover:bg-slate-100 rounded-lg"
-                >
-                  Cancelar
-                </button>
-                <button
-                  type="submit"
-                  className="px-5 py-2.5 bg-slate-900 hover:bg-slate-800 text-white font-bold rounded-lg"
-                >
-                  {editingProduct ? 'Guardar Cambios' : 'Registrar en Inventario'}
-                </button>
+              {/* Pinned Bottom Action Bar (siempre visible sin necesidad de bajar) */}
+              <div className="shrink-0 px-4 sm:px-6 py-3.5 bg-white border-t border-slate-200 flex flex-wrap items-center justify-between gap-3">
+                <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600 tabular-nums">
+                  <span className="font-semibold text-slate-900">
+                    Venta BCV: {formatUSD(formPricing.analysis.salePriceUsdBcv)}
+                  </span>
+                  <span aria-hidden="true" className="text-slate-300">·</span>
+                  <span className="font-mono text-emerald-700 font-semibold">
+                    {formatBs(formPricing.saleBsBcv)}
+                  </span>
+                  <span aria-hidden="true" className="text-slate-300">·</span>
+                  {formData.tracksInventory ? (
+                    <span>Stock: <strong>{formData.stock}</strong></span>
+                  ) : (
+                    <span className="text-indigo-800 font-semibold">
+                      Sin inventario · Fabricación: {formData.productionTimeLabel || DEFAULT_PRODUCTION_TIME_LABEL}
+                    </span>
+                  )}
+                  <span aria-hidden="true" className="text-slate-300">·</span>
+                  <span>
+                    Fotos:{' '}
+                    <strong>
+                      {Array.isArray(formData.imageUrls) && formData.imageUrls.length > 0
+                        ? formData.imageUrls.length
+                        : formData.imageUrl
+                        ? 1
+                        : 0}
+                    </strong>
+                    /{MAX_PRODUCT_IMAGES}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2.5 ml-auto">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsAddModalOpen(false);
+                      setEditingProduct(null);
+                      setIsAddingCategory(false);
+                      setNewCategoryName('');
+                    }}
+                    className="px-4 py-2 text-slate-600 hover:text-slate-900 hover:bg-slate-100 font-semibold rounded-lg transition-colors cursor-pointer"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    type="submit"
+                    className="px-5 py-2.5 bg-slate-900 hover:bg-slate-800 text-white font-bold rounded-lg shadow-xs transition-colors cursor-pointer"
+                  >
+                    {editingProduct ? 'Guardar Cambios' : 'Registrar en Inventario'}
+                  </button>
+                </div>
               </div>
             </form>
           </div>

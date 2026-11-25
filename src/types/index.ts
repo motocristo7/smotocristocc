@@ -54,6 +54,10 @@ export const DEFAULT_MOTORCYCLE_MODEL_CATEGORIES: string[] = [
 
 export type ProductCostOrigin = 'DIVISAS' | 'BS_BCV';
 
+export const DEFAULT_PRODUCTION_TIME_LABEL = '12 a 24 horas';
+export const DEFAULT_PRODUCTION_TIME_NOTE =
+  'Fabricación bajo pedido: tiempo estimado de 12 a 24 horas (sujeto a posibles retrasos por cortes de energía eléctrica).';
+
 export interface Product {
   id: string;
   sku: string;
@@ -68,6 +72,9 @@ export interface Product {
   salePriceRefUSD?: number; // SOLO ADMIN: Precio de venta de referencia en divisas (nunca visible en tienda ni facturas)
   salePriceBsBcv?: number; // Precio de venta comercial en Bs a tasa BCV (sincronizado con tasa_bcv)
   targetProfitPct?: number; // SOLO ADMIN: % de utilidad objetivo guardado para referencia interna
+  tracksInventory?: boolean; // true/undefined = usa control de stock físico; false = sin inventario (fabricación bajo pedido)
+  productionTimeLabel?: string; // Ej. "12 a 24 horas" (visible en tienda cuando tracksInventory === false)
+  productionTimeNote?: string; // Aviso al cliente sobre tiempo de fabricación y posibles retrasos por cortes de luz
   stock: number;
   minStock: number;
   brand: string;
@@ -78,6 +85,12 @@ export interface Product {
   barcode?: string; // Código de barra / EAN / UPC
   warehouseLocation?: string; // Ubicación física en almacén (ej. Estante A-3, Pasillo 2)
   featured?: boolean;
+}
+
+export function productTracksInventory(
+  product?: Pick<Product, 'tracksInventory'> | null
+): boolean {
+  return product?.tracksInventory !== false;
 }
 
 export interface Customer {
@@ -111,6 +124,9 @@ export interface SaleItem {
   unitPrice: number; // In USD ($)
   total: number; // In USD ($)
   isService?: boolean;
+  isMadeToOrder?: boolean;
+  productionTimeLabel?: string;
+  productionTimeNote?: string;
   imageUrl?: string;
 }
 

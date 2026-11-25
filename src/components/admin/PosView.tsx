@@ -2,6 +2,8 @@ import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { useApp } from '../../context/AppContext';
 import {
   Product,
+  productTracksInventory,
+  DEFAULT_PRODUCTION_TIME_LABEL,
   PaymentMethod,
   PagoMovilAccountOption,
   SaleItem,
@@ -745,7 +747,8 @@ export const PosView: React.FC = () => {
 
   const handleAddToCart = (product: Product) => {
     setPosFormError(null);
-    if (product.stock <= 0) {
+    const tracksInv = productTracksInventory(product);
+    if (tracksInv && product.stock <= 0) {
       showToast(`El repuesto ${product.name} no cuenta con stock disponible.`, 'error');
       return;
     }
@@ -753,7 +756,7 @@ export const PosView: React.FC = () => {
     setPosCart((prev) => {
       const existing = prev.find((item) => item.product.id === product.id);
       if (existing) {
-        if (existing.quantity >= product.stock) {
+        if (tracksInv && existing.quantity >= product.stock) {
           showToast(`Stock máximo disponible alcanzado: ${product.stock}`, 'error');
           return prev;
         }
@@ -772,7 +775,7 @@ export const PosView: React.FC = () => {
           if (item.product.id === productId) {
             const newQty = item.quantity + delta;
             if (newQty <= 0) return null;
-            if (newQty > item.product.stock) {
+            if (productTracksInventory(item.product) && newQty > item.product.stock) {
               showToast(`Stock máximo disponible alcanzado: ${item.product.stock}`, 'error');
               return item;
             }
@@ -1952,7 +1955,8 @@ export const PosView: React.FC = () => {
           {/* Product Items List */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-h-[620px] overflow-y-auto pr-1">
             {filteredProducts.map((product) => {
-              const inStock = product.stock > 0;
+              const tracksInv = productTracksInventory(product);
+              const inStock = !tracksInv || product.stock > 0;
               const cartItem = posCart.find((i) => i.product.id === product.id);
               const priceBs = product.salePrice * rate;
 
@@ -1986,8 +1990,20 @@ export const PosView: React.FC = () => {
                         >
                           <Edit3 className="w-3 h-3" />
                         </button>
-                        <span className={`font-semibold ${inStock ? 'text-emerald-700' : 'text-rose-600'}`}>
-                          {inStock ? `${product.stock} en stock` : 'Agotado'}
+                        <span
+                          className={`font-semibold ${
+                            !tracksInv
+                              ? 'text-indigo-700'
+                              : inStock
+                              ? 'text-emerald-700'
+                              : 'text-rose-600'
+                          }`}
+                        >
+                          {!tracksInv
+                            ? `Bajo pedido · ${product.productionTimeLabel || DEFAULT_PRODUCTION_TIME_LABEL}`
+                            : inStock
+                            ? `${product.stock} en stock`
+                            : 'Agotado'}
                         </span>
                       </div>
                     </div>

@@ -854,6 +854,9 @@ app.get('/api/products', (req, res) => {
         description: p.description || '',
         salePrice,
         ...(bcvRate > 0 ? { salePriceBsBcv: Math.round(salePrice * bcvRate * 100) / 100 } : {}),
+        tracksInventory: p.tracksInventory !== false,
+        ...(p.productionTimeLabel ? { productionTimeLabel: p.productionTimeLabel } : {}),
+        ...(p.productionTimeNote ? { productionTimeNote: p.productionTimeNote } : {}),
         stock: Number(p.stock) || 0,
         minStock: Number(p.minStock) || 0,
         brand: p.brand || '',
@@ -1537,6 +1540,7 @@ app.post('/api/sales/void/:id', (req, res) => {
     let updatedProducts = current.products;
     if (restoreStock && Array.isArray(sale.items)) {
       updatedProducts = current.products.map((p) => {
+        if (p.tracksInventory === false) return p;
         const item = sale.items.find((it: any) => it.productId === p.id || it.sku === p.sku);
         if (item && !item.isService) {
           return { ...p, stock: p.stock + (item.quantity || 1) };

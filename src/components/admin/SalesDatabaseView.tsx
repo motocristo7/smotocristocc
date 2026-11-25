@@ -2,6 +2,10 @@ import React, { useState, useMemo } from 'react';
 import { useApp } from '../../context/AppContext';
 import {
   Sale,
+  SaleItem,
+  Product,
+  productTracksInventory,
+  DEFAULT_PRODUCTION_TIME_LABEL,
   PaymentMethod,
   PagoMovilAccountOption,
   SalePaymentType,
@@ -48,11 +52,13 @@ import {
   Edit2,
   BookmarkCheck,
   Layers,
+  Minus,
 } from 'lucide-react';
 
 export const SalesDatabaseView: React.FC = () => {
   const {
     sales,
+    products,
     customers,
     settings,
     treasuryAccounts,
@@ -103,6 +109,18 @@ export const SalesDatabaseView: React.FC = () => {
     reference: string;
   }
   const [editSplits, setEditSplits] = useState<EditSplitDraft[]>([]);
+
+  interface EditSaleItemDraft extends SaleItem {
+    _key: string;
+  }
+  const [editItems, setEditItems] = useState<EditSaleItemDraft[]>([]);
+  const [editItemsTouched, setEditItemsTouched] = useState<boolean>(false);
+  const [editDiscount, setEditDiscount] = useState<string>('0');
+  const [editProductSearch, setEditProductSearch] = useState<string>('');
+  const [showManualItemForm, setShowManualItemForm] = useState<boolean>(false);
+  const [manualItemName, setManualItemName] = useState<string>('');
+  const [manualItemQty, setManualItemQty] = useState<string>('1');
+  const [manualItemPrice, setManualItemPrice] = useState<string>('');
 
   // Modales de confirmación (reemplazan window.prompt / window.confirm bloqueados en iframes)
   const [voidModalSale, setVoidModalSale] = useState<Sale | null>(null);
@@ -419,6 +437,265 @@ export const SalesDatabaseView: React.FC = () => {
     setEditIsMixto(saleIsMixto);
     setEditSplits(initialSplits);
     setEditPaymentTouched(false);
+    setEditItems(
+      (sale.items || []).map((it, idx) => ({
+        ...it,
+        _key: `edit-it-${Date.now()}-${idx}-${it.productId || it.sku || idx}`,
+      }))
+    );
+    setEditItemsTouched(false);
+    setEditDiscount(String(sale.discount || 0));
+    setEditProductSearch('');
+    setShowManualItemForm(false);
+    setManualItemName('');
+    setManualItemQty('1');
+    setManualItemPrice('');
+  };
+
+  // Helpers para edición de repuestos y cálculo de reposición / descuento en inventario
+  const resolveInventoryProductForItem = (item: SaleItem): Product | undefined => {
+    if (item.isService) return undefined;
+    if (item.productId) {
+      const byId = products.find((p) => p.id === item.productId);
+      if (byId) return byId;
+    }
+    const normSku = (item.sku || '').trim().toLowerCase();
+    if (normSku) {
+      return products.find((p) => (p.sku || '').trim().toLowerCase() === normSku);
+    }
+    return undefined;
+  };
+
+  const editOriginalQtyByProductId = useMemo(() => {
+    const map = new Map<string, number>();
+    if (!editSaleModal) return map;
+    (editSaleModal.items || []).forEach((it) => {
+      const prod = resolveInventoryProductForItem(it);
+      if (!prod) return;
+      map.set(prod.id, (map.get(prod.id) || 0) + Math.max(0, Number(it.quantity) || 0));
+    });
+    return map;
+  }, [editSaleModal, products]);
+
+  const editDraftQtyByProductId = useMemo(() => {
+    const map = new Map<string, number>();
+    editItems.forEach((it) => {
+      const prod = resolveInventoryProductForItem(it);
+      if (!prod) return;
+      map.set(prod.id, (map.get(prod.id) || 0) + Math.max(0, Number(it.quantity) || 0));
+    });
+    return map;
+  }, [editItems, products]);
+
+  const getEditAvailableToAdd = (product: Product): number => {
+    if (!productTracksInventory(product)) return Number.POSITIVE_INFINITY;
+    const originalQty = editOriginalQtyByProductId.get(product.id) || 0;
+    const draftQty = editDraftQtyByProductId.get(product.id) || 0;
+    return Math.max(0, product.stock + originalQty - draftQty);
+  };
+
+  const editInventoryImpact = useMemo(() => {
+    const changes: Array<{
+      productId: string;
+      name: string;
+      sku: string;
+      delta: number; // positivo = se repone al inventario, negativo = se descuenta del inventario
+    }> = [];
+    if (!editSaleModal || editSaleModal.isVoided || editSaleModal.creditStatus === 'ANULADO') {
+      return changes;
+    }
+    const allIds = new Set<string>([
+      ...Array.from(editOriginalQtyByProductId.keys()),
+      ...Array.from(editDraftQtyByProductId.keys()),
+    ]);
+    allIds.forEach((pid) => {
+      const prod = products.find((p) => p.id === pid);
+      if (prod && !productTracksInventory(prod)) return;
+      const oldQty = editOriginalQtyByProductId.get(pid) || 0;
+      const newQty = editDraftQtyByProductId.get(pid) || 0;
+      const delta = oldQty - newQty;
+      if (delta !== 0) {
+        changes.push({
+          productId: pid,
+          name: prod?.name || pid,
+          sku: prod?.sku || '',
+          delta,
+        });
+      }
+    });
+    return changes;
+  }, [editSaleModal, editOriginalQtyByProductId, editDraftQtyByProductId, products]);
+
+  const liveEditSubtotal = useMemo(
+    () =>
+      Math.round(
+        editItems.reduce(
+          (sum, it) => sum + Math.max(1, Number(it.quantity) || 1) * Math.max(0, Number(it.unitPrice) || 0),
+          0
+        ) * 100
+      ) / 100,
+    [editItems]
+  );
+
+  const liveEditDiscount = Math.max(0, Math.round((parseFloat(editDiscount) || 0) * 100) / 100);
+  const liveEditShipping = Number(editSaleModal?.shippingCostUSD) || 0;
+  const liveEditTax = Number(editSaleModal?.tax) || 0;
+  const liveEditTotal = Math.max(
+    0,
+    Math.round((liveEditSubtotal - liveEditDiscount + liveEditShipping + liveEditTax) * 100) / 100
+  );
+
+  const editSearchResults = useMemo(() => {
+    const q = editProductSearch.trim().toLowerCase();
+    if (!q) return [];
+    return products
+      .filter((p) => {
+        const modelMatch = Array.isArray(p.modelCategories)
+          ? p.modelCategories.some((m) => m.toLowerCase().includes(q))
+          : false;
+        return (
+          p.name.toLowerCase().includes(q) ||
+          p.sku.toLowerCase().includes(q) ||
+          (p.barcode && p.barcode.toLowerCase().includes(q)) ||
+          (p.brand && p.brand.toLowerCase().includes(q)) ||
+          (p.compatibility && p.compatibility.toLowerCase().includes(q)) ||
+          modelMatch
+        );
+      })
+      .slice(0, 8);
+  }, [products, editProductSearch]);
+
+  const handleAddInventoryProductToEditSale = (product: Product) => {
+    const isVoided = Boolean(editSaleModal?.isVoided || editSaleModal?.creditStatus === 'ANULADO');
+    const available = getEditAvailableToAdd(product);
+    if (!isVoided && available <= 0) {
+      showToast(`Stock insuficiente para "${product.name}" (no quedan unidades disponibles en inventario).`);
+      return;
+    }
+
+    setEditItems((prev) => {
+      const existingIdx = prev.findIndex(
+        (it) =>
+          !it.isService &&
+          (it.productId === product.id ||
+            (it.sku && it.sku.trim().toLowerCase() === product.sku.trim().toLowerCase()))
+      );
+      if (existingIdx >= 0) {
+        return prev.map((it, idx) => {
+          if (idx !== existingIdx) return it;
+          const nextQty = (Number(it.quantity) || 1) + 1;
+          return {
+            ...it,
+            productId: product.id,
+            sku: product.sku,
+            quantity: nextQty,
+            total: Math.round(nextQty * (Number(it.unitPrice) || 0) * 100) / 100,
+          };
+        });
+      }
+      const price = Math.max(0, Math.round((Number(product.salePrice) || 0) * 100) / 100);
+      return [
+        ...prev,
+        {
+          _key: `edit-it-${Date.now()}-${product.id}`,
+          productId: product.id,
+          sku: product.sku,
+          name: product.name,
+          category: product.category,
+          quantity: 1,
+          unitPrice: price,
+          total: price,
+          isService: false,
+          imageUrl: product.imageUrl,
+        },
+      ];
+    });
+    setEditItemsTouched(true);
+    setEditProductSearch('');
+  };
+
+  const handleUpdateEditItemQty = (itemKey: string, requestedQty: number) => {
+    const cleanQty = Math.max(1, Math.round(requestedQty) || 1);
+    const targetItem = editItems.find((it) => it._key === itemKey);
+    if (!targetItem) return;
+
+    const isVoided = Boolean(editSaleModal?.isVoided || editSaleModal?.creditStatus === 'ANULADO');
+    const prod = resolveInventoryProductForItem(targetItem);
+    let finalQty = cleanQty;
+
+    if (prod && productTracksInventory(prod) && !isVoided) {
+      const originalQty = editOriginalQtyByProductId.get(prod.id) || 0;
+      const otherLinesQty = editItems
+        .filter((it) => it._key !== itemKey && resolveInventoryProductForItem(it)?.id === prod.id)
+        .reduce((sum, it) => sum + (Number(it.quantity) || 0), 0);
+      const maxForThisLine = Math.max(1, prod.stock + originalQty - otherLinesQty);
+      if (cleanQty > maxForThisLine) {
+        finalQty = maxForThisLine;
+        showToast(`Máximo disponible para "${prod.name}": ${maxForThisLine} u. (incluye lo que ya tenía esta venta).`);
+      }
+    }
+
+    setEditItems((prev) =>
+      prev.map((it) =>
+        it._key === itemKey
+          ? {
+              ...it,
+              quantity: finalQty,
+              total: Math.round(finalQty * (Number(it.unitPrice) || 0) * 100) / 100,
+            }
+          : it
+      )
+    );
+    setEditItemsTouched(true);
+  };
+
+  const handleUpdateEditItemPrice = (itemKey: string, rawPrice: string) => {
+    const parsed = parseFloat(rawPrice);
+    const cleanPrice = !Number.isNaN(parsed) && parsed >= 0 ? parsed : 0;
+    setEditItems((prev) =>
+      prev.map((it) =>
+        it._key === itemKey
+          ? {
+              ...it,
+              unitPrice: cleanPrice,
+              total: Math.round((Number(it.quantity) || 1) * cleanPrice * 100) / 100,
+            }
+          : it
+      )
+    );
+    setEditItemsTouched(true);
+  };
+
+  const handleRemoveEditItem = (itemKey: string) => {
+    setEditItems((prev) => prev.filter((it) => it._key !== itemKey));
+    setEditItemsTouched(true);
+  };
+
+  const handleAddManualItemToEditSale = () => {
+    const name = manualItemName.trim();
+    const qty = Math.max(1, Math.round(Number(manualItemQty) || 1));
+    const price = Math.max(0, Math.round((parseFloat(manualItemPrice) || 0) * 100) / 100);
+    if (!name) {
+      showToast('Ingresa el nombre del ítem o servicio manual.');
+      return;
+    }
+    setEditItems((prev) => [
+      ...prev,
+      {
+        _key: `edit-manual-${Date.now()}`,
+        name,
+        category: 'Servicio / Manual',
+        quantity: qty,
+        unitPrice: price,
+        total: Math.round(qty * price * 100) / 100,
+        isService: true,
+      },
+    ]);
+    setEditItemsTouched(true);
+    setManualItemName('');
+    setManualItemQty('1');
+    setManualItemPrice('');
+    setShowManualItemForm(false);
   };
 
   const handleEditPaymentMethodChange = (nextMethod: PaymentMethod) => {
@@ -443,11 +720,17 @@ export const SalesDatabaseView: React.FC = () => {
       showToast('Ingresa el nombre del cliente para guardar los cambios.');
       return;
     }
+    if (editItems.length === 0) {
+      showToast('La venta debe conservar al menos un artículo. Para cancelarla por completo usa "Anular Factura".');
+      return;
+    }
 
     const saleRate = editSaleModal.bcvRate || rate;
+    const targetTotalUSD = editItemsTouched ? liveEditTotal : editSaleModal.total;
+    const totalActuallyChanged = Math.abs(targetTotalUSD - editSaleModal.total) > 0.005;
     let resolvedSplitsPayload: SalePaymentSplit[] | undefined;
 
-    if (editPaymentTouched && editIsMixto) {
+    if ((editPaymentTouched || totalActuallyChanged) && editIsMixto) {
       const parsed: SalePaymentSplit[] = editSplits
         .map((sp, idx) => {
           const usd = Math.round((parseFloat(sp.amountUSD) || 0) * 100) / 100;
@@ -475,11 +758,11 @@ export const SalesDatabaseView: React.FC = () => {
       }
 
       const sumUSD = Math.round(parsed.reduce((acc, s) => acc + s.amountUSD, 0) * 100) / 100;
-      const targetUSD = Math.round(editSaleModal.total * 100) / 100;
+      const targetUSD = Math.round(targetTotalUSD * 100) / 100;
       const diffUSD = Math.round((targetUSD - sumUSD) * 100) / 100;
       if (Math.abs(diffUSD) > 0.02) {
         showToast(
-          `La suma del Pago Mixto (${formatUSD(sumUSD)}) debe coincidir con el total (${formatUSD(targetUSD)}).`
+          `El total cambió a ${formatUSD(targetUSD)}. Ajusta los montos del Pago Mixto (suma actual: ${formatUSD(sumUSD)}) antes de guardar.`
         );
         return;
       }
@@ -505,6 +788,24 @@ export const SalesDatabaseView: React.FC = () => {
     const firstCashEditSplit =
       resolvedSplitsPayload?.find((sp) => sp.splitType !== 'CREDITO') || resolvedSplitsPayload?.[0];
 
+    const cleanedItems: SaleItem[] = editItems.map(({ _key, ...rest }) => {
+      const qty = Math.max(1, Math.round(Number(rest.quantity) || 1));
+      const unitPrice = Math.max(0, Math.round((Number(rest.unitPrice) || 0) * 100) / 100);
+      return {
+        ...rest,
+        quantity: qty,
+        unitPrice,
+        total: Math.round(qty * unitPrice * 100) / 100,
+      };
+    });
+
+    const restoredUnits = editInventoryImpact
+      .filter((c) => c.delta > 0)
+      .reduce((s, c) => s + c.delta, 0);
+    const deductedUnits = editInventoryImpact
+      .filter((c) => c.delta < 0)
+      .reduce((s, c) => s + Math.abs(c.delta), 0);
+
     const updated = updateSale(editSaleModal.id, {
       customerId: editCustomerId || undefined,
       customerName: cleanName,
@@ -512,10 +813,19 @@ export const SalesDatabaseView: React.FC = () => {
       customerDocument: editCustomerDocument.trim() || undefined,
       creditDueDate: editCreditDueDate || undefined,
       notes: editNotes.trim() || undefined,
-      ...(editPaymentTouched
+      ...(editItemsTouched
+        ? {
+            items: cleanedItems,
+            discount: liveEditDiscount,
+            subtotal: liveEditSubtotal,
+            total: liveEditTotal,
+            syncInventoryOnItemsChange: true,
+          }
+        : {}),
+      ...(editPaymentTouched || (totalActuallyChanged && editIsMixto)
         ? editIsMixto && resolvedSplitsPayload
           ? {
-              paymentType: nextPaymentTypeForEdit,
+              paymentType: nextPaymentTypeForEdit || editSaleModal.paymentType,
               paymentSplits: resolvedSplitsPayload,
               paymentMethod: firstCashEditSplit ? firstCashEditSplit.paymentMethod : editPaymentMethod,
               syncTreasuryPayment: true,
@@ -536,7 +846,14 @@ export const SalesDatabaseView: React.FC = () => {
       setSelectedSaleDetail(updated);
     }
 
-    if (editPaymentTouched) {
+    if (restoredUnits > 0 || deductedUnits > 0) {
+      const parts: string[] = [];
+      if (restoredUnits > 0) parts.push(`+${restoredUnits} repuestos repuestos`);
+      if (deductedUnits > 0) parts.push(`-${deductedUnits} descontados`);
+      showToast(
+        `Factura ${editSaleModal.invoiceNumber} actualizada · Inventario ajustado (${parts.join(', ')}) · Nuevo total: ${formatUSD(targetTotalUSD)}`
+      );
+    } else if (editPaymentTouched) {
       if (editIsMixto && resolvedSplitsPayload) {
         showToast(
           `Factura ${editSaleModal.invoiceNumber} actualizada a Pago Mixto (${resolvedSplitsPayload.length} formas · Tesorería sincronizada)`
@@ -1688,7 +2005,7 @@ export const SalesDatabaseView: React.FC = () => {
                     className="px-3.5 py-2 bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-300 font-bold rounded-xl flex items-center gap-1.5 cursor-pointer"
                   >
                     <Edit2 className="w-4 h-4" />
-                    <span>Editar Pago / Cliente</span>
+                    <span>Editar Repuestos / Pago</span>
                   </button>
                   <button
                     type="button"
@@ -1748,32 +2065,404 @@ export const SalesDatabaseView: React.FC = () => {
         />
       )}
 
-      {/* Modal: EDITAR Tipo de Pago, Cuenta Destino y Datos de Factura */}
-      {editSaleModal && (
-        <div className="fixed inset-0 bg-slate-950/70 backdrop-blur-xs z-50 flex items-center justify-center p-4 overflow-y-auto">
-          <div className="bg-white rounded-2xl max-w-lg w-full max-h-[92vh] flex flex-col border border-slate-200 shadow-2xl overflow-hidden animate-in fade-in zoom-in-95">
-            <div className="bg-slate-900 px-5 py-4 text-white flex items-center justify-between shrink-0">
-              <div className="flex items-center gap-2">
-                <Edit2 className="w-5 h-5 text-amber-400" />
-                <div>
-                  <h3 className="font-bold text-sm">Editar Venta, Tipo de Pago y Cuenta</h3>
-                  <span className="text-[11px] text-slate-300 font-mono">
-                    {editSaleModal.invoiceNumber} · {formatUSD(editSaleModal.total)} ({formatBs(editSaleModal.total * (editSaleModal.bcvRate || rate))})
-                  </span>
+      {/* Modal: EDITAR Repuestos (con ajuste automático de inventario), Pago, Tesorería y Cliente */}
+      {editSaleModal && (() => {
+        const editSaleRate = editSaleModal.bcvRate || rate;
+        const effectiveEditTotal = editItemsTouched ? liveEditTotal : editSaleModal.total;
+        const editTotalDiff = Math.round((effectiveEditTotal - editSaleModal.total) * 100) / 100;
+        const isEditVoided = Boolean(editSaleModal.isVoided || editSaleModal.creditStatus === 'ANULADO');
+
+        return (
+        <div className="fixed inset-0 bg-slate-950/75 backdrop-blur-xs z-50 flex items-center justify-center p-0 sm:p-3 overflow-y-auto">
+          <div className="bg-white sm:rounded-2xl max-w-6xl w-full h-full sm:h-[94vh] sm:max-h-[94vh] flex flex-col border border-slate-200 shadow-2xl overflow-hidden animate-in fade-in zoom-in-95">
+            <div className="bg-slate-900 px-5 py-3.5 text-white flex items-center justify-between gap-3 shrink-0 border-b border-slate-800">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <Edit2 className="w-5 h-5 text-amber-400 shrink-0" />
+                <div className="min-w-0">
+                  <h3 className="font-bold text-sm sm:text-base truncate">
+                    Editar Repuestos, Pago y Datos de Venta
+                  </h3>
+                  <div className="flex flex-wrap items-center gap-x-2 text-[11px] text-slate-300 font-mono tabular-nums">
+                    <span>{editSaleModal.invoiceNumber}</span>
+                    <span>·</span>
+                    <span className="text-amber-300 font-bold">
+                      Total: {formatUSD(effectiveEditTotal)} ({formatBs(effectiveEditTotal * editSaleRate)})
+                    </span>
+                    {Math.abs(editTotalDiff) > 0.005 && (
+                      <span className={editTotalDiff > 0 ? 'text-emerald-400 font-bold' : 'text-rose-300 font-bold'}>
+                        ({editTotalDiff > 0 ? '+' : ''}{formatUSD(editTotalDiff)} vs anterior {formatUSD(editSaleModal.total)})
+                      </span>
+                    )}
+                  </div>
                 </div>
               </div>
               <button
                 type="button"
                 onClick={() => setEditSaleModal(null)}
-                className="p-1 text-white/80 hover:text-white rounded-lg cursor-pointer"
+                className="inline-flex items-center gap-1 px-2.5 py-1.5 text-white/80 hover:text-white hover:bg-slate-800 rounded-lg cursor-pointer text-xs font-semibold shrink-0"
               >
-                <X className="w-5 h-5" />
+                <X className="w-4 h-4" />
+                <span className="hidden sm:inline">Cerrar</span>
               </button>
             </div>
 
-            <form onSubmit={handleSaveEditedSale} className="p-5 space-y-4 text-xs overflow-y-auto flex-1">
+            <form
+              onSubmit={handleSaveEditedSale}
+              className="flex-1 min-h-0 flex flex-col overflow-hidden text-xs"
+            >
+              <div className="flex-1 min-h-0 overflow-y-auto p-4 sm:p-5 bg-slate-50/50">
+                <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
+                  {/* COLUMNA IZQUIERDA (7 cols): Editor de Repuestos de la Venta + Inventario Automático */}
+                  <div className="lg:col-span-7 space-y-3.5">
+                    <div className="bg-white rounded-xl border border-slate-200 p-4 space-y-3.5 shadow-2xs">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex items-center gap-2">
+                          <Package className="w-4 h-4 text-amber-600 shrink-0" />
+                          <span className="font-bold text-slate-900 text-xs sm:text-sm">
+                            Repuestos y Artículos de esta Venta ({editItems.length})
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setShowManualItemForm((prev) => !prev)}
+                          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border border-slate-200 bg-slate-50 hover:bg-slate-100 text-slate-700 font-semibold text-[11px] cursor-pointer"
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                          <span>{showManualItemForm ? 'Ocultar ítem manual' : 'Agregar servicio / manual'}</span>
+                        </button>
+                      </div>
+
+                      {/* Buscador para agregar repuestos del inventario */}
+                      <div className="relative">
+                        <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                        <input
+                          type="text"
+                          value={editProductSearch}
+                          onChange={(e) => setEditProductSearch(e.target.value)}
+                          placeholder="Buscar repuesto en inventario para agregar (nombre, SKU, código o moto)..."
+                          className="w-full pl-9 pr-8 py-2 rounded-lg border border-slate-300 bg-slate-50 focus:bg-white focus:outline-hidden focus:border-amber-500 text-xs"
+                        />
+                        {editProductSearch && (
+                          <button
+                            type="button"
+                            onClick={() => setEditProductSearch('')}
+                            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-700 cursor-pointer"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+
+                        {editProductSearch.trim() && (
+                          <div className="mt-1.5 rounded-xl border border-amber-300 bg-white shadow-lg max-h-60 overflow-y-auto divide-y divide-slate-100">
+                            {editSearchResults.length === 0 ? (
+                              <div className="p-3 text-center text-slate-400 text-xs">
+                                No se encontraron repuestos en inventario para "{editProductSearch}".
+                              </div>
+                            ) : (
+                              editSearchResults.map((prod) => {
+                                const tracksInv = productTracksInventory(prod);
+                                const avail = getEditAvailableToAdd(prod);
+                                const canAdd = isEditVoided || !tracksInv || avail > 0;
+                                return (
+                                  <button
+                                    key={prod.id}
+                                    type="button"
+                                    disabled={!canAdd}
+                                    onClick={() => handleAddInventoryProductToEditSale(prod)}
+                                    className="w-full px-3 py-2 text-left flex items-center justify-between gap-2 hover:bg-amber-50 disabled:opacity-45 disabled:cursor-not-allowed transition-colors cursor-pointer"
+                                  >
+                                    <div className="min-w-0 flex-1">
+                                      <p className="font-bold text-slate-900 text-xs truncate">{prod.name}</p>
+                                      <p className="text-[10px] text-slate-500 font-mono truncate">
+                                        SKU: {prod.sku} · {prod.category}
+                                        {prod.brand ? ` · ${prod.brand}` : ''}
+                                      </p>
+                                    </div>
+                                    <div className="text-right shrink-0 flex items-center gap-2.5">
+                                      <div className="font-mono tabular-nums">
+                                        <span className="font-bold text-emerald-700 block text-xs">
+                                          {formatUSD(prod.salePrice)}
+                                        </span>
+                                        <span
+                                          className={`text-[10px] font-semibold block ${
+                                            !tracksInv
+                                              ? 'text-indigo-700'
+                                              : avail > 0
+                                              ? 'text-slate-500'
+                                              : 'text-rose-600'
+                                          }`}
+                                        >
+                                          {!tracksInv
+                                            ? `Bajo pedido (${prod.productionTimeLabel || DEFAULT_PRODUCTION_TIME_LABEL})`
+                                            : `Disp: ${avail}`}
+                                        </span>
+                                      </div>
+                                      <span className="px-2 py-1 rounded-md bg-amber-500 text-slate-950 font-bold text-[10px] whitespace-nowrap">
+                                        + Agregar
+                                      </span>
+                                    </div>
+                                  </button>
+                                );
+                              })
+                            )}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Formulario opcional para ítem/servicio manual (no mueve stock) */}
+                      {showManualItemForm && (
+                        <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 space-y-2">
+                          <span className="text-[11px] font-bold text-slate-700 block">
+                            Agregar ítem manual o mano de obra (no descuenta inventario)
+                          </span>
+                          <div className="grid grid-cols-1 sm:grid-cols-12 gap-2">
+                            <input
+                              type="text"
+                              value={manualItemName}
+                              onChange={(e) => setManualItemName(e.target.value)}
+                              placeholder="Descripción del ítem o servicio"
+                              className="sm:col-span-6 p-2 rounded-lg border border-slate-300 bg-white text-xs"
+                            />
+                            <input
+                              type="number"
+                              min="1"
+                              step="1"
+                              value={manualItemQty}
+                              onChange={(e) => setManualItemQty(e.target.value)}
+                              placeholder="Cant."
+                              className="sm:col-span-2 p-2 rounded-lg border border-slate-300 bg-white font-mono text-xs text-center"
+                            />
+                            <input
+                              type="number"
+                              min="0"
+                              step="any"
+                              value={manualItemPrice}
+                              onChange={(e) => setManualItemPrice(e.target.value)}
+                              placeholder="Precio $"
+                              className="sm:col-span-2 p-2 rounded-lg border border-slate-300 bg-white font-mono text-xs"
+                            />
+                            <button
+                              type="button"
+                              onClick={handleAddManualItemToEditSale}
+                              className="sm:col-span-2 px-3 py-2 rounded-lg bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs cursor-pointer"
+                            >
+                              Añadir
+                            </button>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Lista editable de repuestos actuales en la venta */}
+                      {editItems.length === 0 ? (
+                        <div className="p-6 text-center rounded-xl border border-dashed border-rose-300 bg-rose-50/60 text-rose-700 text-xs font-medium">
+                          No quedan artículos en esta venta. Agrega al menos un repuesto arriba para poder guardar los cambios.
+                        </div>
+                      ) : (
+                        <div className="divide-y divide-slate-200 border border-slate-200 rounded-xl overflow-hidden">
+                          {editItems.map((item) => {
+                            const invProd = resolveInventoryProductForItem(item);
+                            const remainingToAdd = invProd ? getEditAvailableToAdd(invProd) : null;
+                            const lineTotal =
+                              Math.round(
+                                Math.max(1, Number(item.quantity) || 1) *
+                                  Math.max(0, Number(item.unitPrice) || 0) *
+                                  100
+                              ) / 100;
+
+                            return (
+                              <div
+                                key={item._key}
+                                className="p-3 bg-white hover:bg-slate-50/70 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5"
+                              >
+                                <div className="min-w-0 flex-1">
+                                  <p className="font-bold text-slate-900 text-xs leading-snug break-words">
+                                    {item.name}
+                                  </p>
+                                  <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[10px] text-slate-500 mt-0.5">
+                                    {item.sku && <span className="font-mono">SKU: {item.sku}</span>}
+                                    {item.isService ? (
+                                      <span className="text-indigo-700 font-semibold">
+                                        Servicio / Manual (no mueve stock)
+                                      </span>
+                                    ) : invProd ? (
+                                      <span className="text-emerald-700 font-semibold tabular-nums">
+                                        Vinculado a inventario · Extra disp: {remainingToAdd}
+                                      </span>
+                                    ) : (
+                                      <span className="text-slate-400">No encontrado en catálogo actual</span>
+                                    )}
+                                  </div>
+                                </div>
+
+                                <div className="flex flex-wrap items-center justify-between sm:justify-end gap-2 shrink-0">
+                                  {/* Stepper Cantidad */}
+                                  <div className="inline-flex items-center border border-slate-300 rounded-lg bg-slate-50 overflow-hidden">
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        handleUpdateEditItemQty(item._key, (Number(item.quantity) || 1) - 1)
+                                      }
+                                      disabled={(Number(item.quantity) || 1) <= 1}
+                                      className="px-2 py-1.5 hover:bg-slate-200 disabled:opacity-35 text-slate-700 cursor-pointer"
+                                      title="Restar 1 unidad"
+                                    >
+                                      <Minus className="w-3 h-3" />
+                                    </button>
+                                    <input
+                                      type="number"
+                                      min="1"
+                                      value={item.quantity}
+                                      onChange={(e) =>
+                                        handleUpdateEditItemQty(item._key, parseInt(e.target.value, 10) || 1)
+                                      }
+                                      className="w-11 py-1 text-center font-mono font-bold text-xs bg-white border-x border-slate-200 focus:outline-hidden tabular-nums"
+                                    />
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        handleUpdateEditItemQty(item._key, (Number(item.quantity) || 1) + 1)
+                                      }
+                                      disabled={!isEditVoided && invProd !== undefined && (remainingToAdd ?? 0) <= 0}
+                                      className="px-2 py-1.5 hover:bg-slate-200 disabled:opacity-35 text-slate-700 cursor-pointer"
+                                      title="Sumar 1 unidad"
+                                    >
+                                      <Plus className="w-3 h-3" />
+                                    </button>
+                                  </div>
+
+                                  {/* Precio Unitario USD */}
+                                  <div className="w-24">
+                                    <div className="relative">
+                                      <span className="absolute left-2 top-1/2 -translate-y-1/2 text-[10px] font-mono text-slate-400">
+                                        $
+                                      </span>
+                                      <input
+                                        type="number"
+                                        min="0"
+                                        step="any"
+                                        value={item.unitPrice}
+                                        onChange={(e) => handleUpdateEditItemPrice(item._key, e.target.value)}
+                                        className="w-full pl-5 pr-2 py-1.5 rounded-lg border border-slate-300 bg-white font-mono font-semibold text-xs text-right tabular-nums"
+                                        title="Precio unitario en USD"
+                                      />
+                                    </div>
+                                  </div>
+
+                                  {/* Subtotal línea */}
+                                  <div className="w-20 text-right font-mono tabular-nums">
+                                    <span className="font-bold text-slate-900 text-xs block">
+                                      {formatUSD(lineTotal)}
+                                    </span>
+                                    <span className="text-[9px] text-slate-400 block">
+                                      {formatBs(lineTotal * editSaleRate)}
+                                    </span>
+                                  </div>
+
+                                  {/* Quitar ítem */}
+                                  <button
+                                    type="button"
+                                    onClick={() => handleRemoveEditItem(item._key)}
+                                    className="p-1.5 rounded-lg text-rose-500 hover:text-white hover:bg-rose-600 border border-rose-200 hover:border-rose-600 transition-colors cursor-pointer"
+                                    title="Quitar repuesto de la venta (se repondrá al inventario)"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+
+                      {/* Resumen en Vivo del Ajuste Automático de Inventario */}
+                      {isEditVoided ? (
+                        <div className="px-3 py-2 rounded-lg bg-slate-100 border border-slate-200 text-[11px] text-slate-600">
+                          Venta anulada: los cambios en la lista de artículos no modificarán el stock del inventario.
+                        </div>
+                      ) : editInventoryImpact.length > 0 ? (
+                        <div className="p-3 rounded-xl bg-amber-50/80 border border-amber-300 space-y-1.5">
+                          <span className="text-[11px] font-bold text-amber-950 flex items-center gap-1.5">
+                            <RefreshCw className="w-3.5 h-3.5 text-amber-700 shrink-0" />
+                            <span>Ajuste automático de inventario al guardar:</span>
+                          </span>
+                          <div className="space-y-1">
+                            {editInventoryImpact.map((chg) => (
+                              <div
+                                key={chg.productId}
+                                className="flex items-center justify-between gap-2 text-[11px]"
+                              >
+                                <span className="text-slate-800 truncate">
+                                  {chg.name}{' '}
+                                  {chg.sku && <span className="font-mono text-slate-400">({chg.sku})</span>}
+                                </span>
+                                <span
+                                  className={`font-mono font-bold shrink-0 tabular-nums ${
+                                    chg.delta > 0 ? 'text-emerald-700' : 'text-rose-700'
+                                  }`}
+                                >
+                                  {chg.delta > 0
+                                    ? `+${chg.delta} se repone al inventario`
+                                    : `${chg.delta} se descuenta del inventario`}
+                                </span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      ) : (
+                        <div className="px-3 py-2 rounded-lg bg-slate-50 border border-slate-200 text-[11px] text-slate-500">
+                          Al quitar repuestos o bajar cantidades se repondrán automáticamente en inventario; al agregar o subir cantidades se descontarán.
+                        </div>
+                      )}
+
+                      {/* Resumen de Totales y Descuento */}
+                      <div className="pt-2 border-t border-slate-200 space-y-1.5 text-xs">
+                        <div className="flex items-center justify-between text-slate-600">
+                          <span>Subtotal Repuestos:</span>
+                          <span className="font-mono font-semibold tabular-nums">
+                            {formatUSD(liveEditSubtotal)}
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between gap-3 text-slate-600">
+                          <span>Descuento ($ USD):</span>
+                          <input
+                            type="number"
+                            min="0"
+                            step="any"
+                            value={editDiscount}
+                            onChange={(e) => {
+                              setEditDiscount(e.target.value);
+                              setEditItemsTouched(true);
+                            }}
+                            className="w-24 px-2 py-1 rounded-lg border border-slate-300 bg-slate-50 focus:bg-white font-mono text-xs text-right tabular-nums"
+                          />
+                        </div>
+                        {liveEditShipping > 0 && (
+                          <div className="flex items-center justify-between text-slate-600">
+                            <span>Gastos de Envío:</span>
+                            <span className="font-mono font-semibold tabular-nums">
+                              +{formatUSD(liveEditShipping)}
+                            </span>
+                          </div>
+                        )}
+                        <div className="pt-1.5 border-t border-slate-200 flex items-baseline justify-between">
+                          <span className="font-bold text-slate-900">Nuevo Total Factura:</span>
+                          <div className="text-right font-mono tabular-nums">
+                            <span className="text-base font-black text-slate-950">
+                              {formatUSD(effectiveEditTotal)}
+                            </span>
+                            <span className="text-[11px] font-semibold text-emerald-700 block">
+                              {formatBs(effectiveEditTotal * editSaleRate)}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* COLUMNA DERECHA (5 cols): Tipo de Pago, Tesorería y Datos del Cliente */}
+                  <div className="lg:col-span-5 space-y-4">
               {/* Sección 1: Tipo de Venta / Método de Pago y Cuenta Destino en Tesorería */}
-              <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 space-y-3">
+              <div className="p-3.5 rounded-xl bg-white border border-slate-200 space-y-3 shadow-2xs">
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-[11px] font-bold uppercase tracking-wider text-slate-800 flex items-center gap-1.5">
                     <CreditCard className="w-3.5 h-3.5 text-amber-600" />
@@ -1829,14 +2518,13 @@ export const SalesDatabaseView: React.FC = () => {
                         editSplits.reduce((sum, s) => sum + (parseFloat(s.amountUSD) || 0), 0) * 100
                       ) / 100;
                     const editRemainingUSD =
-                      Math.round((editSaleModal.total - editAssignedUSD) * 100) / 100;
-                    const editSaleRate = editSaleModal.bcvRate || rate;
+                      Math.round((effectiveEditTotal - editAssignedUSD) * 100) / 100;
 
                     return (
                       <div className="space-y-2.5">
                         <div className="flex items-center justify-between gap-2">
                           <span className="text-[11px] font-bold text-teal-900">
-                            Desglose de Pago Mixto (Total: {formatUSD(editSaleModal.total)})
+                            Desglose de Pago Mixto (Total: {formatUSD(effectiveEditTotal)})
                           </span>
                           <button
                             type="button"
@@ -1894,7 +2582,7 @@ export const SalesDatabaseView: React.FC = () => {
                                           .reduce((sum, x) => sum + (parseFloat(x.amountUSD) || 0), 0);
                                         const rem = Math.max(
                                           0,
-                                          Math.round((editSaleModal.total - others) * 100) / 100
+                                          Math.round((effectiveEditTotal - others) * 100) / 100
                                         );
                                         setEditSplits((prev) =>
                                           prev.map((x) =>
@@ -2026,7 +2714,7 @@ export const SalesDatabaseView: React.FC = () => {
                                         if (next.length === 2 && next[0].id === sp.id) {
                                           const rem = Math.max(
                                             0,
-                                            Math.round((editSaleModal.total - validNum) * 100) / 100
+                                            Math.round((effectiveEditTotal - validNum) * 100) / 100
                                           );
                                           next[1] = {
                                             ...next[1],
@@ -2103,7 +2791,7 @@ export const SalesDatabaseView: React.FC = () => {
                           }`}
                         >
                           <span>
-                            Asignado: {formatUSD(editAssignedUSD)} / {formatUSD(editSaleModal.total)}
+                            Asignado: {formatUSD(editAssignedUSD)} / {formatUSD(effectiveEditTotal)}
                           </span>
                           <span>
                             {Math.abs(editRemainingUSD) <= 0.01
@@ -2265,8 +2953,30 @@ export const SalesDatabaseView: React.FC = () => {
                         return (
                           <div className="px-3 py-2 rounded-lg bg-emerald-50 border border-emerald-200 text-[11px] text-emerald-900">
                             <strong>Cambio de Pago Mixto a Pago Único:</strong> se revertirán los ingresos divididos anteriores y se acreditará el total de{' '}
-                            <strong className="font-mono">{formatUSD(editSaleModal.total)}</strong> en{' '}
+                            <strong className="font-mono">{formatUSD(effectiveEditTotal)}</strong> en{' '}
                             <strong>{newAccName}</strong>.
+                          </div>
+                        );
+                      }
+
+                      if (Math.abs(editTotalDiff) > 0.005 && !isDeferred) {
+                        return (
+                          <div className="px-3 py-2 rounded-lg bg-emerald-50 border border-emerald-200 text-[11px] text-emerald-900">
+                            <strong>Ajuste automático en Tesorería:</strong> el ingreso vinculado en{' '}
+                            <strong>{newAccName}</strong> se actualizará de{' '}
+                            <strong className="font-mono">{formatUSD(editSaleModal.total)}</strong> a{' '}
+                            <strong className="font-mono">{formatUSD(effectiveEditTotal)}</strong>.
+                          </div>
+                        );
+                      }
+
+                      if (Math.abs(editTotalDiff) > 0.005 && isDeferred) {
+                        const paidSoFar = Number(editSaleModal.creditPaidAmount || 0);
+                        const newRemaining = Math.max(0, Math.round((effectiveEditTotal - paidSoFar) * 100) / 100);
+                        return (
+                          <div className="px-3 py-2 rounded-lg bg-amber-50 border border-amber-200 text-[11px] text-amber-950">
+                            <strong>Actualización de Cuenta por Cobrar:</strong> Abonado {formatUSD(paidSoFar)} · Nuevo saldo pendiente:{' '}
+                            <strong className="font-mono">{formatUSD(newRemaining)}</strong>.
                           </div>
                         );
                       }
@@ -2312,7 +3022,7 @@ export const SalesDatabaseView: React.FC = () => {
               </div>
 
               {/* Sección 2: Datos del Cliente y Factura */}
-              <div className="space-y-3 pt-1">
+              <div className="p-3.5 rounded-xl bg-white border border-slate-200 space-y-3 shadow-2xs">
                 <span className="text-[11px] font-bold uppercase tracking-wider text-slate-600 block">
                   Datos del Cliente y Factura
                 </span>
@@ -2436,27 +3146,55 @@ export const SalesDatabaseView: React.FC = () => {
                   </div>
                 </div>
               </div>
+                  </div>
+                </div>
+              </div>
 
-              <div className="pt-2 flex items-center justify-end gap-2 border-t border-slate-200">
-                <button
-                  type="button"
-                  onClick={() => setEditSaleModal(null)}
-                  className="px-4 py-2 font-semibold text-slate-700 hover:bg-slate-100 rounded-xl cursor-pointer"
-                >
-                  Cancelar
-                </button>
-                <button
-                  type="submit"
-                  className="px-5 py-2.5 bg-slate-900 hover:bg-slate-800 text-white font-bold rounded-xl shadow-xs cursor-pointer flex items-center gap-1.5"
-                >
-                  <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-                  <span>Guardar y Actualizar Tesorería</span>
-                </button>
+              {/* Barra inferior fija de guardado */}
+              <div className="shrink-0 px-4 sm:px-5 py-3.5 bg-white border-t border-slate-200 flex flex-wrap items-center justify-between gap-3">
+                <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600 tabular-nums">
+                  <span className="font-bold text-slate-900">
+                    Total: {formatUSD(effectiveEditTotal)}
+                  </span>
+                  <span className="text-slate-300" aria-hidden="true">·</span>
+                  <span className="font-mono font-semibold text-emerald-700">
+                    {formatBs(effectiveEditTotal * editSaleRate)}
+                  </span>
+                  {editInventoryImpact.length > 0 && !isEditVoided && (
+                    <>
+                      <span className="text-slate-300" aria-hidden="true">·</span>
+                      <span className="font-semibold text-amber-800">
+                        {editInventoryImpact.length}{' '}
+                        {editInventoryImpact.length === 1
+                          ? 'producto ajustará inventario'
+                          : 'productos ajustarán inventario'}
+                      </span>
+                    </>
+                  )}
+                </div>
+                <div className="flex items-center gap-2 ml-auto">
+                  <button
+                    type="button"
+                    onClick={() => setEditSaleModal(null)}
+                    className="px-4 py-2 font-semibold text-slate-700 hover:bg-slate-100 rounded-xl cursor-pointer"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={editItems.length === 0}
+                    className="px-5 py-2.5 bg-slate-900 hover:bg-slate-800 disabled:opacity-40 text-white font-bold rounded-xl shadow-xs cursor-pointer flex items-center gap-1.5"
+                  >
+                    <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                    <span>Guardar Cambios y Sincronizar</span>
+                  </button>
+                </div>
               </div>
             </form>
           </div>
         </div>
-      )}
+        );
+      })()}
 
       {/* Modal: Anular Factura */}
       {voidModalSale && (

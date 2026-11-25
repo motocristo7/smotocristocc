@@ -1,6 +1,13 @@
 import React, { useState, useMemo } from 'react';
 import { useApp } from '../../context/AppContext';
-import { Product, ProductCategory, DEFAULT_PRODUCT_CATEGORIES } from '../../types';
+import {
+  Product,
+  ProductCategory,
+  DEFAULT_PRODUCT_CATEGORIES,
+  productTracksInventory,
+  DEFAULT_PRODUCTION_TIME_LABEL,
+  DEFAULT_PRODUCTION_TIME_NOTE,
+} from '../../types';
 import { formatUSD, formatBs, sanitizePhone } from '../../utils/whatsapp';
 import {
   Search,
@@ -24,6 +31,7 @@ import {
   Filter,
   ChevronLeft,
   Images,
+  Clock,
 } from 'lucide-react';
 import {
   PRESET_PRODUCT_IMAGES,
@@ -144,7 +152,7 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
 
   const filteredProducts = useMemo(() => {
     const filtered = onlineProducts.filter((product) => {
-      if (product.stock <= 0) return false;
+      if (productTracksInventory(product) && product.stock <= 0) return false;
 
       if (selectedCategory !== 'all' && product.category !== selectedCategory) {
         return false;
@@ -703,7 +711,7 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
                       </>
                     )}
                     <span className="absolute top-2 right-2 bg-slate-950/80 backdrop-blur-xs text-white text-[10px] font-semibold px-1.5 py-0.5 rounded tabular-nums">
-                      {product.stock} disp.
+                      {productTracksInventory(product) ? `${product.stock} disp.` : 'Bajo pedido'}
                     </span>
                   </div>
 
@@ -720,6 +728,15 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
                     >
                       {product.name}
                     </h3>
+
+                    {!productTracksInventory(product) && (
+                      <div className="mt-1 flex items-start gap-1 text-[10px] text-amber-900 leading-snug">
+                        <Clock className="w-3 h-3 text-amber-600 shrink-0 mt-0.5" />
+                        <span>
+                          <strong>Fabricación:</strong> {product.productionTimeLabel || DEFAULT_PRODUCTION_TIME_LABEL} (sujeto a cortes de luz)
+                        </span>
+                      </div>
+                    )}
 
                     {product.description && (
                       <p className="mt-0.5 text-[11px] text-slate-600 whitespace-normal break-words leading-snug">
@@ -1109,11 +1126,30 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
                     </div>
 
                     <div>
-                      <span className="text-xs font-semibold text-slate-500 uppercase block">Disponibilidad en Almacén</span>
-                      <div className="flex items-center gap-1.5 text-emerald-600 font-semibold text-xs mt-0.5">
-                        <CheckCircle2 className="w-4 h-4" />
-                        <span>{selectedProduct.stock} unidades en stock</span>
-                      </div>
+                      <span className="text-xs font-semibold text-slate-500 uppercase block">
+                        {productTracksInventory(selectedProduct)
+                          ? 'Disponibilidad en Almacén'
+                          : 'Fabricación Propia bajo Pedido'}
+                      </span>
+                      {productTracksInventory(selectedProduct) ? (
+                        <div className="flex items-center gap-1.5 text-emerald-600 font-semibold text-xs mt-0.5">
+                          <CheckCircle2 className="w-4 h-4" />
+                          <span>{selectedProduct.stock} unidades en stock</span>
+                        </div>
+                      ) : (
+                        <div className="mt-1.5 rounded-lg bg-amber-50 border border-amber-200 p-2.5 space-y-1">
+                          <div className="flex items-center gap-1.5 text-amber-950 font-bold text-xs">
+                            <Clock className="w-4 h-4 text-amber-700 shrink-0" />
+                            <span>
+                              Tiempo estimado de fabricación:{' '}
+                              {selectedProduct.productionTimeLabel || DEFAULT_PRODUCTION_TIME_LABEL}
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-amber-900 leading-snug">
+                            {selectedProduct.productionTimeNote || DEFAULT_PRODUCTION_TIME_NOTE}
+                          </p>
+                        </div>
+                      )}
                     </div>
 
                     <div>

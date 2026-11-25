@@ -192,24 +192,35 @@ export function exportInventoryToExcel(products: Product[], bcvRate: number) {
   const sortedProducts = [...products].sort((a, b) =>
     a.name.trim().localeCompare(b.name.trim(), 'es', { sensitivity: 'base', numeric: true })
   );
-  const exportRows = sortedProducts.map((p) => ({
-    codigo_sku: p.sku,
-    codigo_barra: p.barcode || '',
-    nombre_repuesto: p.name,
-    categoria: p.category,
-    marca: p.brand || 'Genérica',
-    compatibilidad: p.compatibility || 'Universal',
-    precio_costo_usd: Number(p.costPrice.toFixed(2)),
-    precio_venta_usd: Number(p.salePrice.toFixed(2)),
-    precio_venta_bs_bcv: Number((p.salePrice * bcvRate).toFixed(2)),
-    stock: p.stock,
-    stock_minimo: p.minStock,
-    ubicacion_almacen: p.warehouseLocation || '',
-    estado_stock: p.stock <= 0 ? 'AGOTADO' : p.stock <= p.minStock ? 'STOCK BAJO' : 'DISPONIBLE',
-    visible_en_tienda: p.stock > 0 ? 'SÍ' : 'NO (Agotado)',
-    descripcion: p.description || '',
-    url_imagen: p.imageUrl || '',
-  }));
+  const exportRows = sortedProducts.map((p) => {
+    const usesInv = p.tracksInventory !== false;
+    return {
+      codigo_sku: p.sku,
+      codigo_barra: p.barcode || '',
+      nombre_repuesto: p.name,
+      categoria: p.category,
+      marca: p.brand || 'Genérica',
+      compatibilidad: p.compatibility || 'Universal',
+      precio_costo_usd: Number(p.costPrice.toFixed(2)),
+      precio_venta_usd: Number(p.salePrice.toFixed(2)),
+      precio_venta_bs_bcv: Number((p.salePrice * bcvRate).toFixed(2)),
+      usa_inventario: usesInv ? 'SÍ' : 'NO (Bajo pedido)',
+      tiempo_fabricacion: usesInv ? '' : p.productionTimeLabel || '12 a 24 horas',
+      stock: usesInv ? p.stock : 0,
+      stock_minimo: usesInv ? p.minStock : 0,
+      ubicacion_almacen: p.warehouseLocation || '',
+      estado_stock: !usesInv
+        ? 'BAJO PEDIDO (SIN INVENTARIO)'
+        : p.stock <= 0
+        ? 'AGOTADO'
+        : p.stock <= p.minStock
+        ? 'STOCK BAJO'
+        : 'DISPONIBLE',
+      visible_en_tienda: !usesInv ? 'SÍ (Bajo pedido)' : p.stock > 0 ? 'SÍ' : 'NO (Agotado)',
+      descripcion: p.description || '',
+      url_imagen: p.imageUrl || '',
+    };
+  });
 
   const ws = XLSX.utils.json_to_sheet(exportRows);
   ws['!cols'] = [

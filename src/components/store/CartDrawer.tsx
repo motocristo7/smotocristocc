@@ -1,7 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import { useApp } from '../../context/AppContext';
 import { formatUSD, formatBs, buildStoreOrderWhatsAppMessage } from '../../utils/whatsapp';
-import { PaymentMethod, ShippingAgency, OnlineOrderDeliveryType } from '../../types';
+import {
+  PaymentMethod,
+  ShippingAgency,
+  OnlineOrderDeliveryType,
+  productTracksInventory,
+  DEFAULT_PRODUCTION_TIME_LABEL,
+  DEFAULT_PRODUCTION_TIME_NOTE,
+} from '../../types';
 import { VENEZUELA_LOCATIONS } from '../../data/venezuela';
 import {
   X,
@@ -23,6 +30,7 @@ import {
   MapPin,
   AlertCircle,
   User,
+  Clock,
 } from 'lucide-react';
 import {
   normalizeImageUrl,
@@ -141,15 +149,25 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({ isOpen, onClose, initial
       }
     }
 
-    const orderItems = cart.map((item) => ({
-      productId: item.product.id,
-      sku: item.product.sku,
-      name: item.product.name,
-      category: item.product.category,
-      quantity: item.quantity,
-      unitPrice: item.product.salePrice,
-      total: item.product.salePrice * item.quantity,
-    }));
+    const orderItems = cart.map((item) => {
+      const madeToOrder = !productTracksInventory(item.product);
+      return {
+        productId: item.product.id,
+        sku: item.product.sku,
+        name: item.product.name,
+        category: item.product.category,
+        quantity: item.quantity,
+        unitPrice: item.product.salePrice,
+        total: item.product.salePrice * item.quantity,
+        ...(madeToOrder
+          ? {
+              isMadeToOrder: true,
+              productionTimeLabel: item.product.productionTimeLabel || DEFAULT_PRODUCTION_TIME_LABEL,
+              productionTimeNote: item.product.productionTimeNote || DEFAULT_PRODUCTION_TIME_NOTE,
+            }
+          : {}),
+      };
+    });
 
     const newOrder = placeOnlineOrder({
       customerName: customerName.trim(),
@@ -281,7 +299,10 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({ isOpen, onClose, initial
                               </button>
                             </div>
                             <span className="text-[10px] text-slate-500 font-mono">
-                              {item.product.sku} · Stock: {item.product.stock}
+                              {item.product.sku} ·{' '}
+                              {productTracksInventory(item.product)
+                                ? `Stock: ${item.product.stock}`
+                                : `Bajo pedido (${item.product.productionTimeLabel || DEFAULT_PRODUCTION_TIME_LABEL})`}
                             </span>
                           </div>
 
@@ -298,7 +319,10 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({ isOpen, onClose, initial
                               </span>
                               <button
                                 onClick={() => updateCartQuantity(item.product.id, item.quantity + 1)}
-                                disabled={item.quantity >= item.product.stock}
+                                disabled={
+                                  productTracksInventory(item.product) &&
+                                  item.quantity >= item.product.stock
+                                }
                                 className="p-1 text-slate-600 hover:bg-slate-200 disabled:opacity-30 transition-colors"
                               >
                                 <Plus className="w-3 h-3" />
@@ -318,6 +342,19 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({ isOpen, onClose, initial
                       </div>
                     );
                   })}
+
+                  {cart.some((item) => !productTracksInventory(item.product)) && (
+                    <div className="rounded-xl bg-amber-50 border border-amber-200 p-3 text-[11px] text-amber-950 flex items-start gap-2">
+                      <Clock className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
+                      <div>
+                        <p className="font-bold">Tiempo de fabricación bajo pedido</p>
+                        <p className="text-amber-900 mt-0.5 leading-snug">
+                          {cart.find((item) => !productTracksInventory(item.product))?.product
+                            .productionTimeNote || DEFAULT_PRODUCTION_TIME_NOTE}
+                        </p>
+                      </div>
+                    </div>
+                  )}
 
                   <div className="pt-2 flex justify-between text-xs text-slate-500">
                     <button
@@ -354,6 +391,19 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({ isOpen, onClose, initial
                   Ver artículos
                 </button>
               </div>
+
+              {cart.some((item) => !productTracksInventory(item.product)) && (
+                <div className="rounded-xl bg-amber-50 border border-amber-200 p-3 text-[11px] text-amber-950 flex items-start gap-2">
+                  <Clock className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
+                  <div>
+                    <p className="font-bold">Tu pedido incluye fabricación bajo pedido</p>
+                    <p className="text-amber-900 mt-0.5 leading-snug">
+                      {cart.find((item) => !productTracksInventory(item.product))?.product
+                        .productionTimeNote || DEFAULT_PRODUCTION_TIME_NOTE}
+                    </p>
+                  </div>
+                </div>
+              )}
 
               {/* Customer info */}
               <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-2xs space-y-3">

@@ -455,9 +455,22 @@ ${paymentCoordsBlock}
  */
 export function buildStoreOrderWhatsAppMessage(order: OnlineOrder, settings: BusinessSettings): { message: string; url: string } {
   const rate = order.bcvRate || settings.bcvRate;
+  const madeToOrderItems = order.items.filter((item) => item.isMadeToOrder);
   const itemsText = order.items
-    .map(item => `▪ ${item.quantity}x ${item.name} - ${formatUSD(item.total)} (${formatBs(item.total * rate)})`)
+    .map((item) => {
+      const mtoSuffix = item.isMadeToOrder
+        ? ` [Bajo pedido: ${item.productionTimeLabel || '12 a 24 horas'}]`
+        : '';
+      return `▪ ${item.quantity}x ${item.name}${mtoSuffix} - ${formatUSD(item.total)} (${formatBs(item.total * rate)})`;
+    })
     .join('\n');
+
+  const productionNotice =
+    madeToOrderItems.length > 0
+      ? `\n⏳ *TIEMPO DE FABRICACIÓN:* Incluye artículo(s) fabricados bajo pedido (${
+          madeToOrderItems[0].productionTimeLabel || '12 a 24 horas'
+        }, sujeto a posibles retrasos por cortes de luz).\n`
+      : '';
 
   let deliverySection = '';
   if (order.deliveryType === 'ENVIO_NACIONAL') {
@@ -485,7 +498,7 @@ ${deliverySection}
 
 📦 *PRODUCTOS:*
 ${itemsText}
-───────────────────────
+${productionNotice}───────────────────────
 💵 *TOTAL A PAGAR (USD): ${formatUSD(order.total)}*
 📊 *Tasa BCV:* Bs. ${rate.toFixed(2)}
 🇻🇪 *TOTAL EN BOLÍVARES: ${formatBs(order.totalBs || order.total * rate)}*

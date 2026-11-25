@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { useApp } from '../../context/AppContext';
+import { productTracksInventory } from '../../types';
 import { formatUSD, formatBs, sanitizePhone, buildInvoiceWhatsAppMessage, buildServiceStatusWhatsAppMessage, buildMercadoLibreDebtWhatsAppMessage } from '../../utils/whatsapp';
 import {
   TrendingUp,
@@ -117,8 +118,8 @@ Ingresa directamente desde tu teléfono aquí:
   const totalWorkshopIncomeUSD = serviceOrders.reduce((sum, o) => sum + o.totalCost, 0);
   const activeServices = serviceOrders.filter((o) => o.status === 'CREADA' || o.status === 'EN_PROCESO');
   const readyServices = serviceOrders.filter((o) => o.status === 'CULMINADA');
-  const lowStockProducts = products.filter((p) => p.stock <= p.minStock);
-  const outOfStockProducts = products.filter((p) => p.stock === 0);
+  const lowStockProducts = products.filter((p) => productTracksInventory(p) && p.stock <= p.minStock);
+  const outOfStockProducts = products.filter((p) => productTracksInventory(p) && p.stock === 0);
   const pendingOrders = onlineOrders.filter((o) => o.status === 'PENDIENTE_PAGO' || o.status === 'EN_ALISTAMIENTO');
 
   const pendingMlEntries = mlEntries.filter((e) => e.status === 'PENDIENTE');

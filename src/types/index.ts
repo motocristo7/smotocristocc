@@ -85,6 +85,7 @@ export interface Product {
   barcode?: string; // Código de barra / EAN / UPC
   warehouseLocation?: string; // Ubicación física en almacén (ej. Estante A-3, Pasillo 2)
   featured?: boolean;
+  wholesaleTiers?: WholesaleDiscountTier[]; // Escalas de precio al mayor específicas de este repuesto (cantidad -> % descuento)
 }
 
 export function productTracksInventory(
@@ -133,21 +134,10 @@ export interface SaleItem {
   imageUrl?: string;
 }
 
-export type WholesaleFilterScope = 'ALL' | 'CATEGORY' | 'MODEL';
-
 export interface WholesaleDiscountTier {
   id: string;
-  minQty: number; // Cantidad mínima para activar este descuento (ej. 3, 6, 12)
-  discountPct: number; // Porcentaje de descuento (1 - 90)
-}
-
-export interface WholesaleDiscountRule {
-  id: string;
-  scope: WholesaleFilterScope; // 'ALL' (toda la tienda), 'CATEGORY' (categoría de repuesto), 'MODEL' (modelo de moto)
-  filterValue: string; // '' para ALL, nombre de categoría o nombre de modelo de moto
-  active: boolean;
-  combineAcrossFilter?: boolean; // Si true (default), suma cantidades de distintos productos del mismo filtro en el carrito
-  tiers: WholesaleDiscountTier[];
+  minQty: number; // Cantidad mínima de unidades de este repuesto (ej. 3, 6, 12)
+  discountPct: number; // Porcentaje de descuento sobre el precio detal (0.5 - 90)
 }
 
 export type PaymentMethod = 
@@ -514,7 +504,6 @@ export interface BusinessSettings {
   customCommitmentCategories?: string[];
   customExpensePosBanks?: string[];
   customWorkshopServicePresets?: WorkshopServicePreset[];
-  wholesaleDiscountRules?: WholesaleDiscountRule[];
 }
 
 export interface Technician {

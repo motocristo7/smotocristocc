@@ -1,212 +1,149 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { useApp } from '../../context/AppContext';
 import {
-  WholesaleDiscountRule,
+  Product,
   WholesaleDiscountTier,
-  WholesaleFilterScope,
+  productTracksInventory,
 } from '../../types';
 import {
   SUGGESTED_WHOLESALE_TIERS,
+  AGGRESSIVE_WHOLESALE_TIERS,
   normalizeWholesaleTiers,
-  getWholesaleRuleLabel,
-  doesProductMatchWholesaleRule,
+  productHasWholesaleTiers,
+  getProductWholesaleDisplayTiers,
 } from '../../utils/wholesalePricing';
 import { formatUSD, formatBs } from '../../utils/whatsapp';
+import {
+  getProductImages,
+  handleProductImageError,
+} from '../../utils/imageUrl';
 import {
   Percent,
   Plus,
   Trash2,
-  Check,
-  Wrench,
-  Bike,
-  Globe,
   Save,
   Sparkles,
   Layers,
   CheckCircle2,
   ExternalLink,
-  Package,
+  Search,
   AlertCircle,
+  X,
 } from 'lucide-react';
-
-const AGGRESSIVE_WHOLESALE_TIERS = [
-  { minQty: 3, discountPct: 8 },
-  { minQty: 6, discountPct: 15 },
-  { minQty: 12, discountPct: 22 },
-];
-
-const makeRuleKey = (scope: WholesaleFilterScope, filterValue: string) =>
-  `${scope}::${scope === 'ALL' ? '' : filterValue.trim().toLowerCase()}`;
 
 export const WholesalePricingView: React.FC = () => {
   const {
+    products,
+    updateProduct,
     settings,
-    updateSettings,
-    categories,
-    modelCategories,
-    onlineProducts,
     enterPublicStore,
   } = useApp();
 
-  const [activeTab, setActiveTab] = useState<WholesaleFilterScope>('ALL');
-  const [selectedFilterValue, setSelectedFilterValue] = useState<string>('');
-  const [draftRules, setDraftRules] = useState<WholesaleDiscountRule[]>([]);
-  const [samplePriceUSD, setSamplePriceUSD] = useState<string>('20');
+  const [searchTerm, setSearchTerm] = useState('');
+  const [statusFilter, setStatusFilter] = useState<'all' | 'with_wholesale' | 'without_wholesale'>('all');
+  const [selectedProductId, setSelectedProductId] = useState<string>('');
+  const [draftTiers, setDraftTiers] = useState<WholesaleDiscountTier[]>([]);
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
   const [savedNotice, setSavedNotice] = useState<string | null>(null);
 
-  useEffect(() => {
-    const saved = Array.isArray(settings.wholesaleDiscountRules)
-      ? settings.wholesaleDiscountRules.map((r) => ({
-          ...r,
-          tiers: Array.isArray(r.tiers) ? r.tiers.map((t) => ({ ...t })) : [],
-        }))
-      : [];
-    setDraftRules(saved);
-    setHasUnsavedChanges(false);
-  }, [settings.wholesaleDiscountRules]);
+  const sortedProducts = useMemo(() => {
+    return [...products].sort((a, b) =>
+      a.name.trim().localeCompare(b.name.trim(), 'es', { sensitivity: 'base', numeric: true })
+    );
+  }, [products]);
 
-  const filterListForTab = useMemo(() => {
-    if (activeTab === 'CATEGORY') return categories;
-    if (activeTab === 'MODEL') return modelCategories;
-    return [''];
-  }, [activeTab, categories, modelCategories]);
+  const filteredProducts = useMemo(() => {
+    return sortedProducts.filter((p) => {
+      const hasWholesale = productHasWholesaleTiers(p);
+      if (statusFilter === 'with_wholesale' && !hasWholesale) return false;
+      if (statusFilter === 'without_wholesale' && hasWholesale) return false;
+
+      if (searchTerm.trim()) {
+        const q = searchTerm.toLowerCase();
+        return (
+          p.name.toLowerCase().includes(q) ||
+          p.sku.toLowerCase().includes(q) ||
+          (p.brand && p.brand.toLowerCase().includes(q)) ||
+          (p.category && p.category.toLowerCase().includes(q)) ||
+          (p.compatibility && p.compatibility.toLowerCase().includes(q))
+        );
+      }
+      return true;
+    });
+  }, [sortedProducts, statusFilter, searchTerm]);
+
+  const selectedProduct: Product | null = useMemo(() => {
+    if (selectedProductId) {
+      const exact = products.find((p) => p.id === selectedProductId);
+      if (exact) return exact;
+    }
+    return filteredProducts[0] || sortedProducts[0] || null;
+  }, [products, selectedProductId, filteredProducts, sortedProducts]);
 
   useEffect(() => {
-    if (activeTab === 'ALL') {
-      setSelectedFilterValue('');
+    if (!selectedProduct) {
+      setDraftTiers([]);
+      setHasUnsavedChanges(false);
       return;
     }
-    const list = activeTab === 'CATEGORY' ? categories : modelCategories;
-    if (list.length > 0 && !list.includes(selectedFilterValue)) {
-      setSelectedFilterValue(list[0]);
-    }
-  }, [activeTab, categories, modelCategories, selectedFilterValue]);
-
-  const currentRuleKey = makeRuleKey(activeTab, selectedFilterValue);
-
-  const currentRule = useMemo<WholesaleDiscountRule | undefined>(() => {
-    return draftRules.find((r) => makeRuleKey(r.scope, r.filterValue) === currentRuleKey);
-  }, [draftRules, currentRuleKey]);
+    const existing = normalizeWholesaleTiers(selectedProduct.wholesaleTiers);
+    setDraftTiers(existing.map((t) => ({ ...t })));
+    setHasUnsavedChanges(false);
+  }, [selectedProduct?.id, selectedProduct?.wholesaleTiers]);
 
   const stats = useMemo(() => {
-    let catCount = 0;
-    let modelCount = 0;
-    let allCount = 0;
+    const productsWithWholesale = sortedProducts.filter((p) => productHasWholesaleTiers(p));
     let maxDiscount = 0;
-
-    const activeNormalized = draftRules
-      .filter((r) => r.active)
-      .map((r) => ({ ...r, tiers: normalizeWholesaleTiers(r.tiers) }))
-      .filter((r) => r.tiers.length > 0);
-
-    activeNormalized.forEach((r) => {
-      if (r.scope === 'CATEGORY') catCount += 1;
-      else if (r.scope === 'MODEL') modelCount += 1;
-      else allCount += 1;
-      r.tiers.forEach((t) => {
+    let totalTiers = 0;
+    productsWithWholesale.forEach((p) => {
+      const tiers = normalizeWholesaleTiers(p.wholesaleTiers);
+      totalTiers += tiers.length;
+      tiers.forEach((t) => {
         if (t.discountPct > maxDiscount) maxDiscount = t.discountPct;
       });
     });
 
-    const coveredProducts = onlineProducts.filter((prod) =>
-      activeNormalized.some((rule) => doesProductMatchWholesaleRule(prod, rule))
-    ).length;
-
     return {
-      catCount,
-      modelCount,
-      allCount,
-      totalActive: activeNormalized.length,
+      productsWithWholesale,
+      count: productsWithWholesale.length,
       maxDiscount,
-      coveredProducts,
-      activeNormalized,
+      totalTiers,
     };
-  }, [draftRules, onlineProducts]);
+  }, [sortedProducts]);
 
-  const upsertCurrentRule = (
-    updater: (existing: WholesaleDiscountRule) => WholesaleDiscountRule
-  ) => {
-    const scope = activeTab;
-    const filterValue = scope === 'ALL' ? '' : selectedFilterValue;
-    const key = makeRuleKey(scope, filterValue);
+  const handleSelectProduct = (productId: string) => {
+    setSelectedProductId(productId);
+    setSavedNotice(null);
+  };
 
-    setDraftRules((prev) => {
-      const idx = prev.findIndex((r) => makeRuleKey(r.scope, r.filterValue) === key);
-      const base: WholesaleDiscountRule =
-        idx >= 0
-          ? prev[idx]
-          : {
-              id: `wh-${scope.toLowerCase()}-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
-              scope,
-              filterValue,
-              active: true,
-              combineAcrossFilter: true,
-              tiers: SUGGESTED_WHOLESALE_TIERS.map((t, i) => ({
-                id: `tier-${Date.now()}-${i}`,
-                minQty: t.minQty,
-                discountPct: t.discountPct,
-              })),
-            };
-      const nextRule = updater(base);
-      if (idx >= 0) {
-        return prev.map((r, i) => (i === idx ? nextRule : r));
-      }
-      return [...prev, nextRule];
-    });
+  const handleApplyPreset = (preset: Array<{ minQty: number; discountPct: number }>) => {
+    setDraftTiers(
+      preset.map((t, i) => ({
+        id: `tier-${Date.now()}-${i}`,
+        minQty: t.minQty,
+        discountPct: t.discountPct,
+      }))
+    );
     setHasUnsavedChanges(true);
     setSavedNotice(null);
   };
 
-  const handleToggleRuleActive = () => {
-    if (!currentRule) {
-      upsertCurrentRule((r) => ({ ...r, active: true }));
-      return;
-    }
-    upsertCurrentRule((r) => ({
-      ...r,
-      active: !r.active,
-      tiers:
-        !r.active && r.tiers.length === 0
-          ? SUGGESTED_WHOLESALE_TIERS.map((t, i) => ({
-              id: `tier-${Date.now()}-${i}`,
-              minQty: t.minQty,
-              discountPct: t.discountPct,
-            }))
-          : r.tiers,
-    }));
-  };
-
-  const handleApplyPreset = (preset: Array<{ minQty: number; discountPct: number }>) => {
-    upsertCurrentRule((r) => ({
-      ...r,
-      active: true,
-      tiers: preset.map((t, i) => ({
-        id: `tier-${Date.now()}-${i}`,
-        minQty: t.minQty,
-        discountPct: t.discountPct,
-      })),
-    }));
-  };
-
   const handleAddTier = () => {
-    upsertCurrentRule((r) => {
-      const lastTier = r.tiers[r.tiers.length - 1];
-      const nextMinQty = lastTier ? Math.max(2, lastTier.minQty + 6) : 3;
-      const nextPct = lastTier ? Math.min(80, lastTier.discountPct + 5) : 5;
-      return {
-        ...r,
-        active: true,
-        tiers: [
-          ...r.tiers,
-          {
-            id: `tier-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
-            minQty: nextMinQty,
-            discountPct: nextPct,
-          },
-        ],
-      };
+    setDraftTiers((prev) => {
+      const last = prev[prev.length - 1];
+      const nextMinQty = last ? Math.max(2, last.minQty + 3) : 3;
+      const nextPct = last ? Math.min(85, last.discountPct + 5) : 5;
+      return [
+        ...prev,
+        {
+          id: `tier-${Date.now()}-${Math.floor(Math.random() * 1000)}`,
+          minQty: nextMinQty,
+          discountPct: nextPct,
+        },
+      ];
     });
+    setHasUnsavedChanges(true);
+    setSavedNotice(null);
   };
 
   const handleUpdateTier = (
@@ -215,9 +152,8 @@ export const WholesalePricingView: React.FC = () => {
     rawValue: string
   ) => {
     const parsed = parseFloat(rawValue);
-    upsertCurrentRule((r) => ({
-      ...r,
-      tiers: r.tiers.map((t) => {
+    setDraftTiers((prev) =>
+      prev.map((t) => {
         if (t.id !== tierId) return t;
         if (field === 'minQty') {
           return { ...t, minQty: Number.isNaN(parsed) ? 2 : Math.max(2, Math.floor(parsed)) };
@@ -226,52 +162,43 @@ export const WholesalePricingView: React.FC = () => {
           ...t,
           discountPct: Number.isNaN(parsed) ? 0 : Math.min(90, Math.max(0, parsed)),
         };
-      }),
-    }));
-  };
-
-  const handleRemoveTier = (tierId: string) => {
-    upsertCurrentRule((r) => ({
-      ...r,
-      tiers: r.tiers.filter((t) => t.id !== tierId),
-    }));
-  };
-
-  const handleRemoveCurrentRule = () => {
-    setDraftRules((prev) =>
-      prev.filter((r) => makeRuleKey(r.scope, r.filterValue) !== currentRuleKey)
+      })
     );
     setHasUnsavedChanges(true);
     setSavedNotice(null);
   };
 
-  const handleSaveAll = () => {
-    const cleanedRules: WholesaleDiscountRule[] = draftRules
-      .map((r) => ({
-        ...r,
-        tiers: normalizeWholesaleTiers(r.tiers),
-      }))
-      .filter((r) => r.tiers.length > 0);
+  const handleRemoveTier = (tierId: string) => {
+    setDraftTiers((prev) => prev.filter((t) => t.id !== tierId));
+    setHasUnsavedChanges(true);
+    setSavedNotice(null);
+  };
 
-    updateSettings({ wholesaleDiscountRules: cleanedRules });
+  const handleClearProductWholesale = (product: Product) => {
+    updateProduct(product.id, { wholesaleTiers: [] });
+    if (selectedProduct?.id === product.id) {
+      setDraftTiers([]);
+      setHasUnsavedChanges(false);
+    }
+    setSavedNotice(`Se eliminaron los precios al mayor de "${product.name}".`);
+  };
+
+  const handleSaveSelectedProduct = () => {
+    if (!selectedProduct) return;
+    const cleaned = normalizeWholesaleTiers(draftTiers);
+    updateProduct(selectedProduct.id, { wholesaleTiers: cleaned });
+    setDraftTiers(cleaned);
     setHasUnsavedChanges(false);
-    const activeCount = cleanedRules.filter((r) => r.active).length;
     setSavedNotice(
-      activeCount > 0
-        ? `Cambios guardados: ${activeCount} regla${activeCount === 1 ? '' : 's'} al mayor activa${activeCount === 1 ? '' : 's'} en tu tienda online.`
-        : 'Cambios guardados: actualmente no hay reglas al mayor activas.'
+      cleaned.length > 0
+        ? `Precios al mayor guardados para "${selectedProduct.name}" (${cleaned.length} ${
+            cleaned.length === 1 ? 'escalón' : 'escalones'
+          } de descuento).`
+        : `Se desactivó el precio al mayor para "${selectedProduct.name}".`
     );
   };
 
-  const samplePrice = Math.max(0, parseFloat(samplePriceUSD) || 0);
-  const previewTiers = currentRule ? normalizeWholesaleTiers(currentRule.tiers) : [];
-
-  const matchingSampleProducts = useMemo(() => {
-    if (!currentRule) return [];
-    const tempRule = { ...currentRule, active: true, tiers: previewTiers };
-    if (previewTiers.length === 0) return [];
-    return onlineProducts.filter((p) => doesProductMatchWholesaleRule(p, tempRule)).slice(0, 4);
-  }, [currentRule, previewTiers, onlineProducts]);
+  const normalizedDraftPreview = useMemo(() => normalizeWholesaleTiers(draftTiers), [draftTiers]);
 
   return (
     <div className="space-y-6">
@@ -279,13 +206,13 @@ export const WholesalePricingView: React.FC = () => {
       <div className="bg-white rounded-2xl border border-slate-200 p-5 sm:p-6 shadow-xs flex flex-col lg:flex-row lg:items-center justify-between gap-4">
         <div>
           <span className="text-xs font-bold text-emerald-700 uppercase tracking-wider">
-            Tienda Online · Ventas por Volumen
+            Tienda Online · Descuentos Individuales por Repuesto
           </span>
           <h1 className="text-2xl font-bold font-display text-slate-900 mt-0.5">
-            Configuración de Precios al Mayor
+            Precios al Mayor por Repuesto
           </h1>
           <p className="text-xs text-slate-500 mt-1 max-w-2xl">
-            Define descuentos automáticos según la cantidad que compren tus clientes. Puedes activar una escala general para toda la tienda o escalas personalizadas por cada categoría de repuesto y modelo de moto.
+            Selecciona cualquier repuesto específico de tu inventario y define los escalones de descuento que desees según la cantidad comprada (ej. 3+ uds → 5%, 6+ uds → 10%, 12+ uds → 15%).
           </p>
         </div>
 
@@ -298,18 +225,6 @@ export const WholesalePricingView: React.FC = () => {
             <ExternalLink className="w-3.5 h-3.5 text-amber-600" />
             <span>Ver Tienda Online</span>
           </button>
-          <button
-            type="button"
-            onClick={handleSaveAll}
-            className={`px-4 py-2.5 font-bold text-xs rounded-xl shadow-xs transition-colors inline-flex items-center gap-1.5 cursor-pointer ${
-              hasUnsavedChanges
-                ? 'bg-amber-500 hover:bg-amber-400 text-slate-950'
-                : 'bg-slate-900 hover:bg-slate-800 text-white'
-            }`}
-          >
-            <Save className="w-4 h-4" />
-            <span>{hasUnsavedChanges ? 'Guardar Cambios*' : 'Guardar Configuración'}</span>
-          </button>
         </div>
       </div>
 
@@ -321,26 +236,11 @@ export const WholesalePricingView: React.FC = () => {
           </div>
           <button
             type="button"
-            onClick={enterPublicStore}
-            className="font-bold text-emerald-800 hover:text-emerald-950 underline cursor-pointer shrink-0"
+            onClick={() => setSavedNotice(null)}
+            className="text-emerald-700 hover:text-emerald-950 p-1 cursor-pointer"
+            aria-label="Cerrar aviso"
           >
-            Probar en tienda
-          </button>
-        </div>
-      )}
-
-      {hasUnsavedChanges && (
-        <div className="rounded-xl bg-amber-50 border border-amber-200 px-4 py-2.5 text-xs text-amber-950 flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2">
-            <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
-            <span>Tienes cambios sin guardar. Haz clic en <strong>Guardar Cambios</strong> para publicarlos en la tienda online.</span>
-          </div>
-          <button
-            type="button"
-            onClick={handleSaveAll}
-            className="px-3 py-1 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-[11px] cursor-pointer shrink-0"
-          >
-            Guardar ahora
+            <X className="w-3.5 h-3.5" />
           </button>
         </div>
       )}
@@ -349,27 +249,26 @@ export const WholesalePricingView: React.FC = () => {
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
         <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-2xs">
           <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider block">
-            Reglas Activas
+            Repuestos con Mayor
           </span>
-          <p className="text-2xl font-extrabold font-mono text-slate-900 tabular-nums mt-1">
-            {stats.totalActive}
+          <p className="text-2xl font-extrabold font-mono text-emerald-700 tabular-nums mt-1">
+            {stats.count}{' '}
+            <span className="text-xs font-normal text-slate-400">/ {products.length}</span>
           </p>
           <p className="text-[11px] text-slate-500 mt-0.5">
-            {stats.allCount > 0 ? 'General activa · ' : ''}
-            {stats.catCount} categorías · {stats.modelCount} modelos
+            Configurados de forma individual
           </p>
         </div>
 
         <div className="bg-white rounded-xl border border-slate-200 p-4 shadow-2xs">
           <span className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider block">
-            Productos con Mayor
+            Escalones Totales
           </span>
-          <p className="text-2xl font-extrabold font-mono text-emerald-700 tabular-nums mt-1">
-            {stats.coveredProducts}{' '}
-            <span className="text-xs font-normal text-slate-400">/ {onlineProducts.length}</span>
+          <p className="text-2xl font-extrabold font-mono text-slate-900 tabular-nums mt-1">
+            {stats.totalTiers}
           </p>
           <p className="text-[11px] text-slate-500 mt-0.5">
-            Visibles con escala en tienda online
+            Niveles de cantidad activos
           </p>
         </div>
 
@@ -381,7 +280,7 @@ export const WholesalePricingView: React.FC = () => {
             {stats.maxDiscount > 0 ? `-${stats.maxDiscount}%` : '0%'}
           </p>
           <p className="text-[11px] text-slate-500 mt-0.5">
-            El mejor % gana automáticamente
+            Aplicado automáticamente en carrito
           </p>
         </div>
 
@@ -393,491 +292,476 @@ export const WholesalePricingView: React.FC = () => {
             Bs. {settings.bcvRate.toFixed(2)}
           </p>
           <p className="text-[11px] text-slate-500 mt-0.5">
-            Precios al mayor en $ y Bs. BCV
+            Cálculo exacto en $ USD y Bs.
           </p>
         </div>
       </div>
 
-      {/* Main Editor Card */}
-      <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
-        {/* Scope Tabs */}
-        <div className="px-4 sm:px-5 py-3 bg-slate-50 border-b border-slate-200 flex flex-wrap items-center gap-2">
-          <button
-            type="button"
-            onClick={() => setActiveTab('ALL')}
-            className={`px-3.5 py-2 rounded-lg text-xs font-bold inline-flex items-center gap-2 transition-colors cursor-pointer border ${
-              activeTab === 'ALL'
-                ? 'bg-emerald-600 border-emerald-600 text-white shadow-2xs'
-                : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-100'
-            }`}
-          >
-            <Globe className="w-3.5 h-3.5" />
-            <span>Regla General (Toda la Tienda)</span>
-            {stats.allCount > 0 && (
-              <span
-                className={`text-[10px] px-1.5 py-0.5 rounded font-mono ${
-                  activeTab === 'ALL' ? 'bg-white/20 text-white' : 'bg-emerald-100 text-emerald-800'
+      {/* Main 2-Column Per-Product Configurator */}
+      <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden flex flex-col lg:flex-row min-h-[540px]">
+        {/* Left: Product Picker */}
+        <div className="lg:w-96 shrink-0 border-b lg:border-b-0 lg:border-r border-slate-200 bg-slate-50/70 flex flex-col">
+          <div className="p-3.5 border-b border-slate-200 bg-white space-y-2.5">
+            <div className="relative">
+              <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+              <input
+                type="text"
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                placeholder="Buscar repuesto por nombre, SKU o marca..."
+                className="w-full pl-9 pr-8 py-2 text-xs rounded-lg border border-slate-200 bg-slate-50 focus:bg-white focus:outline-hidden focus:border-amber-500"
+              />
+              {searchTerm && (
+                <button
+                  type="button"
+                  onClick={() => setSearchTerm('')}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 cursor-pointer"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+
+            <div className="grid grid-cols-3 gap-1 bg-slate-100 p-1 rounded-lg text-[11px] font-semibold">
+              <button
+                type="button"
+                onClick={() => setStatusFilter('all')}
+                className={`py-1 rounded-md cursor-pointer transition-colors ${
+                  statusFilter === 'all'
+                    ? 'bg-white text-slate-950 shadow-2xs font-bold'
+                    : 'text-slate-600 hover:text-slate-900'
                 }`}
               >
-                Activa
-              </span>
-            )}
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setActiveTab('CATEGORY')}
-            className={`px-3.5 py-2 rounded-lg text-xs font-bold inline-flex items-center gap-2 transition-colors cursor-pointer border ${
-              activeTab === 'CATEGORY'
-                ? 'bg-slate-900 border-slate-900 text-white shadow-2xs'
-                : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-100'
-            }`}
-          >
-            <Wrench className="w-3.5 h-3.5" />
-            <span>Por Categoría de Repuesto</span>
-            {stats.catCount > 0 && (
-              <span
-                className={`text-[10px] px-1.5 py-0.5 rounded font-mono tabular-nums ${
-                  activeTab === 'CATEGORY'
-                    ? 'bg-emerald-500/20 text-emerald-300'
-                    : 'bg-emerald-100 text-emerald-800'
+                Todos ({products.length})
+              </button>
+              <button
+                type="button"
+                onClick={() => setStatusFilter('with_wholesale')}
+                className={`py-1 rounded-md cursor-pointer transition-colors ${
+                  statusFilter === 'with_wholesale'
+                    ? 'bg-emerald-600 text-white shadow-2xs font-bold'
+                    : 'text-emerald-800 hover:bg-emerald-50'
                 }`}
               >
-                {stats.catCount}
-              </span>
-            )}
-          </button>
-
-          <button
-            type="button"
-            onClick={() => setActiveTab('MODEL')}
-            className={`px-3.5 py-2 rounded-lg text-xs font-bold inline-flex items-center gap-2 transition-colors cursor-pointer border ${
-              activeTab === 'MODEL'
-                ? 'bg-amber-500 border-amber-500 text-slate-950 shadow-2xs'
-                : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-100'
-            }`}
-          >
-            <Bike className="w-3.5 h-3.5" />
-            <span>Por Modelo de Moto</span>
-            {stats.modelCount > 0 && (
-              <span
-                className={`text-[10px] px-1.5 py-0.5 rounded font-mono tabular-nums ${
-                  activeTab === 'MODEL'
-                    ? 'bg-slate-950/15 text-slate-950'
-                    : 'bg-emerald-100 text-emerald-800'
+                Con Mayor ({stats.count})
+              </button>
+              <button
+                type="button"
+                onClick={() => setStatusFilter('without_wholesale')}
+                className={`py-1 rounded-md cursor-pointer transition-colors ${
+                  statusFilter === 'without_wholesale'
+                    ? 'bg-white text-slate-950 shadow-2xs font-bold'
+                    : 'text-slate-600 hover:text-slate-900'
                 }`}
               >
-                {stats.modelCount}
-              </span>
-            )}
-          </button>
-        </div>
+                Sin Mayor ({products.length - stats.count})
+              </button>
+            </div>
+          </div>
 
-        {/* Body: 2 Columns */}
-        <div className="flex flex-col md:flex-row min-h-[460px]">
-          {/* Left Filter List */}
-          {activeTab !== 'ALL' && (
-            <div className="md:w-72 shrink-0 border-b md:border-b-0 md:border-r border-slate-200 bg-slate-50/60 overflow-y-auto max-h-[240px] md:max-h-[600px] p-2.5 space-y-1">
-              <div className="px-2 py-1 text-[10px] font-bold text-slate-500 uppercase tracking-wider">
-                {activeTab === 'CATEGORY'
-                  ? `Categorías (${filterListForTab.length})`
-                  : `Modelos Especializados (${filterListForTab.length})`}
+          <div className="flex-1 overflow-y-auto max-h-[300px] lg:max-h-[600px] p-2 space-y-1">
+            {filteredProducts.length === 0 ? (
+              <div className="p-6 text-center text-xs text-slate-500">
+                No se encontraron repuestos con ese criterio.
               </div>
-              {filterListForTab.map((filterName) => {
-                const key = makeRuleKey(activeTab, filterName);
-                const rule = draftRules.find((r) => makeRuleKey(r.scope, r.filterValue) === key);
-                const validTiers = rule ? normalizeWholesaleTiers(rule.tiers) : [];
-                const isRuleActive = Boolean(rule?.active && validTiers.length > 0);
-                const maxPct = validTiers.reduce((m, t) => Math.max(m, t.discountPct), 0);
-                const isSelected = selectedFilterValue === filterName;
+            ) : (
+              filteredProducts.map((prod) => {
+                const isSelected = selectedProduct?.id === prod.id;
+                const display = getProductWholesaleDisplayTiers(prod);
+                const thumb = getProductImages(prod, true)[0];
 
                 return (
                   <button
-                    key={filterName}
+                    key={prod.id}
                     type="button"
-                    onClick={() => setSelectedFilterValue(filterName)}
-                    className={`w-full text-left px-3 py-2.5 rounded-lg text-xs transition-colors flex items-center justify-between gap-2 cursor-pointer border ${
+                    onClick={() => handleSelectProduct(prod.id)}
+                    className={`w-full text-left p-2.5 rounded-xl border transition-colors flex items-center gap-2.5 cursor-pointer ${
                       isSelected
-                        ? 'bg-white border-amber-400 text-slate-950 font-bold shadow-2xs'
-                        : 'bg-transparent border-transparent text-slate-700 hover:bg-white/80 font-medium'
+                        ? 'bg-white border-amber-400 shadow-2xs ring-1 ring-amber-300/60'
+                        : 'bg-transparent border-transparent hover:bg-white/90 hover:border-slate-200'
                     }`}
                   >
-                    <span className="truncate">{filterName}</span>
-                    {isRuleActive ? (
-                      <span className="text-[10px] font-mono font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded shrink-0 tabular-nums">
-                        hasta -{maxPct}%
-                      </span>
-                    ) : (
-                      <span className="text-[10px] text-slate-400 shrink-0">Sin regla</span>
-                    )}
+                    <img
+                      src={thumb}
+                      alt={prod.name}
+                      className="w-10 h-10 rounded-lg object-cover border border-slate-200 bg-slate-100 shrink-0"
+                      referrerPolicy="no-referrer"
+                      onError={(e) => handleProductImageError(e, prod)}
+                    />
+                    <div className="min-w-0 flex-1">
+                      <p className="text-xs font-bold text-slate-900 truncate">{prod.name}</p>
+                      <div className="flex items-center justify-between gap-2 mt-0.5 text-[10px]">
+                        <span className="font-mono text-slate-500 truncate">
+                          {prod.sku} · {formatUSD(prod.salePrice)}
+                        </span>
+                        {display.hasWholesale ? (
+                          <span className="font-mono font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-1.5 py-0.2 rounded shrink-0 tabular-nums">
+                            {display.tiers.length} esc · -{display.maxDiscountPct}%
+                          </span>
+                        ) : (
+                          <span className="text-slate-400 shrink-0">Sin mayor</span>
+                        )}
+                      </div>
+                    </div>
                   </button>
                 );
-              })}
+              })
+            )}
+          </div>
+        </div>
+
+        {/* Right: Selected Product Tier Editor */}
+        <div className="flex-1 p-5 sm:p-6 flex flex-col justify-between gap-5">
+          {!selectedProduct ? (
+            <div className="flex-1 flex flex-col items-center justify-center text-center p-8 text-slate-500">
+              <Percent className="w-10 h-10 text-slate-300 mb-3" />
+              <p className="text-sm font-bold text-slate-800">Selecciona un repuesto</p>
+              <p className="text-xs mt-1">
+                Elige un artículo de la lista para configurar sus precios y descuentos al mayor.
+              </p>
             </div>
-          )}
-
-          {/* Right Editor Pane */}
-          <div className="flex-1 p-5 sm:p-6 space-y-5">
-            {/* Selected Filter Header + Active Switch */}
-            <div className="flex flex-wrap items-start justify-between gap-3 pb-4 border-b border-slate-200">
-              <div>
-                <span className="text-[11px] font-bold uppercase tracking-wider text-amber-600">
-                  {activeTab === 'CATEGORY'
-                    ? 'Filtro por Categoría de Repuesto'
-                    : activeTab === 'MODEL'
-                    ? 'Filtro por Modelo de Moto'
-                    : 'Regla General de Toda la Tienda'}
-                </span>
-                <h2 className="text-lg font-extrabold text-slate-900 mt-0.5">
-                  {activeTab === 'ALL' ? 'Todos los productos de la tienda' : selectedFilterValue}
-                </h2>
-                <p className="text-xs text-slate-500 mt-0.5">
-                  {activeTab === 'ALL'
-                    ? 'Se aplica a cualquier producto del catálogo. Si un filtro específico tiene un % mayor, se aplica automáticamente el mayor descuento.'
-                    : 'Se aplica a todos los repuestos que pertenezcan a este filtro cuando el cliente alcance las cantidades mínimas.'}
-                </p>
-              </div>
-
-              <div className="flex items-center gap-2 shrink-0">
-                <button
-                  type="button"
-                  onClick={handleToggleRuleActive}
-                  className={`px-3.5 py-2 rounded-lg text-xs font-bold inline-flex items-center gap-2 border transition-colors cursor-pointer ${
-                    currentRule?.active
-                      ? 'bg-emerald-600 border-emerald-600 text-white shadow-2xs'
-                      : 'bg-white border-slate-300 text-slate-700 hover:bg-slate-50'
-                  }`}
-                >
-                  <Check className={`w-3.5 h-3.5 ${currentRule?.active ? 'opacity-100' : 'opacity-30'}`} />
-                  <span>{currentRule?.active ? 'Descuento Activo' : 'Activar Descuento'}</span>
-                </button>
-                {currentRule && (
-                  <button
-                    type="button"
-                    onClick={handleRemoveCurrentRule}
-                    className="p-2 rounded-lg border border-rose-200 text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
-                    title="Eliminar regla de este filtro"
-                  >
-                    <Trash2 className="w-4 h-4" />
-                  </button>
-                )}
-              </div>
-            </div>
-
-            {!currentRule || !currentRule.active ? (
-              <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-6 sm:p-8 text-center space-y-3">
-                <div className="w-12 h-12 rounded-xl bg-emerald-100 text-emerald-700 flex items-center justify-center mx-auto">
-                  <Percent className="w-6 h-6" />
-                </div>
-                <div className="space-y-1 max-w-md mx-auto">
-                  <p className="text-sm font-bold text-slate-900">
-                    {activeTab === 'ALL'
-                      ? 'Activa descuentos al mayor para toda tu tienda'
-                      : `Sin descuento al mayor activo para "${selectedFilterValue}"`}
-                  </p>
-                  <p className="text-xs text-slate-500">
-                    Elige una escala sugerida en 1 clic o crea tus propios escalones por cantidad (por ejemplo: 3+ uds → 5%, 6+ uds → 10%, 12+ uds → 15%).
-                  </p>
-                </div>
-                <div className="flex flex-wrap items-center justify-center gap-2 pt-2">
-                  <button
-                    type="button"
-                    onClick={() => handleApplyPreset(SUGGESTED_WHOLESALE_TIERS)}
-                    className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs inline-flex items-center gap-1.5 cursor-pointer shadow-2xs"
-                  >
-                    <Sparkles className="w-3.5 h-3.5" />
-                    <span>Escala estándar (3+: 5% · 6+: 10% · 12+: 15%)</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleApplyPreset(AGGRESSIVE_WHOLESALE_TIERS)}
-                    className="px-3.5 py-2 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-950 border border-amber-300 font-bold text-xs inline-flex items-center gap-1.5 cursor-pointer"
-                  >
-                    <Sparkles className="w-3.5 h-3.5 text-amber-600" />
-                    <span>Mayorista agresiva (3+: 8% · 6+: 15% · 12+: 22%)</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleToggleRuleActive}
-                    className="px-3.5 py-2 rounded-lg bg-white hover:bg-slate-100 text-slate-800 border border-slate-300 font-semibold text-xs cursor-pointer"
-                  >
-                    Configurar manual
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <>
-                {/* Combine products toggle */}
-                <label className="flex items-start gap-3 p-3.5 rounded-xl border border-slate-200 bg-slate-50/80 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={currentRule.combineAcrossFilter !== false}
-                    onChange={(e) =>
-                      upsertCurrentRule((r) => ({
-                        ...r,
-                        combineAcrossFilter: e.target.checked,
-                      }))
-                    }
-                    className="mt-0.5 rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
-                  />
-                  <div className="text-xs">
-                    <span className="font-bold text-slate-900 block">
-                      Sumar cantidades combinando distintos repuestos de este filtro
-                    </span>
-                    <span className="text-slate-500">
-                      Si está activo, el cliente puede llevar por ejemplo 2 unidades de un artículo y 4 de otro dentro de{' '}
-                      <strong>{activeTab === 'ALL' ? 'toda la tienda' : selectedFilterValue}</strong> para sumar 6 unidades y obtener el descuento al mayor.
-                    </span>
+          ) : (
+            <>
+              <div className="space-y-5">
+                {/* Selected Product Header */}
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-200">
+                  <div className="flex items-center gap-3.5 min-w-0">
+                    <img
+                      src={getProductImages(selectedProduct, true)[0]}
+                      alt={selectedProduct.name}
+                      className="w-16 h-16 rounded-xl object-cover border border-slate-200 bg-slate-100 shrink-0"
+                      referrerPolicy="no-referrer"
+                      onError={(e) => handleProductImageError(e, selectedProduct)}
+                    />
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-slate-500">
+                        <span className="font-mono font-bold text-slate-700">{selectedProduct.sku}</span>
+                        <span>·</span>
+                        <span>{selectedProduct.category}</span>
+                        <span>·</span>
+                        <span>
+                          {productTracksInventory(selectedProduct)
+                            ? `Stock: ${selectedProduct.stock} uds`
+                            : 'Bajo pedido'}
+                        </span>
+                      </div>
+                      <h2 className="text-lg font-extrabold text-slate-950 leading-snug mt-0.5">
+                        {selectedProduct.name}
+                      </h2>
+                      <div className="flex items-baseline gap-2 mt-1 font-mono tabular-nums">
+                        <span className="text-xs text-slate-500 font-sans">Precio Detal:</span>
+                        <span className="text-sm font-extrabold text-slate-900">
+                          {formatUSD(selectedProduct.salePrice)}
+                        </span>
+                        <span className="text-xs font-semibold text-emerald-700">
+                          ({formatBs(selectedProduct.salePrice * settings.bcvRate)} BCV)
+                        </span>
+                      </div>
+                    </div>
                   </div>
-                </label>
 
-                {/* Editable Tiers Table */}
-                <div className="space-y-2.5">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <h3 className="text-xs font-bold text-slate-900 uppercase tracking-wider flex items-center gap-1.5">
-                      <Layers className="w-3.5 h-3.5 text-amber-600" />
-                      <span>Escalones por Cantidad y % de Descuento</span>
-                    </h3>
-                    <div className="flex flex-wrap items-center gap-2">
+                  <div className="flex items-center gap-2 shrink-0">
+                    {productHasWholesaleTiers(selectedProduct) && (
+                      <button
+                        type="button"
+                        onClick={() => handleClearProductWholesale(selectedProduct)}
+                        className="px-3 py-2 rounded-lg border border-rose-200 text-rose-600 hover:bg-rose-50 text-xs font-semibold inline-flex items-center gap-1.5 cursor-pointer"
+                        title="Quitar todos los descuentos al mayor de este repuesto"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        <span>Quitar mayor</span>
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={handleSaveSelectedProduct}
+                      className={`px-4 py-2 rounded-lg font-bold text-xs inline-flex items-center gap-1.5 shadow-2xs transition-colors cursor-pointer ${
+                        hasUnsavedChanges
+                          ? 'bg-amber-500 hover:bg-amber-400 text-slate-950'
+                          : 'bg-slate-900 hover:bg-slate-800 text-white'
+                      }`}
+                    >
+                      <Save className="w-3.5 h-3.5" />
+                      <span>{hasUnsavedChanges ? 'Guardar Cambios*' : 'Guardar Repuesto'}</span>
+                    </button>
+                  </div>
+                </div>
+
+                {hasUnsavedChanges && (
+                  <div className="rounded-lg bg-amber-50 border border-amber-200 px-3.5 py-2 text-xs text-amber-950 flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <AlertCircle className="w-4 h-4 text-amber-600 shrink-0" />
+                      <span>Tienes cambios sin guardar para este repuesto.</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleSaveSelectedProduct}
+                      className="px-2.5 py-1 rounded bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-[11px] cursor-pointer"
+                    >
+                      Guardar ahora
+                    </button>
+                  </div>
+                )}
+
+                {/* Tiers Section */}
+                {draftTiers.length === 0 ? (
+                  <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 p-6 sm:p-8 text-center space-y-3">
+                    <div className="w-12 h-12 rounded-xl bg-emerald-100 text-emerald-700 flex items-center justify-center mx-auto">
+                      <Percent className="w-6 h-6" />
+                    </div>
+                    <div className="space-y-1 max-w-md mx-auto">
+                      <p className="text-sm font-bold text-slate-900">
+                        Este repuesto no tiene precios al mayor todavía
+                      </p>
+                      <p className="text-xs text-slate-500">
+                        Agrega los escalones de cantidad y porcentaje de descuento que quieras para{' '}
+                        <strong>{selectedProduct.name}</strong>.
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap items-center justify-center gap-2 pt-2">
                       <button
                         type="button"
                         onClick={() => handleApplyPreset(SUGGESTED_WHOLESALE_TIERS)}
-                        className="text-[11px] font-semibold text-amber-800 hover:text-amber-950 bg-amber-50 hover:bg-amber-100 border border-amber-200 px-2.5 py-1 rounded-md cursor-pointer"
+                        className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs inline-flex items-center gap-1.5 cursor-pointer shadow-2xs"
                       >
-                        Estándar (5/10/15%)
+                        <Sparkles className="w-3.5 h-3.5" />
+                        <span>Estándar (3+: 5% · 6+: 10% · 12+: 15%)</span>
                       </button>
                       <button
                         type="button"
                         onClick={() => handleApplyPreset(AGGRESSIVE_WHOLESALE_TIERS)}
-                        className="text-[11px] font-semibold text-emerald-800 hover:text-emerald-950 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 px-2.5 py-1 rounded-md cursor-pointer"
+                        className="px-3.5 py-2 rounded-lg bg-amber-50 hover:bg-amber-100 text-amber-950 border border-amber-300 font-bold text-xs inline-flex items-center gap-1.5 cursor-pointer"
                       >
-                        Agresiva (8/15/22%)
+                        <Sparkles className="w-3.5 h-3.5 text-amber-600" />
+                        <span>Mayorista (3+: 8% · 6+: 15% · 12+: 22%)</span>
                       </button>
                       <button
                         type="button"
                         onClick={handleAddTier}
-                        className="inline-flex items-center gap-1 text-xs font-bold text-white bg-slate-900 hover:bg-slate-800 px-3 py-1 rounded-md cursor-pointer"
+                        className="px-3.5 py-2 rounded-lg bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs inline-flex items-center gap-1.5 cursor-pointer"
                       >
                         <Plus className="w-3.5 h-3.5" />
-                        <span>Agregar escalón</span>
+                        <span>Crear escalón manual</span>
                       </button>
                     </div>
                   </div>
-
-                  <div className="rounded-xl border border-slate-200 overflow-hidden bg-white">
-                    <table className="w-full text-xs">
-                      <thead className="bg-slate-50 border-b border-slate-200 text-slate-600">
-                        <tr>
-                          <th className="text-left py-2.5 px-3 font-bold">Desde (unidades)</th>
-                          <th className="text-left py-2.5 px-3 font-bold">Descuento (%)</th>
-                          <th className="text-right py-2.5 px-3 font-bold">Ejemplo precio unit.</th>
-                          <th className="w-10 py-2.5 px-2" />
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-100">
-                        {currentRule.tiers.map((tier) => {
-                          const discounted = Math.max(
-                            0,
-                            samplePrice * (1 - (Number(tier.discountPct) || 0) / 100)
-                          );
-                          return (
-                            <tr key={tier.id}>
-                              <td className="py-2.5 px-3">
-                                <div className="flex items-center gap-1.5">
-                                  <input
-                                    type="number"
-                                    min={2}
-                                    step={1}
-                                    value={tier.minQty}
-                                    onChange={(e) =>
-                                      handleUpdateTier(tier.id, 'minQty', e.target.value)
-                                    }
-                                    className="w-20 px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white font-mono font-bold text-slate-900 tabular-nums focus:outline-hidden focus:border-amber-500"
-                                  />
-                                  <span className="text-slate-500">uds o más</span>
-                                </div>
-                              </td>
-                              <td className="py-2.5 px-3">
-                                <div className="flex items-center gap-1.5">
-                                  <input
-                                    type="number"
-                                    min={0.5}
-                                    max={90}
-                                    step={0.5}
-                                    value={tier.discountPct}
-                                    onChange={(e) =>
-                                      handleUpdateTier(tier.id, 'discountPct', e.target.value)
-                                    }
-                                    className="w-20 px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white font-mono font-bold text-emerald-700 tabular-nums focus:outline-hidden focus:border-amber-500"
-                                  />
-                                  <span className="font-bold text-emerald-700">%</span>
-                                </div>
-                              </td>
-                              <td className="py-2.5 px-3 text-right font-mono tabular-nums">
-                                <span className="font-bold text-slate-900">
-                                  {formatUSD(discounted)}
-                                </span>
-                                <span className="text-[11px] text-emerald-700 ml-2">
-                                  ({formatBs(discounted * settings.bcvRate)})
-                                </span>
-                              </td>
-                              <td className="py-2.5 px-2 text-right">
-                                <button
-                                  type="button"
-                                  onClick={() => handleRemoveTier(tier.id)}
-                                  className="p-1.5 text-slate-400 hover:text-rose-600 rounded-md hover:bg-rose-50 cursor-pointer"
-                                  title="Quitar escalón"
-                                >
-                                  <Trash2 className="w-3.5 h-3.5" />
-                                </button>
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-
-                {/* Live Simulator & Sample Real Products */}
-                <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                  <div className="rounded-xl border border-emerald-200 bg-emerald-50/50 p-4 space-y-2.5">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-xs font-bold text-emerald-950">
-                        Simulador de Precio Unitario
-                      </span>
-                      <div className="flex items-center gap-1.5 text-xs">
-                        <span className="text-slate-600">Precio detal:</span>
-                        <div className="relative">
-                          <span className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-500 font-mono">
-                            $
-                          </span>
-                          <input
-                            type="number"
-                            min={0}
-                            step={0.5}
-                            value={samplePriceUSD}
-                            onChange={(e) => setSamplePriceUSD(e.target.value)}
-                            className="w-20 pl-5 pr-2 py-1 rounded-md border border-emerald-300 bg-white font-mono font-bold text-slate-900 tabular-nums text-xs"
-                          />
-                        </div>
+                ) : (
+                  <div className="space-y-4">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <h3 className="text-xs font-bold text-slate-900 uppercase tracking-wider flex items-center gap-1.5">
+                        <Layers className="w-3.5 h-3.5 text-emerald-700" />
+                        <span>Escalones de Descuento por Cantidad</span>
+                      </h3>
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => handleApplyPreset(SUGGESTED_WHOLESALE_TIERS)}
+                          className="text-[11px] font-semibold text-amber-800 hover:text-amber-950 bg-amber-50 hover:bg-amber-100 border border-amber-200 px-2.5 py-1 rounded-md cursor-pointer"
+                        >
+                          Estándar (5/10/15%)
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleApplyPreset(AGGRESSIVE_WHOLESALE_TIERS)}
+                          className="text-[11px] font-semibold text-emerald-800 hover:text-emerald-950 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 px-2.5 py-1 rounded-md cursor-pointer"
+                        >
+                          Mayorista (8/15/22%)
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleAddTier}
+                          className="inline-flex items-center gap-1 text-xs font-bold text-white bg-slate-900 hover:bg-slate-800 px-3 py-1 rounded-md cursor-pointer"
+                        >
+                          <Plus className="w-3.5 h-3.5" />
+                          <span>Agregar escalón</span>
+                        </button>
                       </div>
                     </div>
-                    {previewTiers.length > 0 && (
-                      <div className="flex flex-wrap gap-2">
-                        {previewTiers.map((t) => {
-                          const unit = Math.max(0, samplePrice * (1 - t.discountPct / 100));
-                          return (
-                            <div
-                              key={t.id}
-                              className="bg-white border border-emerald-200 rounded-lg px-3 py-1.5 text-xs font-mono tabular-nums"
-                            >
-                              <span className="font-bold text-slate-900">{t.minQty}+ uds:</span>{' '}
-                              <span className="font-extrabold text-emerald-700">
-                                {formatUSD(unit)}
-                              </span>{' '}
-                              <span className="text-[11px] text-slate-500">(-{t.discountPct}%)</span>
-                            </div>
-                          );
-                        })}
+
+                    <div className="rounded-xl border border-slate-200 overflow-x-auto bg-white">
+                      <table className="w-full text-xs">
+                        <thead className="bg-slate-50 border-b border-slate-200 text-slate-600">
+                          <tr>
+                            <th className="text-left py-2.5 px-3 font-bold">Cantidad mínima</th>
+                            <th className="text-left py-2.5 px-3 font-bold">Descuento (%)</th>
+                            <th className="text-right py-2.5 px-3 font-bold">Precio Unit. Mayor ($)</th>
+                            <th className="text-right py-2.5 px-3 font-bold">Equiv. Bs. BCV</th>
+                            <th className="w-10 py-2.5 px-2" />
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100">
+                          {draftTiers.map((tier) => {
+                            const discountedUSD =
+                              Math.round(
+                                Math.max(
+                                  0,
+                                  selectedProduct.salePrice *
+                                    (1 - (Number(tier.discountPct) || 0) / 100)
+                                ) * 100
+                              ) / 100;
+                            const discountedBs = discountedUSD * settings.bcvRate;
+
+                            return (
+                              <tr key={tier.id}>
+                                <td className="py-2.5 px-3">
+                                  <div className="flex items-center gap-1.5">
+                                    <span className="text-slate-500">Desde</span>
+                                    <input
+                                      type="number"
+                                      min={2}
+                                      step={1}
+                                      value={tier.minQty}
+                                      onChange={(e) =>
+                                        handleUpdateTier(tier.id, 'minQty', e.target.value)
+                                      }
+                                      className="w-20 px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white font-mono font-bold text-slate-900 tabular-nums focus:outline-hidden focus:border-amber-500"
+                                    />
+                                    <span className="text-slate-500">uds</span>
+                                  </div>
+                                </td>
+                                <td className="py-2.5 px-3">
+                                  <div className="flex items-center gap-1.5">
+                                    <input
+                                      type="number"
+                                      min={0.5}
+                                      max={90}
+                                      step={0.5}
+                                      value={tier.discountPct}
+                                      onChange={(e) =>
+                                        handleUpdateTier(tier.id, 'discountPct', e.target.value)
+                                      }
+                                      className="w-20 px-2.5 py-1.5 rounded-lg border border-slate-300 bg-white font-mono font-bold text-emerald-700 tabular-nums focus:outline-hidden focus:border-amber-500"
+                                    />
+                                    <span className="font-bold text-emerald-700">%</span>
+                                  </div>
+                                </td>
+                                <td className="py-2.5 px-3 text-right font-mono font-extrabold text-slate-950 tabular-nums">
+                                  {formatUSD(discountedUSD)}
+                                </td>
+                                <td className="py-2.5 px-3 text-right font-mono font-semibold text-emerald-700 tabular-nums">
+                                  {formatBs(discountedBs)}
+                                </td>
+                                <td className="py-2.5 px-2 text-right">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleRemoveTier(tier.id)}
+                                    className="p-1.5 text-slate-400 hover:text-rose-600 rounded-md hover:bg-rose-50 cursor-pointer"
+                                    title="Eliminar este escalón"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    {/* Preview of how customer will see it */}
+                    {normalizedDraftPreview.length > 0 && (
+                      <div className="rounded-xl border border-emerald-200 bg-emerald-50/60 p-4 space-y-2">
+                        <span className="text-xs font-bold text-emerald-950 block">
+                          Vista previa para el cliente en la tienda online:
+                        </span>
+                        <div className="flex flex-wrap gap-2">
+                          {normalizedDraftPreview.map((t) => {
+                            const unit =
+                              Math.round(
+                                Math.max(0, selectedProduct.salePrice * (1 - t.discountPct / 100)) *
+                                  100
+                              ) / 100;
+                            return (
+                              <div
+                                key={t.id}
+                                className="bg-white border border-emerald-200 rounded-lg px-3 py-1.5 text-xs font-mono tabular-nums"
+                              >
+                                <span className="font-bold text-slate-900">{t.minQty}+ uds:</span>{' '}
+                                <span className="font-extrabold text-emerald-700">
+                                  {formatUSD(unit)} c/u
+                                </span>{' '}
+                                <span className="text-[11px] text-slate-500">(-{t.discountPct}%)</span>
+                              </div>
+                            );
+                          })}
+                        </div>
                       </div>
                     )}
                   </div>
-
-                  {matchingSampleProducts.length > 0 && (
-                    <div className="rounded-xl border border-slate-200 bg-slate-50/70 p-4 space-y-2">
-                      <span className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
-                        <Package className="w-3.5 h-3.5 text-amber-600" />
-                        <span>Ejemplo en repuestos reales de tu catálogo</span>
-                      </span>
-                      <div className="space-y-1.5">
-                        {matchingSampleProducts.map((prod) => {
-                          const firstTier = previewTiers[0];
-                          const bestTier = previewTiers[previewTiers.length - 1];
-                          const minUnit = prod.salePrice * (1 - bestTier.discountPct / 100);
-                          return (
-                            <div
-                              key={prod.id}
-                              className="flex items-center justify-between gap-2 text-[11px] bg-white px-2.5 py-1.5 rounded-lg border border-slate-200/80"
-                            >
-                              <span className="font-semibold text-slate-800 truncate">
-                                {prod.name}
-                              </span>
-                              <span className="font-mono tabular-nums shrink-0 text-slate-600">
-                                {formatUSD(prod.salePrice)} →{' '}
-                                <strong className="text-emerald-700">
-                                  {formatUSD(minUnit)}
-                                </strong>{' '}
-                                <span className="text-[10px] text-slate-400">
-                                  ({firstTier.minQty}+ a {bestTier.minQty}+ u)
-                                </span>
-                              </span>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </>
-            )}
-          </div>
+                )}
+              </div>
+            </>
+          )}
         </div>
       </div>
 
-      {/* Overview Table of All Active Wholesale Rules */}
+      {/* Summary Table of All Products With Wholesale Pricing */}
       <div className="bg-white rounded-2xl border border-slate-200 shadow-xs overflow-hidden">
         <div className="px-5 py-3.5 border-b border-slate-200 flex items-center justify-between gap-2">
           <h3 className="text-sm font-bold text-slate-900">
-            Resumen de Reglas al Mayor Activas ({stats.activeNormalized.length})
+            Repuestos con Precio al Mayor Activo ({stats.count})
           </h3>
           <span className="text-[11px] text-slate-500">
-            Haz clic en cualquier regla para editarla
+            Haz clic en cualquier repuesto para modificar sus escalas
           </span>
         </div>
 
-        {stats.activeNormalized.length === 0 ? (
+        {stats.productsWithWholesale.length === 0 ? (
           <div className="p-8 text-center text-xs text-slate-500">
-            Aún no hay reglas al mayor activas. Activa la <strong>Regla General</strong> arriba o elige una categoría/modelo para crear tu primera escala de descuentos.
+            Aún no hay repuestos con precios al mayor configurados. Selecciona un repuesto arriba para agregarle sus descuentos por cantidad.
           </div>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-xs">
               <thead className="bg-slate-50 border-b border-slate-200 text-slate-600">
                 <tr>
-                  <th className="py-2.5 px-4 text-left font-bold">Filtro / Alcance</th>
-                  <th className="py-2.5 px-4 text-left font-bold">Escala de Descuentos</th>
-                  <th className="py-2.5 px-4 text-left font-bold">Combina productos</th>
-                  <th className="py-2.5 px-4 text-right font-bold">Acción</th>
+                  <th className="py-2.5 px-4 text-left font-bold">Repuesto</th>
+                  <th className="py-2.5 px-4 text-right font-bold">Precio Detal</th>
+                  <th className="py-2.5 px-4 text-left font-bold">Escalas al Mayor</th>
+                  <th className="py-2.5 px-4 text-right font-bold">Acciones</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {stats.activeNormalized.map((rule) => (
-                  <tr key={rule.id} className="hover:bg-slate-50/70">
-                    <td className="py-2.5 px-4 font-bold text-slate-900">
-                      {getWholesaleRuleLabel(rule)}
-                    </td>
-                    <td className="py-2.5 px-4 font-mono tabular-nums text-emerald-700 font-semibold">
-                      {rule.tiers.map((t) => `${t.minQty}+ u (-${t.discountPct}%)`).join(' · ')}
-                    </td>
-                    <td className="py-2.5 px-4 text-slate-600">
-                      {rule.combineAcrossFilter !== false ? 'Sí, combinables' : 'Por producto individual'}
-                    </td>
-                    <td className="py-2.5 px-4 text-right">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setActiveTab(rule.scope);
-                          setSelectedFilterValue(rule.scope === 'ALL' ? '' : rule.filterValue);
-                          window.scrollTo({ top: 0, behavior: 'smooth' });
-                        }}
-                        className="text-xs font-bold text-amber-700 hover:text-amber-900 cursor-pointer"
-                      >
-                        Editar
-                      </button>
-                    </td>
-                  </tr>
-                ))}
+                {stats.productsWithWholesale.map((prod) => {
+                  const display = getProductWholesaleDisplayTiers(prod);
+                  return (
+                    <tr key={prod.id} className="hover:bg-slate-50/70">
+                      <td className="py-2.5 px-4">
+                        <p className="font-bold text-slate-900">{prod.name}</p>
+                        <p className="text-[10px] font-mono text-slate-500">
+                          {prod.sku} · {prod.category}
+                        </p>
+                      </td>
+                      <td className="py-2.5 px-4 text-right font-mono font-bold text-slate-800 tabular-nums whitespace-nowrap">
+                        {formatUSD(prod.salePrice)}
+                      </td>
+                      <td className="py-2.5 px-4 font-mono tabular-nums text-emerald-700 font-semibold">
+                        {display.tiers
+                          .map((t) => `${t.minQty}+ u: ${formatUSD(t.unitPriceUSD)} (-${t.discountPct}%)`)
+                          .join(' · ')}
+                      </td>
+                      <td className="py-2.5 px-4 text-right whitespace-nowrap">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSelectedProductId(prod.id);
+                            window.scrollTo({ top: 0, behavior: 'smooth' });
+                          }}
+                          className="text-xs font-bold text-amber-700 hover:text-amber-900 mr-3 cursor-pointer"
+                        >
+                          Editar
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleClearProductWholesale(prod)}
+                          className="text-xs font-semibold text-rose-600 hover:text-rose-800 cursor-pointer"
+                        >
+                          Quitar
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

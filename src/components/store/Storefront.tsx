@@ -7,7 +7,6 @@ import {
   productTracksInventory,
   DEFAULT_PRODUCTION_TIME_LABEL,
   DEFAULT_PRODUCTION_TIME_NOTE,
-  WholesaleFilterScope,
 } from '../../types';
 import { formatUSD, formatBs, sanitizePhone } from '../../utils/whatsapp';
 import {
@@ -47,14 +46,10 @@ import {
   getProductModelCategories,
 } from '../../utils/modelCategories';
 import {
-  getActiveWholesaleRuleForFilter,
-  getMaxDiscountPctForFilter,
   getProductWholesaleDisplayTiers,
-  getWholesaleRuleLabel,
-  normalizeWholesaleTiers,
+  productHasWholesaleTiers,
 } from '../../utils/wholesalePricing';
 import { CustomerPendingAccountsModal } from '../modals/CustomerPendingAccountsModal';
-import { WholesalePricingModal } from '../admin/WholesalePricingModal';
 
 interface StorefrontProps {
   onOpenCart: (step?: 'cart' | 'checkout') => void;
@@ -86,11 +81,6 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
   const [recentlyAddedId, setRecentlyAddedId] = useState<string | null>(null);
   const [cartToast, setCartToast] = useState<{ productName: string; qty?: number } | null>(null);
   const [isPendingAccountsOpen, setIsPendingAccountsOpen] = useState(false);
-  const [isWholesaleModalOpen, setIsWholesaleModalOpen] = useState(false);
-  const [wholesaleModalInit, setWholesaleModalInit] = useState<{
-    scope: WholesaleFilterScope;
-    filterValue: string;
-  }>({ scope: 'CATEGORY', filterValue: '' });
   const [modalOrderQty, setModalOrderQty] = useState<number>(1);
   const [shoppingMode, setShoppingMode] = useState<'retail' | 'wholesale'>('retail');
   const [onlyWholesaleProducts, setOnlyWholesaleProducts] = useState<boolean>(false);
@@ -99,19 +89,6 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
     setSelectedProduct(product);
     setModalImageIndex(startIndex);
     setModalOrderQty(1);
-  };
-
-  const openWholesaleConfigurator = (scope?: WholesaleFilterScope, filterValue?: string) => {
-    if (scope) {
-      setWholesaleModalInit({ scope, filterValue: filterValue || '' });
-    } else if (selectedModelCategory !== 'all') {
-      setWholesaleModalInit({ scope: 'MODEL', filterValue: selectedModelCategory });
-    } else if (selectedCategory !== 'all') {
-      setWholesaleModalInit({ scope: 'CATEGORY', filterValue: selectedCategory });
-    } else {
-      setWholesaleModalInit({ scope: 'CATEGORY', filterValue: categories[0] || '' });
-    }
-    setIsWholesaleModalOpen(true);
   };
 
   const handleQuickAddModelFromStore = () => {
@@ -187,7 +164,6 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
   }, [onlineProducts, selectedCategory]);
 
   const filteredProducts = useMemo(() => {
-    const rules = settings.wholesaleDiscountRules || [];
     const filtered = onlineProducts.filter((product) => {
       if (productTracksInventory(product) && product.stock <= 0) return false;
 
@@ -203,8 +179,7 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
       }
 
       if (shoppingMode === 'wholesale' && onlyWholesaleProducts) {
-        const display = getProductWholesaleDisplayTiers(product, rules);
-        if (!display.hasWholesale) return false;
+        if (!productHasWholesaleTiers(product)) return false;
       }
 
       if (searchTerm.trim()) {
@@ -235,47 +210,24 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
     searchTerm,
     shoppingMode,
     onlyWholesaleProducts,
-    settings.wholesaleDiscountRules,
   ]);
 
   const hasActiveFilters =
     selectedCategory !== 'all' || selectedModelCategory !== 'all' || Boolean(searchTerm.trim());
 
-  const wholesaleRules = settings.wholesaleDiscountRules || [];
-  const activeWholesaleRules = useMemo(
-    () =>
-      wholesaleRules
-        .filter((r) => r.active)
-        .map((r) => ({ ...r, tiers: normalizeWholesaleTiers(r.tiers) }))
-        .filter((r) => r.tiers.length > 0),
-    [wholesaleRules]
+  const wholesaleProductsCount = useMemo(
+    () => onlineProducts.filter((p) => productHasWholesaleTiers(p)).length,
+    [onlineProducts]
   );
 
   const maxStoreWholesalePct = useMemo(
     () =>
-      activeWholesaleRules.reduce(
-        (max, r) => Math.max(max, r.tiers.reduce((m, t) => Math.max(m, t.discountPct), 0)),
+      onlineProducts.reduce(
+        (max, p) => Math.max(max, getProductWholesaleDisplayTiers(p).maxDiscountPct),
         0
       ),
-    [activeWholesaleRules]
+    [onlineProducts]
   );
-
-  const focusedWholesaleRules = useMemo(() => {
-    const matched: typeof activeWholesaleRules = [];
-    if (selectedModelCategory !== 'all') {
-      const rule = getActiveWholesaleRuleForFilter('MODEL', selectedModelCategory, wholesaleRules);
-      if (rule) matched.push(rule);
-    }
-    if (selectedCategory !== 'all') {
-      const rule = getActiveWholesaleRuleForFilter('CATEGORY', selectedCategory, wholesaleRules);
-      if (rule) matched.push(rule);
-    }
-    const globalRule = getActiveWholesaleRuleForFilter('ALL', '', wholesaleRules);
-    if (globalRule && (matched.length === 0 || selectedCategory !== 'all' || selectedModelCategory !== 'all')) {
-      matched.push(globalRule);
-    }
-    return matched;
-  }, [selectedModelCategory, selectedCategory, wholesaleRules]);
 
   const handleCopy = (text: string, label: string) => {
     navigator.clipboard.writeText(text);
@@ -485,14 +437,14 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
                   <p className="text-xs font-extrabold text-emerald-950">
                     Modo Compra al Mayor Activado
                   </p>
-                  {activeWholesaleRules.length > 0 ? (
+                  {wholesaleProductsCount > 0 ? (
                     <p className="text-[11px] text-emerald-900 mt-0.5 leading-snug">
-                      Selecciona directamente las cantidades mayoristas en cada tarjeta o combínalas en tu carrito. El descuento por volumen se aplica automáticamente al total.
+                      Selecciona directamente las cantidades mayoristas disponibles en cada repuesto ({wholesaleProductsCount} con descuento al mayor). El descuento por volumen se aplica automáticamente al agregar la cantidad mínima de ese repuesto.
                     </p>
                   ) : (
                     <p className="text-[11px] text-emerald-900 mt-0.5 leading-snug">
                       {isAdmin
-                        ? 'Aún no has configurado escalas de descuento al mayor. Configúralas en el Panel Administrativo para activar precios automáticos por cantidad.'
+                        ? 'Aún no has asignado precios al mayor a ningún repuesto. Configúralos individualmente desde el módulo Precios al Mayor del Panel Administrativo.'
                         : 'Consulta nuestra lista especial de precios al mayor directamente por WhatsApp según la cantidad que necesites.'}
                     </p>
                   )}
@@ -500,7 +452,7 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
               </div>
 
               <div className="flex flex-wrap items-center gap-2 shrink-0">
-                {activeWholesaleRules.length > 0 ? (
+                {wholesaleProductsCount > 0 ? (
                   <label className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-emerald-950 bg-white border border-emerald-200 px-2.5 py-1.5 rounded-lg cursor-pointer">
                     <input
                       type="checkbox"
@@ -508,7 +460,7 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
                       onChange={(e) => setOnlyWholesaleProducts(e.target.checked)}
                       className="rounded border-emerald-300 text-emerald-600 focus:ring-emerald-500"
                     />
-                    <span>Solo con descuento al mayor</span>
+                    <span>Solo con descuento al mayor ({wholesaleProductsCount})</span>
                   </label>
                 ) : isAdmin ? (
                   <button
@@ -561,14 +513,14 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
                 {isAdmin && (
                   <button
                     type="button"
-                    onClick={() => openWholesaleConfigurator()}
+                    onClick={() => setCurrentView('admin_mayorista')}
                     className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border border-emerald-300 bg-emerald-50 hover:bg-emerald-100 text-emerald-900 text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap shrink-0"
-                    title="Configurar descuentos y escalas de precios al mayor por filtro"
+                    title="Configurar descuentos y escalas de precios al mayor por repuesto específico"
                   >
                     <Percent className="w-3.5 h-3.5 text-emerald-700" />
                     <span>
                       Precios al Mayor
-                      {activeWholesaleRules.length > 0 ? ` (${activeWholesaleRules.length})` : ''}
+                      {wholesaleProductsCount > 0 ? ` (${wholesaleProductsCount})` : ''}
                     </span>
                   </button>
                 )}
@@ -649,7 +601,6 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
                   doesProductMatchModelCategory(p, modelCat)
                 ).length;
                 const isSelected = selectedModelCategory === modelCat;
-                const maxWholesalePct = getMaxDiscountPctForFilter('MODEL', modelCat, wholesaleRules);
                 return (
                   <button
                     key={modelCat}
@@ -671,18 +622,6 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
                         }`}
                       >
                         ({count})
-                      </span>
-                    )}
-                    {maxWholesalePct > 0 && (
-                      <span
-                        className={`text-[10px] font-mono font-bold tabular-nums px-1.5 py-0.5 rounded ${
-                          isSelected
-                            ? 'bg-slate-950/15 text-slate-950'
-                            : 'bg-emerald-100 text-emerald-800'
-                        }`}
-                        title={`Precio al mayor disponible hasta -${maxWholesalePct}%`}
-                      >
-                        -{maxWholesalePct}%
                       </span>
                     )}
                   </button>
@@ -729,7 +668,6 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
               {categories.map((cat) => {
                 const count = productsByModel.filter((p) => p.category === cat).length;
                 const isSelected = selectedCategory === cat;
-                const maxWholesalePct = getMaxDiscountPctForFilter('CATEGORY', cat, wholesaleRules);
                 return (
                   <button
                     key={cat}
@@ -744,18 +682,6 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
                     <span>{cat}</span>
                     {count > 0 && (
                       <span className="opacity-70 font-mono tabular-nums">({count})</span>
-                    )}
-                    {maxWholesalePct > 0 && (
-                      <span
-                        className={`text-[10px] font-mono font-bold tabular-nums px-1.5 py-0.5 rounded ${
-                          isSelected
-                            ? 'bg-emerald-500/25 text-emerald-300'
-                            : 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                        }`}
-                        title={`Precio al mayor disponible hasta -${maxWholesalePct}%`}
-                      >
-                        -{maxWholesalePct}%
-                      </span>
                     )}
                   </button>
                 );
@@ -813,94 +739,6 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
               >
                 Limpiar filtros
               </button>
-            </div>
-          )}
-          {/* Active Wholesale Discount Rules Strip */}
-          {(focusedWholesaleRules.length > 0 ||
-            (selectedCategory === 'all' &&
-              selectedModelCategory === 'all' &&
-              activeWholesaleRules.length > 0)) && (
-            <div className="mt-3.5 pt-3 border-t border-emerald-100 bg-emerald-50/70 -mx-3 sm:-mx-4 -mb-3 sm:-mb-4 px-3 sm:px-4 py-3 rounded-b-xl">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                <div className="flex items-start gap-2 min-w-0">
-                  <Percent className="w-4 h-4 text-emerald-700 shrink-0 mt-0.5" />
-                  <div className="min-w-0">
-                    <p className="text-xs font-bold text-emerald-950">
-                      Descuentos por Compra al Mayor Activos
-                    </p>
-                    {focusedWholesaleRules.length > 0 ? (
-                      <div className="mt-1 space-y-1">
-                        {focusedWholesaleRules.map((rule) => (
-                          <div
-                            key={rule.id}
-                            className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-emerald-900"
-                          >
-                            <span className="font-semibold text-emerald-950">
-                              {getWholesaleRuleLabel(rule)}:
-                            </span>
-                            {rule.tiers.map((tier, idx) => (
-                              <span
-                                key={tier.id || idx}
-                                className="font-mono tabular-nums font-bold text-emerald-800"
-                              >
-                                {tier.minQty}+ uds → -{tier.discountPct}%
-                                {idx < rule.tiers.length - 1 ? ' ·' : ''}
-                              </span>
-                            ))}
-                            {rule.combineAcrossFilter !== false && (
-                              <span className="text-[10px] text-emerald-700">
-                                (puedes mezclar productos del filtro)
-                              </span>
-                            )}
-                          </div>
-                        ))}
-                      </div>
-                    ) : (
-                      <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-emerald-900">
-                        {activeWholesaleRules.slice(0, 6).map((rule) => {
-                          const maxPct = rule.tiers[rule.tiers.length - 1]?.discountPct || 0;
-                          const minQty = rule.tiers[0]?.minQty || 2;
-                          return (
-                            <button
-                              key={rule.id}
-                              type="button"
-                              onClick={() => {
-                                if (rule.scope === 'CATEGORY') {
-                                  setSelectedCategory(rule.filterValue);
-                                } else if (rule.scope === 'MODEL') {
-                                  setSelectedModelCategory(rule.filterValue);
-                                }
-                              }}
-                              className="inline-flex items-center gap-1 hover:underline cursor-pointer text-left"
-                            >
-                              <span className="font-semibold text-emerald-950">
-                                {rule.scope === 'ALL' ? 'Toda la tienda' : rule.filterValue}
-                              </span>
-                              <span className="font-mono tabular-nums font-bold text-emerald-700">
-                                ({minQty}+ u · hasta -{maxPct}%)
-                              </span>
-                            </button>
-                          );
-                        })}
-                        {activeWholesaleRules.length > 6 && (
-                          <span className="text-[11px] text-emerald-700 font-medium">
-                            +{activeWholesaleRules.length - 6} filtros más
-                          </span>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                </div>
-                {isAdmin && (
-                  <button
-                    type="button"
-                    onClick={() => openWholesaleConfigurator()}
-                    className="text-[11px] font-bold text-emerald-800 hover:text-emerald-950 underline cursor-pointer shrink-0 self-start sm:self-center"
-                  >
-                    Editar escalas
-                  </button>
-                )}
-              </div>
             </div>
           )}
         </div>
@@ -963,7 +801,7 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
               const activeIdx = rawIdx >= 0 && rawIdx < productImages.length ? rawIdx : 0;
               const activeSrc = productImages[activeIdx];
               const hasMultipleImages = productImages.length > 1;
-              const wholesaleDisplay = getProductWholesaleDisplayTiers(product, wholesaleRules);
+              const wholesaleDisplay = getProductWholesaleDisplayTiers(product);
               const firstWholesaleTier = wholesaleDisplay.tiers[0];
               const maxWholesaleTier =
                 wholesaleDisplay.tiers[wholesaleDisplay.tiers.length - 1];
@@ -1495,10 +1333,7 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
                 })()}
 
                 {(() => {
-                  const modalWholesale = getProductWholesaleDisplayTiers(
-                    selectedProduct,
-                    wholesaleRules
-                  );
+                  const modalWholesale = getProductWholesaleDisplayTiers(selectedProduct);
                   const maxAllowedStock = productTracksInventory(selectedProduct)
                     ? Math.max(1, selectedProduct.stock)
                     : 9999;
@@ -1550,7 +1385,7 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
                                 <span>Tabla de Precios al Mayor</span>
                               </span>
                               <span className="text-[10px] font-medium text-emerald-800">
-                                {modalWholesale.primaryRuleLabel}
+                                Por cantidad de este repuesto
                               </span>
                             </div>
 
@@ -1605,12 +1440,6 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
                                 </tbody>
                               </table>
                             </div>
-
-                            {modalWholesale.combineAcrossFilter && (
-                              <p className="text-[10px] text-emerald-800 leading-snug">
-                                Puedes combinar diferentes repuestos de este mismo filtro en el carrito para alcanzar el descuento al mayor.
-                              </p>
-                            )}
                           </div>
                         )}
 
@@ -1818,16 +1647,6 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
         isOpen={isPendingAccountsOpen}
         onClose={() => setIsPendingAccountsOpen(false)}
       />
-
-      {/* Wholesale Pricing Configurator Modal (Admin) */}
-      {isAdmin && (
-        <WholesalePricingModal
-          isOpen={isWholesaleModalOpen}
-          onClose={() => setIsWholesaleModalOpen(false)}
-          initialScope={wholesaleModalInit.scope}
-          initialFilterValue={wholesaleModalInit.filterValue}
-        />
-      )}
     </div>
   );
 };

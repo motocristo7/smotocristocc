@@ -12603,13 +12603,8 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
   const clearCart = () => setCart([]);
 
   const cartWholesaleSummary = useMemo(
-    () =>
-      calculateCartWholesaleSummary(
-        cart,
-        settings.wholesaleDiscountRules || [],
-        settings.bcvRate
-      ),
-    [cart, settings.wholesaleDiscountRules, settings.bcvRate]
+    () => calculateCartWholesaleSummary(cart, settings.bcvRate),
+    [cart, settings.bcvRate]
   );
   const cartSubtotalBeforeDiscount = cartWholesaleSummary.subtotalBeforeDiscountUSD;
   const cartWholesaleDiscount = cartWholesaleSummary.totalDiscountUSD;

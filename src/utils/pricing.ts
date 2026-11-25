@@ -329,6 +329,9 @@ export function sanitizeProductForPublic(product: Product): Product {
       : {}),
     barcode: product.barcode,
     featured: product.featured,
+    ...(Array.isArray(product.wholesaleTiers) && product.wholesaleTiers.length > 0
+      ? { wholesaleTiers: product.wholesaleTiers }
+      : {}),
   };
 }
 
@@ -363,5 +366,8 @@ export function serializePublicProductForApi(product: Record<string, any>, bcvRa
       : {}),
     barcode: product.barcode || '',
     featured: Boolean(product.featured),
+    ...(Array.isArray(product.wholesaleTiers) && product.wholesaleTiers.length > 0
+      ? { wholesaleTiers: product.wholesaleTiers }
+      : {}),
   };
 }

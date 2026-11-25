@@ -30,7 +30,8 @@
         "imageUrls": { "type": "array", "description": "Galería de múltiples fotos del repuesto (la primera es la principal)" },
         "barcode": { "type": "string", "description": "Código de barras o EAN" },
         "warehouseLocation": { "type": "string", "description": "Ubicación física del repuesto en el almacén (ej. Estante A-3, Gaveta 2)" },
-        "featured": { "type": "boolean", "description": "Indica si se destaca en la tienda online" }
+        "featured": { "type": "boolean", "description": "Indica si se destaca en la tienda online" },
+        "wholesaleTiers": { "type": "array", "description": "Escalas de descuento al mayor específicas de este repuesto según cantidad (minQty -> discountPct)" }
       },
       "required": ["id", "sku", "name", "category", "salePrice", "stock"]
     },
@@ -65,8 +66,7 @@
         "customExpenseCategories": { "type": "array", "description": "Categorías personalizadas de gastos del negocio" },
         "customIncomeCategories": { "type": "array", "description": "Categorías personalizadas de ingresos y registros de tesorería" },
         "customCommitmentCategories": { "type": "array", "description": "Categorías personalizadas de compromisos y gastos planificados" },
-        "customWorkshopServicePresets": { "type": "array", "description": "Servicios preguardados personalizados de taller y asientos de motos" },
-        "wholesaleDiscountRules": { "type": "array", "description": "Reglas de precios al mayor por cantidad y porcentaje de descuento configuradas por categoría de repuesto, modelo de moto o general" }
+        "customWorkshopServicePresets": { "type": "array", "description": "Servicios preguardados personalizados de taller y asientos de motos" }
       },
       "required": ["commercialName", "rif", "phone", "bcvRate"]
     },

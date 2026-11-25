@@ -3,6 +3,7 @@ import { useApp } from '../../context/AppContext';
 import {
   Product,
   ProductCategory,
+  WholesaleDiscountTier,
   productTracksInventory,
   DEFAULT_PRODUCTION_TIME_LABEL,
   DEFAULT_PRODUCTION_TIME_NOTE,
@@ -63,7 +64,11 @@ import {
 import { doesProductMatchModelCategory } from '../../utils/modelCategories';
 import { downloadInventoryTemplate, exportInventoryToExcel, ParsedProductRow } from '../../utils/excelInventory';
 import { ImportExcelModal } from './ImportExcelModal';
-import { WholesalePricingModal } from './WholesalePricingModal';
+import {
+  normalizeWholesaleTiers,
+  productHasWholesaleTiers,
+  SUGGESTED_WHOLESALE_TIERS,
+} from '../../utils/wholesalePricing';
 
 export const InventoryView: React.FC = () => {
   const {
@@ -83,6 +88,7 @@ export const InventoryView: React.FC = () => {
     bulkImportProducts,
     settings,
     exchangeGap,
+    setCurrentView,
   } = useApp();
 
   const [searchTerm, setSearchTerm] = useState('');
@@ -102,7 +108,6 @@ export const InventoryView: React.FC = () => {
   const [formError, setFormError] = useState<string | null>(null);
 
   const [isManageModelsModalOpen, setIsManageModelsModalOpen] = useState(false);
-  const [isWholesaleModalOpen, setIsWholesaleModalOpen] = useState(false);
   const [newModelCategoryInput, setNewModelCategoryInput] = useState('');
   const [editingModelName, setEditingModelName] = useState<string | null>(null);
   const [editingModelDraft, setEditingModelDraft] = useState('');
@@ -140,6 +145,7 @@ export const InventoryView: React.FC = () => {
     warehouseLocation: '',
     imageUrl: '',
     imageUrls: [] as string[],
+    wholesaleTiers: [] as WholesaleDiscountTier[],
   };
   const [formData, setFormData] = useState(initialFormState);
   const [newPhotoUrlInput, setNewPhotoUrlInput] = useState('');
@@ -384,6 +390,7 @@ export const InventoryView: React.FC = () => {
       warehouseLocation: product.warehouseLocation || '',
       imageUrl: existingImages[0] || '',
       imageUrls: existingImages,
+      wholesaleTiers: normalizeWholesaleTiers(product.wholesaleTiers),
     });
   };
 
@@ -833,6 +840,7 @@ export const InventoryView: React.FC = () => {
       warehouseLocation: sanitizedLocation,
       imageUrl: finalImageUrl,
       imageUrls: finalImageUrls,
+      wholesaleTiers: normalizeWholesaleTiers(formData.wholesaleTiers),
     };
 
     if (editingProduct) {
@@ -948,18 +956,16 @@ export const InventoryView: React.FC = () => {
             <span>Modelos de Motos ({modelCategories.length})</span>
           </button>
 
-          {/* Configurar Precios al Mayor por Filtro (Tienda Online) */}
+          {/* Configurar Precios al Mayor por Repuesto (Tienda Online) */}
           <button
             type="button"
-            onClick={() => setIsWholesaleModalOpen(true)}
+            onClick={() => setCurrentView('admin_mayorista')}
             className="px-3 py-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-900 font-bold text-xs rounded-xl border border-emerald-300 shadow-2xs transition-colors flex items-center gap-1.5 cursor-pointer"
-            title="Configurar descuentos por volumen (venta al mayor) para cada filtro de la tienda online"
+            title="Configurar descuentos por volumen (venta al mayor) por repuesto específico"
           >
             <Percent className="w-3.5 h-3.5 text-emerald-700" />
             <span>
-              Precios al Mayor (
-              {(settings.wholesaleDiscountRules || []).filter((r) => r.active && r.tiers.length > 0).length}
-              )
+              Precios al Mayor ({products.filter((p) => productHasWholesaleTiers(p)).length})
             </span>
           </button>
 
@@ -2499,6 +2505,153 @@ export const InventoryView: React.FC = () => {
                   </div>
                 )}
               </div>
+
+              {/* Precios al Mayor Individuales de este Repuesto (Opcional) */}
+              <div className="p-3.5 rounded-xl border border-emerald-200 bg-emerald-50/50 space-y-2.5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <p className="font-bold text-emerald-950 text-xs flex items-center gap-1.5">
+                      <Percent className="w-3.5 h-3.5 text-emerald-700 shrink-0" />
+                      <span>Precios al Mayor de este Repuesto (Opcional)</span>
+                    </p>
+                    <p className="text-[11px] text-emerald-800 mt-0.5">
+                      Define descuentos por cantidad exclusivos para este repuesto en la tienda online.
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setFormData((prev) => ({
+                          ...prev,
+                          wholesaleTiers: SUGGESTED_WHOLESALE_TIERS.map((t, idx) => ({
+                            id: `wt-${Date.now()}-${idx}`,
+                            minQty: t.minQty,
+                            discountPct: t.discountPct,
+                          })),
+                        }))
+                      }
+                      className="px-2 py-1 rounded-md bg-white hover:bg-emerald-100 border border-emerald-300 text-emerald-900 text-[10px] font-bold cursor-pointer"
+                    >
+                      3+:5% · 6+:10% · 12+:15%
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setFormData((prev) => {
+                          const last = prev.wholesaleTiers[prev.wholesaleTiers.length - 1];
+                          const nextQty = last ? last.minQty + 3 : 3;
+                          const nextPct = last ? Math.min(80, last.discountPct + 5) : 5;
+                          return {
+                            ...prev,
+                            wholesaleTiers: [
+                              ...prev.wholesaleTiers,
+                              {
+                                id: `wt-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+                                minQty: nextQty,
+                                discountPct: nextPct,
+                              },
+                            ],
+                          };
+                        })
+                      }
+                      className="px-2 py-1 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white text-[10px] font-bold inline-flex items-center gap-1 cursor-pointer"
+                    >
+                      <Plus className="w-3 h-3" />
+                      <span>Escala</span>
+                    </button>
+                  </div>
+                </div>
+
+                {formData.wholesaleTiers.length === 0 ? (
+                  <p className="text-[11px] text-slate-500 bg-white border border-dashed border-emerald-200 rounded-lg px-3 py-2">
+                    Sin descuento al mayor asignado (solo precio al detal). Haz clic en <strong>+ Escala</strong> para configurar cantidades y porcentajes.
+                  </p>
+                ) : (
+                  <div className="space-y-1.5">
+                    {formData.wholesaleTiers.map((tier, idx) => {
+                      const baseSale = Math.max(0, Number(formData.salePrice) || 0);
+                      const discUnitUSD = round2(baseSale * (1 - Math.min(90, Math.max(0, tier.discountPct)) / 100));
+                      return (
+                        <div
+                          key={tier.id || idx}
+                          className="grid grid-cols-12 gap-2 items-center bg-white border border-emerald-200/80 rounded-lg p-2"
+                        >
+                          <div className="col-span-4">
+                            <label className="block text-[9px] font-bold uppercase text-slate-500 mb-0.5">
+                              Desde (uds)
+                            </label>
+                            <input
+                              type="number"
+                              min={2}
+                              step={1}
+                              value={tier.minQty}
+                              onChange={(e) => {
+                                const val = Math.max(2, parseInt(e.target.value, 10) || 2);
+                                setFormData((prev) => ({
+                                  ...prev,
+                                  wholesaleTiers: prev.wholesaleTiers.map((t, i) =>
+                                    i === idx ? { ...t, minQty: val } : t
+                                  ),
+                                }));
+                              }}
+                              className="w-full px-2 py-1 rounded border border-slate-200 text-xs font-mono font-bold text-slate-900 focus:outline-hidden focus:border-emerald-500"
+                            />
+                          </div>
+                          <div className="col-span-3">
+                            <label className="block text-[9px] font-bold uppercase text-slate-500 mb-0.5">
+                              Desc. %
+                            </label>
+                            <input
+                              type="number"
+                              min={1}
+                              max={90}
+                              step={0.5}
+                              value={tier.discountPct}
+                              onChange={(e) => {
+                                const val = Math.min(90, Math.max(0, parseFloat(e.target.value) || 0));
+                                setFormData((prev) => ({
+                                  ...prev,
+                                  wholesaleTiers: prev.wholesaleTiers.map((t, i) =>
+                                    i === idx ? { ...t, discountPct: val } : t
+                                  ),
+                                }));
+                              }}
+                              className="w-full px-2 py-1 rounded border border-slate-200 text-xs font-mono font-bold text-emerald-700 focus:outline-hidden focus:border-emerald-500"
+                            />
+                          </div>
+                          <div className="col-span-4 text-right">
+                            <span className="block text-[9px] font-bold uppercase text-slate-400">
+                              Precio c/u
+                            </span>
+                            <span className="text-xs font-mono font-extrabold text-slate-900 tabular-nums">
+                              {formatUSD(discUnitUSD)}
+                            </span>
+                            <span className="block text-[10px] font-mono text-emerald-700 tabular-nums leading-tight">
+                              {formatBs(discUnitUSD * rate)}
+                            </span>
+                          </div>
+                          <div className="col-span-1 flex justify-end">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setFormData((prev) => ({
+                                  ...prev,
+                                  wholesaleTiers: prev.wholesaleTiers.filter((_, i) => i !== idx),
+                                }))
+                              }
+                              className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded cursor-pointer"
+                              title="Eliminar escala"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
                   </div>
 
                   {/* Right Column: Galería de Fotos del Repuesto (siempre visible al lado en pantalla grande) */}
@@ -3294,27 +3447,6 @@ export const InventoryView: React.FC = () => {
         onClose={() => setIsImportModalOpen(false)}
         existingProducts={products}
         onImportConfirmed={handleBulkImportConfirmed}
-      />
-
-      {/* Wholesale Pricing Configurator Modal */}
-      <WholesalePricingModal
-        isOpen={isWholesaleModalOpen}
-        onClose={() => setIsWholesaleModalOpen(false)}
-        initialScope={selectedModelCategory !== 'all' ? 'MODEL' : 'CATEGORY'}
-        initialFilterValue={
-          selectedModelCategory !== 'all'
-            ? selectedModelCategory
-            : selectedCategory !== 'all'
-            ? selectedCategory
-            : ''
-        }
-        onSaved={(activeCount) =>
-          showToast(
-            activeCount > 0
-              ? `✓ Precios al mayor guardados (${activeCount} filtro${activeCount === 1 ? '' : 's'} activo${activeCount === 1 ? '' : 's'} en la tienda online).`
-              : '✓ Configuración de precios al mayor actualizada.'
-          )
-        }
       />
 
       {/* Floating Toast Notification */}

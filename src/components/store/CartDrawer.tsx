@@ -168,7 +168,9 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({ isOpen, onClose, initial
           ? {
               originalUnitPrice: line.regularUnitPriceUSD,
               wholesaleDiscountPct: line.discountPct,
-              wholesaleRuleLabel: line.appliedRuleLabel,
+              wholesaleRuleLabel: line.appliedTierMinQty
+                ? `Mayor ${line.appliedTierMinQty}+ uds`
+                : 'Precio al mayor',
             }
           : {}),
         ...(madeToOrder
@@ -347,21 +349,13 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({ isOpen, onClose, initial
                                 <span className="font-mono text-slate-600 tabular-nums">
                                   {formatUSD(line.effectiveUnitPriceUSD)} c/u
                                 </span>
-                                {line.appliedRuleLabel && (
-                                  <span className="text-slate-400 truncate">
-                                    ({line.appliedRuleLabel})
-                                  </span>
-                                )}
                               </div>
                             )}
 
                             {line.nextTierHint && (
                               <p className="mt-1 text-[10px] text-amber-800 bg-amber-50 border border-amber-200/80 rounded px-1.5 py-0.5 leading-snug">
-                                Agrega <strong className="font-mono">{line.nextTierHint.missingQty}</strong> más
-                                {line.nextTierHint.combineAcrossFilter
-                                  ? ` en ${line.nextTierHint.ruleLabel}`
-                                  : ''}{' '}
-                                para <strong className="font-mono">-{line.nextTierHint.nextDiscountPct}%</strong> al mayor
+                                Agrega <strong className="font-mono">{line.nextTierHint.missingQty}</strong> más de este repuesto para{' '}
+                                <strong className="font-mono">-{line.nextTierHint.nextDiscountPct}%</strong> al mayor
                               </p>
                             )}
                           </div>

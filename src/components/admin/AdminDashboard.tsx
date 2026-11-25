@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useApp } from '../../context/AppContext';
 import { productTracksInventory } from '../../types';
+import { productHasWholesaleTiers } from '../../utils/wholesalePricing';
 import { formatUSD, formatBs, sanitizePhone, buildInvoiceWhatsAppMessage, buildServiceStatusWhatsAppMessage, buildMercadoLibreDebtWhatsAppMessage } from '../../utils/whatsapp';
 import {
   TrendingUp,
@@ -240,13 +241,11 @@ Ingresa directamente desde tu teléfono aquí:
           <button
             onClick={() => setCurrentView('admin_mayorista')}
             className="px-4 py-2.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-900 border border-emerald-300 font-bold text-xs rounded-xl shadow-xs transition-colors flex items-center gap-1.5 cursor-pointer"
-            title="Configurar descuentos por compra al mayor en la tienda online"
+            title="Configurar descuentos por compra al mayor en cada repuesto"
           >
             <Percent className="w-4 h-4 text-emerald-700" />
             <span>
-              Precios al Mayor (
-              {(settings.wholesaleDiscountRules || []).filter((r) => r.active && r.tiers.length > 0).length}
-              )
+              Precios al Mayor ({products.filter((p) => productHasWholesaleTiers(p)).length})
             </span>
           </button>
           <button

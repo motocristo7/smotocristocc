@@ -25,6 +25,8 @@ import {
   Percent,
 } from 'lucide-react';
 
+import { productHasWholesaleTiers } from '../../utils/wholesalePricing';
+
 interface NavItem {
   view: AppView;
   label: string;
@@ -43,6 +45,7 @@ export const AdminSidebar: React.FC = () => {
     toggleAdminSidebar,
     isAdminMobileMenuOpen,
     setIsAdminMobileMenuOpen,
+    products,
     onlineOrders,
     serviceOrders,
     serviceCommissions,
@@ -77,9 +80,7 @@ export const AdminSidebar: React.FC = () => {
 
   const pendingCreditCount = pendingCreditSales.length;
 
-  const activeWholesaleRulesCount = (settings.wholesaleDiscountRules || []).filter(
-    (r) => r.active && Array.isArray(r.tiers) && r.tiers.length > 0
-  ).length;
+  const activeWholesaleProductsCount = products.filter((p) => productHasWholesaleTiers(p)).length;
 
   const navItems: NavItem[] = [
     {
@@ -138,7 +139,7 @@ export const AdminSidebar: React.FC = () => {
       label: 'Precios al Mayor',
       shortLabel: 'Mayorista',
       icon: Percent,
-      badge: activeWholesaleRulesCount > 0 ? activeWholesaleRulesCount : undefined,
+      badge: activeWholesaleProductsCount > 0 ? activeWholesaleProductsCount : undefined,
     },
     {
       view: 'admin_taller',

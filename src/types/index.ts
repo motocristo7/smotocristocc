@@ -121,13 +121,33 @@ export interface SaleItem {
   name: string;
   category?: string;
   quantity: number;
-  unitPrice: number; // In USD ($)
+  unitPrice: number; // In USD ($) — precio unitario efectivo aplicado (incluye descuento al mayor si aplica)
+  originalUnitPrice?: number; // Precio unitario regular antes del descuento al mayor
+  wholesaleDiscountPct?: number; // % de descuento al mayor aplicado en tienda online
+  wholesaleRuleLabel?: string; // Nombre del filtro/regla que otorgó el descuento al mayor
   total: number; // In USD ($)
   isService?: boolean;
   isMadeToOrder?: boolean;
   productionTimeLabel?: string;
   productionTimeNote?: string;
   imageUrl?: string;
+}
+
+export type WholesaleFilterScope = 'ALL' | 'CATEGORY' | 'MODEL';
+
+export interface WholesaleDiscountTier {
+  id: string;
+  minQty: number; // Cantidad mínima para activar este descuento (ej. 3, 6, 12)
+  discountPct: number; // Porcentaje de descuento (1 - 90)
+}
+
+export interface WholesaleDiscountRule {
+  id: string;
+  scope: WholesaleFilterScope; // 'ALL' (toda la tienda), 'CATEGORY' (categoría de repuesto), 'MODEL' (modelo de moto)
+  filterValue: string; // '' para ALL, nombre de categoría o nombre de modelo de moto
+  active: boolean;
+  combineAcrossFilter?: boolean; // Si true (default), suma cantidades de distintos productos del mismo filtro en el carrito
+  tiers: WholesaleDiscountTier[];
 }
 
 export type PaymentMethod = 
@@ -434,6 +454,8 @@ export interface OnlineOrder {
   recipientName?: string;
   recipientPhone?: string;
   items: SaleItem[];
+  subtotalBeforeDiscount?: number; // Subtotal regular en USD antes de descuentos al mayor
+  wholesaleDiscountTotal?: number; // Total ahorrado por descuentos al mayor en USD
   total: number; // in USD
   bcvRate: number; // Tasa BCV
   totalBs: number; // in Bs.
@@ -492,6 +514,7 @@ export interface BusinessSettings {
   customCommitmentCategories?: string[];
   customExpensePosBanks?: string[];
   customWorkshopServicePresets?: WorkshopServicePreset[];
+  wholesaleDiscountRules?: WholesaleDiscountRule[];
 }
 
 export interface Technician {

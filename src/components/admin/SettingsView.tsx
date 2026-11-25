@@ -25,7 +25,9 @@ import {
   Flame,
   KeyRound,
   Lock,
+  Percent,
 } from 'lucide-react';
+import { WholesalePricingModal } from './WholesalePricingModal';
 
 export const SettingsView: React.FC = () => {
   const {
@@ -129,6 +131,10 @@ export const SettingsView: React.FC = () => {
   const liveGap = calculateExchangeGap(formData.bcvRate, formData.usdtRate);
 
   const [isResetModalOpen, setIsResetModalOpen] = useState(false);
+  const [isWholesaleModalOpen, setIsWholesaleModalOpen] = useState(false);
+  const activeWholesaleRulesCount = (settings.wholesaleDiscountRules || []).filter(
+    (r) => r.active && Array.isArray(r.tiers) && r.tiers.length > 0
+  ).length;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -201,6 +207,38 @@ export const SettingsView: React.FC = () => {
         >
           <KeyRound className="w-4 h-4 text-amber-400" />
           <span>Editar Clave Administrativa</span>
+        </button>
+      </div>
+
+      {/* Precios de Venta al Mayor por Filtro (Tienda Online) */}
+      <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-2xs flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div className="flex items-start gap-3">
+          <div className="w-10 h-10 rounded-xl bg-emerald-100 text-emerald-700 flex items-center justify-center shrink-0 border border-emerald-200">
+            <Percent className="w-5 h-5" />
+          </div>
+          <div className="space-y-1">
+            <div className="flex items-center gap-2 flex-wrap">
+              <h3 className="text-sm font-bold text-slate-900">
+                Precios de Venta al Mayor por Filtro (Tienda Online)
+              </h3>
+              <span className="text-xs font-mono font-bold text-emerald-700 tabular-nums">
+                {activeWholesaleRulesCount}{' '}
+                {activeWholesaleRulesCount === 1 ? 'filtro activo' : 'filtros activos'}
+              </span>
+            </div>
+            <p className="text-xs text-slate-500">
+              Define escalas de descuento según la cantidad comprada para cada categoría de repuesto, modelo de moto o toda la tienda.
+            </p>
+          </div>
+        </div>
+
+        <button
+          type="button"
+          onClick={() => setIsWholesaleModalOpen(true)}
+          className="px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs rounded-xl shadow-xs transition-colors flex items-center justify-center gap-2 cursor-pointer shrink-0"
+        >
+          <Percent className="w-4 h-4" />
+          <span>Configurar Precios al Mayor</span>
         </button>
       </div>
 
@@ -973,6 +1011,11 @@ export const SettingsView: React.FC = () => {
           </div>
         </div>
       )}
+      {/* Wholesale Pricing Configurator Modal */}
+      <WholesalePricingModal
+        isOpen={isWholesaleModalOpen}
+        onClose={() => setIsWholesaleModalOpen(false)}
+      />
     </div>
   );
 };

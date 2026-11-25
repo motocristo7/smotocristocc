@@ -46,6 +46,7 @@ import {
   ChevronLeft,
   ChevronRight,
   Clock,
+  Percent,
 } from 'lucide-react';
 import {
   normalizeImageUrl,
@@ -62,6 +63,7 @@ import {
 import { doesProductMatchModelCategory } from '../../utils/modelCategories';
 import { downloadInventoryTemplate, exportInventoryToExcel, ParsedProductRow } from '../../utils/excelInventory';
 import { ImportExcelModal } from './ImportExcelModal';
+import { WholesalePricingModal } from './WholesalePricingModal';
 
 export const InventoryView: React.FC = () => {
   const {
@@ -100,6 +102,7 @@ export const InventoryView: React.FC = () => {
   const [formError, setFormError] = useState<string | null>(null);
 
   const [isManageModelsModalOpen, setIsManageModelsModalOpen] = useState(false);
+  const [isWholesaleModalOpen, setIsWholesaleModalOpen] = useState(false);
   const [newModelCategoryInput, setNewModelCategoryInput] = useState('');
   const [editingModelName, setEditingModelName] = useState<string | null>(null);
   const [editingModelDraft, setEditingModelDraft] = useState('');
@@ -943,6 +946,21 @@ export const InventoryView: React.FC = () => {
           >
             <Bike className="w-3.5 h-3.5 text-amber-600" />
             <span>Modelos de Motos ({modelCategories.length})</span>
+          </button>
+
+          {/* Configurar Precios al Mayor por Filtro (Tienda Online) */}
+          <button
+            type="button"
+            onClick={() => setIsWholesaleModalOpen(true)}
+            className="px-3 py-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-900 font-bold text-xs rounded-xl border border-emerald-300 shadow-2xs transition-colors flex items-center gap-1.5 cursor-pointer"
+            title="Configurar descuentos por volumen (venta al mayor) para cada filtro de la tienda online"
+          >
+            <Percent className="w-3.5 h-3.5 text-emerald-700" />
+            <span>
+              Precios al Mayor (
+              {(settings.wholesaleDiscountRules || []).filter((r) => r.active && r.tiers.length > 0).length}
+              )
+            </span>
           </button>
 
           {/* Nuevo Repuesto Individual */}
@@ -3276,6 +3294,27 @@ export const InventoryView: React.FC = () => {
         onClose={() => setIsImportModalOpen(false)}
         existingProducts={products}
         onImportConfirmed={handleBulkImportConfirmed}
+      />
+
+      {/* Wholesale Pricing Configurator Modal */}
+      <WholesalePricingModal
+        isOpen={isWholesaleModalOpen}
+        onClose={() => setIsWholesaleModalOpen(false)}
+        initialScope={selectedModelCategory !== 'all' ? 'MODEL' : 'CATEGORY'}
+        initialFilterValue={
+          selectedModelCategory !== 'all'
+            ? selectedModelCategory
+            : selectedCategory !== 'all'
+            ? selectedCategory
+            : ''
+        }
+        onSaved={(activeCount) =>
+          showToast(
+            activeCount > 0
+              ? `✓ Precios al mayor guardados (${activeCount} filtro${activeCount === 1 ? '' : 's'} activo${activeCount === 1 ? '' : 's'} en la tienda online).`
+              : '✓ Configuración de precios al mayor actualizada.'
+          )
+        }
       />
 
       {/* Floating Toast Notification */}

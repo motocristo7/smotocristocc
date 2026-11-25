@@ -461,7 +461,11 @@ export function buildStoreOrderWhatsAppMessage(order: OnlineOrder, settings: Bus
       const mtoSuffix = item.isMadeToOrder
         ? ` [Bajo pedido: ${item.productionTimeLabel || '12 a 24 horas'}]`
         : '';
-      return `▪ ${item.quantity}x ${item.name}${mtoSuffix} - ${formatUSD(item.total)} (${formatBs(item.total * rate)})`;
+      const wholesaleSuffix =
+        item.wholesaleDiscountPct && item.wholesaleDiscountPct > 0
+          ? ` (-${item.wholesaleDiscountPct}% Mayor)`
+          : '';
+      return `▪ ${item.quantity}x ${item.name}${wholesaleSuffix}${mtoSuffix} - ${formatUSD(item.total)} (${formatBs(item.total * rate)})`;
     })
     .join('\n');
 
@@ -470,6 +474,11 @@ export function buildStoreOrderWhatsAppMessage(order: OnlineOrder, settings: Bus
       ? `\n⏳ *TIEMPO DE FABRICACIÓN:* Incluye artículo(s) fabricados bajo pedido (${
           madeToOrderItems[0].productionTimeLabel || '12 a 24 horas'
         }, sujeto a posibles retrasos por cortes de luz).\n`
+      : '';
+
+  const wholesaleSummaryBlock =
+    order.wholesaleDiscountTotal && order.wholesaleDiscountTotal > 0
+      ? `🏷️ *Subtotal Regular:* ${formatUSD(order.subtotalBeforeDiscount || order.total + order.wholesaleDiscountTotal)}\n✨ *Descuento al Mayor:* -${formatUSD(order.wholesaleDiscountTotal)}\n`
       : '';
 
   let deliverySection = '';
@@ -499,7 +508,7 @@ ${deliverySection}
 📦 *PRODUCTOS:*
 ${itemsText}
 ${productionNotice}───────────────────────
-💵 *TOTAL A PAGAR (USD): ${formatUSD(order.total)}*
+${wholesaleSummaryBlock}💵 *TOTAL A PAGAR (USD): ${formatUSD(order.total)}*
 📊 *Tasa BCV:* Bs. ${rate.toFixed(2)}
 🇻🇪 *TOTAL EN BOLÍVARES: ${formatBs(order.totalBs || order.total * rate)}*
 ───────────────────────

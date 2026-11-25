@@ -31,6 +31,7 @@ import {
   AlertCircle,
   User,
   Clock,
+  Percent,
 } from 'lucide-react';
 import {
   normalizeImageUrl,
@@ -47,6 +48,9 @@ interface CartDrawerProps {
 export const CartDrawer: React.FC<CartDrawerProps> = ({ isOpen, onClose, initialStep = 'cart' }) => {
   const {
     cart,
+    cartSubtotalBeforeDiscount,
+    cartWholesaleDiscount,
+    cartWholesaleSummary,
     cartTotal,
     cartTotalBs,
     cartItemCount,
@@ -149,21 +153,29 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({ isOpen, onClose, initial
       }
     }
 
-    const orderItems = cart.map((item) => {
-      const madeToOrder = !productTracksInventory(item.product);
+    const orderItems = cartWholesaleSummary.items.map((line) => {
+      const madeToOrder = !productTracksInventory(line.product);
+      const hasDiscount = line.discountPct > 0;
       return {
-        productId: item.product.id,
-        sku: item.product.sku,
-        name: item.product.name,
-        category: item.product.category,
-        quantity: item.quantity,
-        unitPrice: item.product.salePrice,
-        total: item.product.salePrice * item.quantity,
+        productId: line.product.id,
+        sku: line.product.sku,
+        name: line.product.name,
+        category: line.product.category,
+        quantity: line.quantity,
+        unitPrice: line.effectiveUnitPriceUSD,
+        total: line.finalSubtotalUSD,
+        ...(hasDiscount
+          ? {
+              originalUnitPrice: line.regularUnitPriceUSD,
+              wholesaleDiscountPct: line.discountPct,
+              wholesaleRuleLabel: line.appliedRuleLabel,
+            }
+          : {}),
         ...(madeToOrder
           ? {
               isMadeToOrder: true,
-              productionTimeLabel: item.product.productionTimeLabel || DEFAULT_PRODUCTION_TIME_LABEL,
-              productionTimeNote: item.product.productionTimeNote || DEFAULT_PRODUCTION_TIME_NOTE,
+              productionTimeLabel: line.product.productionTimeLabel || DEFAULT_PRODUCTION_TIME_LABEL,
+              productionTimeNote: line.product.productionTimeNote || DEFAULT_PRODUCTION_TIME_NOTE,
             }
           : {}),
       };
@@ -183,6 +195,12 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({ isOpen, onClose, initial
       recipientName: deliveryType === 'ENVIO_NACIONAL' ? recipientName.trim() : customerName.trim(),
       recipientPhone: deliveryType === 'ENVIO_NACIONAL' ? recipientPhone.trim() : customerPhone.trim(),
       items: orderItems,
+      ...(cartWholesaleDiscount > 0
+        ? {
+            subtotalBeforeDiscount: cartSubtotalBeforeDiscount,
+            wholesaleDiscountTotal: cartWholesaleDiscount,
+          }
+        : {}),
       total: cartTotal,
       paymentMethod,
       paymentProofReference: paymentProofRef.trim() || undefined,
@@ -263,8 +281,24 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({ isOpen, onClose, initial
                 </div>
               ) : (
                 <div className="space-y-3">
-                  {cart.map((item) => {
-                    const itemTotalBs = item.product.salePrice * item.quantity * settings.bcvRate;
+                  {cartWholesaleDiscount > 0 && (
+                    <div className="rounded-xl bg-emerald-50 border border-emerald-200 px-3 py-2.5 flex items-center justify-between gap-2 text-xs">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <Percent className="w-4 h-4 text-emerald-700 shrink-0" />
+                        <span className="font-bold text-emerald-950">
+                          Descuento al Mayor aplicado
+                        </span>
+                      </div>
+                      <span className="font-mono font-extrabold text-emerald-700 tabular-nums shrink-0">
+                        -{formatUSD(cartWholesaleDiscount)}
+                      </span>
+                    </div>
+                  )}
+
+                  {cartWholesaleSummary.items.map((line) => {
+                    const item = line;
+                    const itemTotalBs = line.finalSubtotalUSD * settings.bcvRate;
+                    const hasWholesale = line.discountPct > 0;
 
                     return (
                       <div
@@ -284,7 +318,7 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({ isOpen, onClose, initial
                           />
                         </div>
 
-                        <div className="flex-1 flex flex-col justify-between">
+                        <div className="flex-1 flex flex-col justify-between min-w-0">
                           <div>
                             <div className="flex items-start justify-between gap-1">
                               <h4 className="text-xs font-bold text-slate-900 whitespace-normal break-words leading-snug">
@@ -292,7 +326,7 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({ isOpen, onClose, initial
                               </h4>
                               <button
                                 onClick={() => removeFromCart(item.product.id)}
-                                className="text-slate-400 hover:text-rose-600 p-1"
+                                className="text-slate-400 hover:text-rose-600 p-1 cursor-pointer"
                                 title="Eliminar"
                               >
                                 <Trash2 className="w-3.5 h-3.5" />
@@ -304,17 +338,43 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({ isOpen, onClose, initial
                                 ? `Stock: ${item.product.stock}`
                                 : `Bajo pedido (${item.product.productionTimeLabel || DEFAULT_PRODUCTION_TIME_LABEL})`}
                             </span>
+
+                            {hasWholesale && (
+                              <div className="mt-1 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[10px]">
+                                <span className="font-mono font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded tabular-nums">
+                                  -{line.discountPct}% al mayor
+                                </span>
+                                <span className="font-mono text-slate-600 tabular-nums">
+                                  {formatUSD(line.effectiveUnitPriceUSD)} c/u
+                                </span>
+                                {line.appliedRuleLabel && (
+                                  <span className="text-slate-400 truncate">
+                                    ({line.appliedRuleLabel})
+                                  </span>
+                                )}
+                              </div>
+                            )}
+
+                            {line.nextTierHint && (
+                              <p className="mt-1 text-[10px] text-amber-800 bg-amber-50 border border-amber-200/80 rounded px-1.5 py-0.5 leading-snug">
+                                Agrega <strong className="font-mono">{line.nextTierHint.missingQty}</strong> más
+                                {line.nextTierHint.combineAcrossFilter
+                                  ? ` en ${line.nextTierHint.ruleLabel}`
+                                  : ''}{' '}
+                                para <strong className="font-mono">-{line.nextTierHint.nextDiscountPct}%</strong> al mayor
+                              </p>
+                            )}
                           </div>
 
                           <div className="flex items-center justify-between mt-2 pt-1.5 border-t border-slate-100">
                             <div className="flex items-center border border-slate-200 rounded-md bg-slate-50 overflow-hidden">
                               <button
                                 onClick={() => updateCartQuantity(item.product.id, item.quantity - 1)}
-                                className="p-1 text-slate-600 hover:bg-slate-200 transition-colors"
+                                className="p-1 text-slate-600 hover:bg-slate-200 transition-colors cursor-pointer"
                               >
                                 <Minus className="w-3 h-3" />
                               </button>
-                              <span className="px-2.5 text-xs font-mono font-semibold text-slate-900">
+                              <span className="px-2.5 text-xs font-mono font-semibold text-slate-900 tabular-nums">
                                 {item.quantity}
                               </span>
                               <button
@@ -323,15 +383,20 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({ isOpen, onClose, initial
                                   productTracksInventory(item.product) &&
                                   item.quantity >= item.product.stock
                                 }
-                                className="p-1 text-slate-600 hover:bg-slate-200 disabled:opacity-30 transition-colors"
+                                className="p-1 text-slate-600 hover:bg-slate-200 disabled:opacity-30 transition-colors cursor-pointer"
                               >
                                 <Plus className="w-3 h-3" />
                               </button>
                             </div>
 
                             <div className="text-right">
+                              {hasWholesale && (
+                                <span className="text-[10px] font-mono text-slate-400 line-through block tabular-nums">
+                                  {formatUSD(line.regularSubtotalUSD)}
+                                </span>
+                              )}
                               <span className="text-xs font-bold font-mono text-slate-900 block tabular-nums">
-                                {formatUSD(item.product.salePrice * item.quantity)}
+                                {formatUSD(line.finalSubtotalUSD)}
                               </span>
                               <span className="text-[10px] font-semibold text-emerald-700 font-mono tabular-nums block">
                                 {formatBs(itemTotalBs)}
@@ -373,12 +438,17 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({ isOpen, onClose, initial
           {step === 'checkout' && (
             <form id="checkout-form" onSubmit={handleConfirmOrder} className="space-y-4">
               {/* Order Items Preview */}
-              <div className="bg-amber-500/10 border border-amber-300 rounded-xl p-3 flex items-center justify-between text-xs">
-                <div>
+              <div className="bg-amber-500/10 border border-amber-300 rounded-xl p-3 flex items-center justify-between text-xs gap-2">
+                <div className="min-w-0">
                   <div className="flex items-center gap-1.5 font-bold text-slate-900">
-                    <ShoppingBag className="w-3.5 h-3.5 text-amber-600" />
+                    <ShoppingBag className="w-3.5 h-3.5 text-amber-600 shrink-0" />
                     <span>{cartItemCount} {cartItemCount === 1 ? 'repuesto a pagar' : 'repuestos a pagar'}</span>
                   </div>
+                  {cartWholesaleDiscount > 0 && (
+                    <p className="text-[11px] text-emerald-800 font-semibold mt-0.5 font-mono tabular-nums">
+                      Subtotal {formatUSD(cartSubtotalBeforeDiscount)} · Ahorro al mayor -{formatUSD(cartWholesaleDiscount)}
+                    </p>
+                  )}
                   <p className="text-[11px] text-slate-600 mt-0.5">
                     Total: <strong className="font-mono text-slate-900">{formatUSD(cartTotal)}</strong> ({formatBs(cartTotalBs)} BCV)
                   </p>
@@ -386,7 +456,7 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({ isOpen, onClose, initial
                 <button
                   type="button"
                   onClick={() => setStep('cart')}
-                  className="px-2.5 py-1 text-[11px] font-semibold text-slate-700 hover:text-slate-900 bg-white hover:bg-slate-50 border border-slate-200 rounded-lg transition-colors cursor-pointer"
+                  className="px-2.5 py-1 text-[11px] font-semibold text-slate-700 hover:text-slate-900 bg-white hover:bg-slate-50 border border-slate-200 rounded-lg transition-colors cursor-pointer shrink-0"
                 >
                   Ver artículos
                 </button>
@@ -941,6 +1011,22 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({ isOpen, onClose, initial
         {/* Footer actions with dual amount */}
         {step !== 'success' && cart.length > 0 && (
           <div className="p-4 sm:p-5 border-t border-slate-200 bg-white">
+            {cartWholesaleDiscount > 0 && (
+              <div className="mb-3 pb-2.5 border-b border-slate-100 space-y-1 text-xs">
+                <div className="flex items-center justify-between text-slate-500">
+                  <span>Subtotal regular:</span>
+                  <span className="font-mono tabular-nums line-through">
+                    {formatUSD(cartSubtotalBeforeDiscount)}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between text-emerald-700 font-bold">
+                  <span>Descuento al mayor:</span>
+                  <span className="font-mono tabular-nums">
+                    -{formatUSD(cartWholesaleDiscount)}
+                  </span>
+                </div>
+              </div>
+            )}
             <div className="flex items-center justify-between mb-4">
               <div>
                 <span className="text-xs text-slate-500 font-medium block">Total de la Orden:</span>

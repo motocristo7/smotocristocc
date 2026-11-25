@@ -78,6 +78,10 @@ import {
   ExchangeGapInfo,
   sanitizeProductForPublic,
 } from '../utils/pricing';
+import {
+  calculateCartWholesaleSummary,
+  CartWholesaleSummary,
+} from '../utils/wholesalePricing';
 import { getPublicAppOrigin, PUBLIC_APP_ORIGIN } from '../utils/whatsapp';
 import firebaseConfig from '../../firebase-applet-config.json';
 import {
@@ -428,6 +432,9 @@ interface AppContextType {
   clearCart: () => void;
   cartTotal: number;
   cartTotalBs: number;
+  cartSubtotalBeforeDiscount: number;
+  cartWholesaleDiscount: number;
+  cartWholesaleSummary: CartWholesaleSummary;
   cartItemCount: number;
 
   // Workshop Technician Commissions & Payouts
@@ -12594,8 +12601,19 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
 
   const clearCart = () => setCart([]);
 
-  const cartTotal = cart.reduce((sum, item) => sum + item.product.salePrice * item.quantity, 0);
-  const cartTotalBs = cartTotal * settings.bcvRate;
+  const cartWholesaleSummary = useMemo(
+    () =>
+      calculateCartWholesaleSummary(
+        cart,
+        settings.wholesaleDiscountRules || [],
+        settings.bcvRate
+      ),
+    [cart, settings.wholesaleDiscountRules, settings.bcvRate]
+  );
+  const cartSubtotalBeforeDiscount = cartWholesaleSummary.subtotalBeforeDiscountUSD;
+  const cartWholesaleDiscount = cartWholesaleSummary.totalDiscountUSD;
+  const cartTotal = cartWholesaleSummary.finalTotalUSD;
+  const cartTotalBs = cartWholesaleSummary.finalTotalBs;
   const cartItemCount = cart.reduce((sum, item) => sum + item.quantity, 0);
 
   const resetAllData = () => {
@@ -12801,6 +12819,9 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
         clearCart,
         cartTotal,
         cartTotalBs,
+        cartSubtotalBeforeDiscount,
+        cartWholesaleDiscount,
+        cartWholesaleSummary,
         cartItemCount,
         selectedInvoice,
         setSelectedInvoice,

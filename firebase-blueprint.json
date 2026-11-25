@@ -65,7 +65,8 @@
         "customExpenseCategories": { "type": "array", "description": "Categorías personalizadas de gastos del negocio" },
         "customIncomeCategories": { "type": "array", "description": "Categorías personalizadas de ingresos y registros de tesorería" },
         "customCommitmentCategories": { "type": "array", "description": "Categorías personalizadas de compromisos y gastos planificados" },
-        "customWorkshopServicePresets": { "type": "array", "description": "Servicios preguardados personalizados de taller y asientos de motos" }
+        "customWorkshopServicePresets": { "type": "array", "description": "Servicios preguardados personalizados de taller y asientos de motos" },
+        "wholesaleDiscountRules": { "type": "array", "description": "Reglas de precios al mayor por cantidad y porcentaje de descuento configuradas por categoría de repuesto, modelo de moto o general" }
       },
       "required": ["commercialName", "rif", "phone", "bcvRate"]
     },
@@ -171,6 +172,8 @@
         "customerPhone": { "type": "string", "description": "Teléfono o WhatsApp" },
         "customerDocument": { "type": "string", "description": "Cédula o RIF" },
         "deliveryType": { "type": "string", "description": "DOMICILIO, RETIRO_TIENDA o ENVIO_NACIONAL" },
+        "subtotalBeforeDiscount": { "type": "number", "description": "Subtotal regular en USD antes de descuentos al mayor" },
+        "wholesaleDiscountTotal": { "type": "number", "description": "Descuento total al mayor aplicado en USD" },
         "total": { "type": "number", "description": "Total en USD" },
         "bcvRate": { "type": "number", "description": "Tasa BCV aplicada" },
         "totalBs": { "type": "number", "description": "Total en Bs." },

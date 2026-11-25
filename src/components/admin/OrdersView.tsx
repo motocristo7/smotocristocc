@@ -246,21 +246,44 @@ export const OrdersView: React.FC = () => {
                   </span>
                   <div className="space-y-1 bg-slate-50 p-3 rounded-lg border border-slate-100">
                     {order.items.map((item, idx) => (
-                      <div key={idx} className="flex justify-between text-slate-700">
-                        <span>
-                          <strong className="font-mono text-slate-900">{item.quantity}x</strong> {item.name}
-                        </span>
-                        <div className="text-right">
-                          <span className="font-mono block">{formatUSD(item.total)}</span>
-                          <span className="font-mono text-[10px] text-emerald-700 block">{formatBs(item.total * (order.bcvRate || rate))}</span>
+                      <div key={idx} className="flex justify-between gap-2 text-slate-700">
+                        <div className="min-w-0">
+                          <span>
+                            <strong className="font-mono text-slate-900">{item.quantity}x</strong> {item.name}
+                          </span>
+                          {item.wholesaleDiscountPct && item.wholesaleDiscountPct > 0 && (
+                            <span className="ml-1.5 text-[10px] font-mono font-bold text-emerald-700">
+                              (-{item.wholesaleDiscountPct}% mayor)
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-right shrink-0">
+                          <span className="font-mono block tabular-nums">{formatUSD(item.total)}</span>
+                          <span className="font-mono text-[10px] text-emerald-700 block tabular-nums">{formatBs(item.total * (order.bcvRate || rate))}</span>
                         </div>
                       </div>
                     ))}
+                    {order.wholesaleDiscountTotal && order.wholesaleDiscountTotal > 0 && (
+                      <div className="pt-1.5 border-t border-slate-200 space-y-0.5 text-[11px]">
+                        <div className="flex justify-between text-slate-500">
+                          <span>Subtotal regular:</span>
+                          <span className="font-mono tabular-nums line-through">
+                            {formatUSD(order.subtotalBeforeDiscount || order.total + order.wholesaleDiscountTotal)}
+                          </span>
+                        </div>
+                        <div className="flex justify-between text-emerald-700 font-bold">
+                          <span>Descuento al mayor:</span>
+                          <span className="font-mono tabular-nums">
+                            -{formatUSD(order.wholesaleDiscountTotal)}
+                          </span>
+                        </div>
+                      </div>
+                    )}
                     <div className="pt-2 border-t border-slate-200 flex justify-between font-bold text-slate-950 text-sm">
                       <span>Total:</span>
                       <div className="text-right">
-                        <span className="font-mono block">{formatUSD(order.total)}</span>
-                        <span className="font-mono text-xs text-emerald-700 block">{formatBs(order.totalBs || order.total * (order.bcvRate || rate))}</span>
+                        <span className="font-mono block tabular-nums">{formatUSD(order.total)}</span>
+                        <span className="font-mono text-xs text-emerald-700 block tabular-nums">{formatBs(order.totalBs || order.total * (order.bcvRate || rate))}</span>
                       </div>
                     </div>
                   </div>

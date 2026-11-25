@@ -228,6 +228,7 @@ export type AppView =
   | 'admin_gastos'
   | 'admin_tesoreria'
   | 'admin_inventario'
+  | 'admin_mayorista'
   | 'admin_taller'
   | 'admin_comisiones'
   | 'admin_pedidos'

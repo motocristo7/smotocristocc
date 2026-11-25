@@ -31,6 +31,7 @@ import {
   QrCode,
   ExternalLink,
   Receipt,
+  Percent,
 } from 'lucide-react';
 import QRCode from 'qrcode';
 
@@ -235,6 +236,18 @@ Ingresa directamente desde tu teléfono aquí:
           >
             <Wrench className="w-4 h-4 text-amber-400" />
             <span>Nueva Orden de Taller</span>
+          </button>
+          <button
+            onClick={() => setCurrentView('admin_mayorista')}
+            className="px-4 py-2.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-900 border border-emerald-300 font-bold text-xs rounded-xl shadow-xs transition-colors flex items-center gap-1.5 cursor-pointer"
+            title="Configurar descuentos por compra al mayor en la tienda online"
+          >
+            <Percent className="w-4 h-4 text-emerald-700" />
+            <span>
+              Precios al Mayor (
+              {(settings.wholesaleDiscountRules || []).filter((r) => r.active && r.tiers.length > 0).length}
+              )
+            </span>
           </button>
           <button
             onClick={() => setCurrentView('admin_gastos')}

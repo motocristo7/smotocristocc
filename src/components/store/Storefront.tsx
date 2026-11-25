@@ -92,6 +92,8 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
     filterValue: string;
   }>({ scope: 'CATEGORY', filterValue: '' });
   const [modalOrderQty, setModalOrderQty] = useState<number>(1);
+  const [shoppingMode, setShoppingMode] = useState<'retail' | 'wholesale'>('retail');
+  const [onlyWholesaleProducts, setOnlyWholesaleProducts] = useState<boolean>(false);
 
   const openProductDetailModal = (product: Product, startIndex = 0) => {
     setSelectedProduct(product);
@@ -185,6 +187,7 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
   }, [onlineProducts, selectedCategory]);
 
   const filteredProducts = useMemo(() => {
+    const rules = settings.wholesaleDiscountRules || [];
     const filtered = onlineProducts.filter((product) => {
       if (productTracksInventory(product) && product.stock <= 0) return false;
 
@@ -197,6 +200,11 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
         !doesProductMatchModelCategory(product, selectedModelCategory)
       ) {
         return false;
+      }
+
+      if (shoppingMode === 'wholesale' && onlyWholesaleProducts) {
+        const display = getProductWholesaleDisplayTiers(product, rules);
+        if (!display.hasWholesale) return false;
       }
 
       if (searchTerm.trim()) {
@@ -220,7 +228,15 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
     return [...filtered].sort((a, b) =>
       a.name.trim().localeCompare(b.name.trim(), 'es', { sensitivity: 'base', numeric: true })
     );
-  }, [onlineProducts, selectedCategory, selectedModelCategory, searchTerm]);
+  }, [
+    onlineProducts,
+    selectedCategory,
+    selectedModelCategory,
+    searchTerm,
+    shoppingMode,
+    onlyWholesaleProducts,
+    settings.wholesaleDiscountRules,
+  ]);
 
   const hasActiveFilters =
     selectedCategory !== 'all' || selectedModelCategory !== 'all' || Boolean(searchTerm.trim());
@@ -233,6 +249,15 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
         .map((r) => ({ ...r, tiers: normalizeWholesaleTiers(r.tiers) }))
         .filter((r) => r.tiers.length > 0),
     [wholesaleRules]
+  );
+
+  const maxStoreWholesalePct = useMemo(
+    () =>
+      activeWholesaleRules.reduce(
+        (max, r) => Math.max(max, r.tiers.reduce((m, t) => Math.max(m, t.discountPct), 0)),
+        0
+      ),
+    [activeWholesaleRules]
   );
 
   const focusedWholesaleRules = useMemo(() => {
@@ -302,9 +327,21 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
             <div className="mt-6 flex flex-wrap items-center gap-3">
               <a
                 href="#catalogo"
+                onClick={() => setShoppingMode('retail')}
                 className="px-5 py-2.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-sm transition-colors shadow-lg shadow-amber-500/20 cursor-pointer whitespace-nowrap shrink-0"
               >
                 Explorar Catálogo Online
+              </a>
+              <a
+                href="#catalogo"
+                onClick={() => setShoppingMode('wholesale')}
+                className="px-4 py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-sm transition-colors shadow-lg shadow-emerald-600/20 flex items-center gap-2 cursor-pointer whitespace-nowrap shrink-0"
+              >
+                <Layers className="w-4 h-4 shrink-0" />
+                <span>
+                  Comprar al Mayor
+                  {maxStoreWholesalePct > 0 ? ` (hasta -${maxStoreWholesalePct}%)` : ''}
+                </span>
               </a>
               <button
                 type="button"
@@ -385,6 +422,47 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
               )}
             </div>
 
+            {/* Compra al Detal / Compra al Mayor Switcher */}
+            <div className="inline-flex items-center p-1 rounded-lg bg-slate-100 border border-slate-200 shrink-0 self-start md:self-auto">
+              <button
+                type="button"
+                onClick={() => {
+                  setShoppingMode('retail');
+                  setOnlyWholesaleProducts(false);
+                }}
+                className={`px-3 py-1.5 rounded-md text-xs font-bold transition-colors cursor-pointer whitespace-nowrap ${
+                  shoppingMode === 'retail'
+                    ? 'bg-white text-slate-950 shadow-2xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                Al Detal
+              </button>
+              <button
+                type="button"
+                onClick={() => setShoppingMode('wholesale')}
+                className={`px-3 py-1.5 rounded-md text-xs font-bold transition-colors cursor-pointer whitespace-nowrap inline-flex items-center gap-1.5 ${
+                  shoppingMode === 'wholesale'
+                    ? 'bg-emerald-600 text-white shadow-2xs'
+                    : 'text-emerald-800 hover:bg-emerald-50'
+                }`}
+              >
+                <Layers className="w-3.5 h-3.5 shrink-0" />
+                <span>Al Mayor</span>
+                {maxStoreWholesalePct > 0 && (
+                  <span
+                    className={`font-mono text-[10px] tabular-nums px-1 py-0.2 rounded ${
+                      shoppingMode === 'wholesale'
+                        ? 'bg-white/20 text-white'
+                        : 'bg-emerald-100 text-emerald-800'
+                    }`}
+                  >
+                    -{maxStoreWholesalePct}%
+                  </span>
+                )}
+              </button>
+            </div>
+
             {/* Live Tasa BCV & Stock indicator */}
             <div className="flex flex-wrap items-center gap-2.5 shrink-0 bg-slate-50 px-3 py-2 rounded-lg border border-slate-200/80 text-xs">
               <div className="flex items-center gap-1.5 font-semibold text-emerald-700 whitespace-nowrap tabular-nums">
@@ -395,6 +473,67 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
               <span className="text-slate-500 text-[11px] hidden sm:inline whitespace-nowrap">Stock físico real</span>
             </div>
           </div>
+
+          {/* Dedicated Wholesale Shopping Mode Banner */}
+          {shoppingMode === 'wholesale' && (
+            <div className="mt-3 rounded-xl border border-emerald-300 bg-emerald-50 p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="flex items-start gap-2.5 min-w-0">
+                <div className="w-8 h-8 rounded-lg bg-emerald-600 text-white flex items-center justify-center shrink-0">
+                  <Percent className="w-4 h-4" />
+                </div>
+                <div className="min-w-0">
+                  <p className="text-xs font-extrabold text-emerald-950">
+                    Modo Compra al Mayor Activado
+                  </p>
+                  {activeWholesaleRules.length > 0 ? (
+                    <p className="text-[11px] text-emerald-900 mt-0.5 leading-snug">
+                      Selecciona directamente las cantidades mayoristas en cada tarjeta o combínalas en tu carrito. El descuento por volumen se aplica automáticamente al total.
+                    </p>
+                  ) : (
+                    <p className="text-[11px] text-emerald-900 mt-0.5 leading-snug">
+                      {isAdmin
+                        ? 'Aún no has configurado escalas de descuento al mayor. Configúralas en el Panel Administrativo para activar precios automáticos por cantidad.'
+                        : 'Consulta nuestra lista especial de precios al mayor directamente por WhatsApp según la cantidad que necesites.'}
+                    </p>
+                  )}
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2 shrink-0">
+                {activeWholesaleRules.length > 0 ? (
+                  <label className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-emerald-950 bg-white border border-emerald-200 px-2.5 py-1.5 rounded-lg cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={onlyWholesaleProducts}
+                      onChange={(e) => setOnlyWholesaleProducts(e.target.checked)}
+                      className="rounded border-emerald-300 text-emerald-600 focus:ring-emerald-500"
+                    />
+                    <span>Solo con descuento al mayor</span>
+                  </label>
+                ) : isAdmin ? (
+                  <button
+                    type="button"
+                    onClick={() => setCurrentView('admin_mayorista')}
+                    className="px-3.5 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs cursor-pointer whitespace-nowrap"
+                  >
+                    Configurar Precios al Mayor
+                  </button>
+                ) : (
+                  <a
+                    href={`https://api.whatsapp.com/send?phone=${sanitizePhone(settings.whatsapp)}&text=${encodeURIComponent(
+                      `Hola *${settings.commercialName}*, deseo consultar precios de compra al mayor para repuestos de motos.`
+                    )}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="px-3.5 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs inline-flex items-center gap-1.5 whitespace-nowrap"
+                  >
+                    <Phone className="w-3.5 h-3.5" />
+                    <span>Cotizar al Mayor por WhatsApp</span>
+                  </a>
+                )}
+              </div>
+            </div>
+          )}
 
           {/* Filter Section 1: Modelos de Motos Especializados (todos visibles sin scroll horizontal) */}
           <div id="modelos-motos" className="mt-3.5 pt-3.5 border-t border-slate-100 space-y-2.5">
@@ -927,13 +1066,34 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
                     <div className="mt-auto pt-1.5 border-t border-slate-100 flex flex-col gap-1.5">
                       <div className="flex items-end justify-between gap-1">
                         <div className="min-w-0">
-                          <span className="text-sm sm:text-base font-extrabold text-slate-950 font-mono tabular-nums block leading-none">
-                            {formatUSD(product.salePrice)}
-                          </span>
-                          <span className="text-[10px] sm:text-[11px] font-bold text-emerald-700 font-mono tabular-nums block leading-tight mt-0.5 truncate">
-                            {formatBs(priceBs)}{' '}
-                            <span className="font-normal text-slate-400 text-[9px]">BCV</span>
-                          </span>
+                          {shoppingMode === 'wholesale' && wholesaleDisplay.hasWholesale && firstWholesaleTier ? (
+                            <>
+                              <div className="flex items-baseline gap-1.5">
+                                <span className="text-sm sm:text-base font-extrabold text-emerald-800 font-mono tabular-nums leading-none">
+                                  {formatUSD(firstWholesaleTier.unitPriceUSD)}
+                                </span>
+                                <span className="text-[10px] font-mono text-slate-400 line-through tabular-nums leading-none">
+                                  {formatUSD(product.salePrice)}
+                                </span>
+                              </div>
+                              <span className="text-[10px] sm:text-[11px] font-bold text-emerald-700 font-mono tabular-nums block leading-tight mt-0.5 truncate">
+                                {formatBs(firstWholesaleTier.unitPriceUSD * settings.bcvRate)}{' '}
+                                <span className="font-normal text-slate-500 text-[9px]">
+                                  ({firstWholesaleTier.minQty}+ u · -{firstWholesaleTier.discountPct}%)
+                                </span>
+                              </span>
+                            </>
+                          ) : (
+                            <>
+                              <span className="text-sm sm:text-base font-extrabold text-slate-950 font-mono tabular-nums block leading-none">
+                                {formatUSD(product.salePrice)}
+                              </span>
+                              <span className="text-[10px] sm:text-[11px] font-bold text-emerald-700 font-mono tabular-nums block leading-tight mt-0.5 truncate">
+                                {formatBs(priceBs)}{' '}
+                                <span className="font-normal text-slate-400 text-[9px]">BCV</span>
+                              </span>
+                            </>
+                          )}
                         </div>
 
                         <button
@@ -948,62 +1108,105 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
                         </button>
                       </div>
 
-                      {wholesaleDisplay.hasWholesale && firstWholesaleTier && (
-                        <button
-                          type="button"
-                          onClick={() => openProductDetailModal(product, activeIdx)}
-                          className="w-full text-left bg-emerald-50/80 hover:bg-emerald-100/80 border border-emerald-200/80 rounded-md px-2 py-1 transition-colors cursor-pointer"
-                          title="Ver tabla completa de precios al mayor"
-                        >
-                          <div className="flex items-center justify-between gap-1 text-[10px] leading-tight">
-                            <span className="font-bold text-emerald-900 truncate">
-                              Mayor {firstWholesaleTier.minQty}+ u:{' '}
-                              <span className="font-mono tabular-nums">
-                                {formatUSD(firstWholesaleTier.unitPriceUSD)}
+                      {shoppingMode === 'wholesale' && wholesaleDisplay.hasWholesale ? (
+                        <div className="flex flex-wrap gap-1">
+                          {wholesaleDisplay.tiers.slice(0, 3).map((tier) => {
+                            const hasStockForTier =
+                              !productTracksInventory(product) || product.stock >= tier.minQty;
+                            return (
+                              <button
+                                key={tier.minQty}
+                                type="button"
+                                disabled={!hasStockForTier}
+                                onClick={() => handleAddToCart(product, tier.minQty)}
+                                className="flex-1 min-w-[62px] py-1 px-1.5 rounded-md bg-emerald-50 hover:bg-emerald-600 hover:text-white disabled:opacity-40 border border-emerald-200 text-emerald-900 font-mono font-bold text-[10px] tabular-nums transition-colors cursor-pointer text-center"
+                                title={
+                                  hasStockForTier
+                                    ? `Agregar ${tier.minQty} unidades al carrito a ${formatUSD(tier.unitPriceUSD)} c/u (-${tier.discountPct}%)`
+                                    : `Stock actual (${product.stock}) menor a ${tier.minQty} uds`
+                                }
+                              >
+                                +{tier.minQty} (-{tier.discountPct}%)
+                              </button>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        wholesaleDisplay.hasWholesale &&
+                        firstWholesaleTier && (
+                          <button
+                            type="button"
+                            onClick={() => openProductDetailModal(product, activeIdx)}
+                            className="w-full text-left bg-emerald-50/80 hover:bg-emerald-100/80 border border-emerald-200/80 rounded-md px-2 py-1 transition-colors cursor-pointer"
+                            title="Ver tabla completa de precios al mayor"
+                          >
+                            <div className="flex items-center justify-between gap-1 text-[10px] leading-tight">
+                              <span className="font-bold text-emerald-900 truncate">
+                                Mayor {firstWholesaleTier.minQty}+ u:{' '}
+                                <span className="font-mono tabular-nums">
+                                  {formatUSD(firstWholesaleTier.unitPriceUSD)}
+                                </span>
                               </span>
-                            </span>
-                            <span className="font-mono font-extrabold text-emerald-700 tabular-nums shrink-0">
-                              {maxWholesaleTier && maxWholesaleTier.discountPct > firstWholesaleTier.discountPct
-                                ? `-${firstWholesaleTier.discountPct}% a -${maxWholesaleTier.discountPct}%`
-                                : `-${firstWholesaleTier.discountPct}%`}
-                            </span>
-                          </div>
-                        </button>
+                              <span className="font-mono font-extrabold text-emerald-700 tabular-nums shrink-0">
+                                {maxWholesaleTier && maxWholesaleTier.discountPct > firstWholesaleTier.discountPct
+                                  ? `-${firstWholesaleTier.discountPct}% a -${maxWholesaleTier.discountPct}%`
+                                  : `-${firstWholesaleTier.discountPct}%`}
+                              </span>
+                            </div>
+                          </button>
+                        )
                       )}
 
                       <div className="grid grid-cols-2 gap-1.5">
-                        <button
-                          type="button"
-                          onClick={() => handleBuyNow(product)}
-                          className="min-h-[36px] sm:min-h-[38px] w-full inline-flex items-center justify-center gap-1 py-1.5 px-1.5 sm:px-2 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-[11px] sm:text-xs rounded-lg shadow-2xs transition-colors cursor-pointer font-display whitespace-nowrap shrink-0"
-                          title="Comprar directamente y gestionar el pago"
-                        >
-                          <CreditCard className="w-3.5 h-3.5 text-slate-950 shrink-0 hidden min-[380px]:block" />
-                          <span>Comprar</span>
-                        </button>
+                        {(() => {
+                          const defaultBuyQty =
+                            shoppingMode === 'wholesale' &&
+                            firstWholesaleTier &&
+                            (!productTracksInventory(product) ||
+                              product.stock >= firstWholesaleTier.minQty)
+                              ? firstWholesaleTier.minQty
+                              : 1;
+                          return (
+                            <>
+                              <button
+                                type="button"
+                                onClick={() => handleBuyNow(product, defaultBuyQty)}
+                                className="min-h-[36px] sm:min-h-[38px] w-full inline-flex items-center justify-center gap-1 py-1.5 px-1.5 sm:px-2 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-[11px] sm:text-xs rounded-lg shadow-2xs transition-colors cursor-pointer font-display whitespace-nowrap shrink-0"
+                                title={
+                                  defaultBuyQty > 1
+                                    ? `Comprar ${defaultBuyQty} unidades al mayor`
+                                    : 'Comprar directamente y gestionar el pago'
+                                }
+                              >
+                                <CreditCard className="w-3.5 h-3.5 text-slate-950 shrink-0 hidden min-[380px]:block" />
+                                <span>{defaultBuyQty > 1 ? `Mayor (${defaultBuyQty})` : 'Comprar'}</span>
+                              </button>
 
-                        <button
-                          type="button"
-                          onClick={() => handleAddToCart(product)}
-                          className={`min-h-[36px] sm:min-h-[38px] w-full inline-flex items-center justify-center gap-1 py-1.5 px-1.5 sm:px-2 border rounded-lg font-semibold text-[11px] sm:text-xs transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
-                            recentlyAddedId === product.id
-                              ? 'bg-emerald-50 border-emerald-400 text-emerald-800 font-bold'
-                              : 'bg-slate-900 hover:bg-slate-800 text-white border-transparent'
-                          }`}
-                          title="Agregar este repuesto a tu carrito"
-                        >
-                          {recentlyAddedId === product.id ? (
-                            <>
-                              <Check className="w-3.5 h-3.5 text-emerald-600 shrink-0 hidden min-[380px]:block" />
-                              <span>¡Listo!</span>
+                              <button
+                                type="button"
+                                onClick={() => handleAddToCart(product, defaultBuyQty)}
+                                className={`min-h-[36px] sm:min-h-[38px] w-full inline-flex items-center justify-center gap-1 py-1.5 px-1.5 sm:px-2 border rounded-lg font-semibold text-[11px] sm:text-xs transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
+                                  recentlyAddedId === product.id
+                                    ? 'bg-emerald-50 border-emerald-400 text-emerald-800 font-bold'
+                                    : 'bg-slate-900 hover:bg-slate-800 text-white border-transparent'
+                                }`}
+                                title="Agregar este repuesto a tu carrito"
+                              >
+                                {recentlyAddedId === product.id ? (
+                                  <>
+                                    <Check className="w-3.5 h-3.5 text-emerald-600 shrink-0 hidden min-[380px]:block" />
+                                    <span>¡Listo!</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <ShoppingCart className="w-3.5 h-3.5 text-slate-200 shrink-0 hidden min-[380px]:block" />
+                                    <span>{defaultBuyQty > 1 ? `+${defaultBuyQty} Carrito` : 'Al carrito'}</span>
+                                  </>
+                                )}
+                              </button>
                             </>
-                          ) : (
-                            <>
-                              <ShoppingCart className="w-3.5 h-3.5 text-slate-200 shrink-0 hidden min-[380px]:block" />
-                              <span>Al carrito</span>
-                            </>
-                          )}
-                        </button>
+                          );
+                        })()}
                       </div>
                     </div>
                   </div>

@@ -22,6 +22,7 @@ import {
   Truck,
   Receipt,
   Landmark,
+  Percent,
 } from 'lucide-react';
 
 interface NavItem {
@@ -76,6 +77,10 @@ export const AdminSidebar: React.FC = () => {
 
   const pendingCreditCount = pendingCreditSales.length;
 
+  const activeWholesaleRulesCount = (settings.wholesaleDiscountRules || []).filter(
+    (r) => r.active && Array.isArray(r.tiers) && r.tiers.length > 0
+  ).length;
+
   const navItems: NavItem[] = [
     {
       view: 'admin_dashboard',
@@ -127,6 +132,13 @@ export const AdminSidebar: React.FC = () => {
       label: 'Inventario & Repuestos',
       shortLabel: 'Inventario',
       icon: Boxes,
+    },
+    {
+      view: 'admin_mayorista',
+      label: 'Precios al Mayor',
+      shortLabel: 'Mayorista',
+      icon: Percent,
+      badge: activeWholesaleRulesCount > 0 ? activeWholesaleRulesCount : undefined,
     },
     {
       view: 'admin_taller',

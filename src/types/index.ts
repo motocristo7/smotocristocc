@@ -38,6 +38,20 @@ export const DEFAULT_PRODUCT_CATEGORIES: DefaultProductCategory[] = [
 
 export type ProductCategory = DefaultProductCategory | (string & {});
 
+export const DEFAULT_MOTORCYCLE_MODEL_CATEGORIES: string[] = [
+  'Supershadow 250 / Virago XV250',
+  'MD Gavilán / Halcón (CBF150)',
+  'GR250',
+  'Honda Falcon 400',
+  'DR650',
+  'KLR',
+  'Honda Rebel 250 / King / Keen',
+  'DT Bera',
+  'Kavak 150 Bera',
+  'Lechuza',
+  'UM DSR',
+];
+
 export type ProductCostOrigin = 'DIVISAS' | 'BS_BCV';
 
 export interface Product {
@@ -58,7 +72,9 @@ export interface Product {
   minStock: number;
   brand: string;
   compatibility: string; // e.g., "Yamaha NMAX, BWS 125, Pulsar NS200, Universal"
+  modelCategories?: string[]; // Categorías de modelos de motos especializados para filtro en tienda online
   imageUrl: string;
+  imageUrls?: string[]; // Galería de múltiples fotos del repuesto (la primera coincide con imageUrl)
   barcode?: string; // Código de barra / EAN / UPC
   warehouseLocation?: string; // Ubicación física en almacén (ej. Estante A-3, Pasillo 2)
   featured?: boolean;
@@ -453,6 +469,8 @@ export interface BusinessSettings {
   invoiceDisclaimer: string;
   warrantyPolicy: string;
   customCategories?: string[];
+  customModelCategories?: string[];
+  hiddenDefaultModelCategories?: string[];
   customExpenseCategories?: string[];
   customIncomeCategories?: string[];
   customCommitmentCategories?: string[];

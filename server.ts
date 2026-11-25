@@ -836,6 +836,15 @@ app.get('/api/products', (req, res) => {
       if (img.startsWith('/')) {
         img = `${baseUrl}${img}`;
       }
+      const rawImageUrls = Array.isArray(p.imageUrls)
+        ? p.imageUrls
+            .map((u: any) => {
+              const s = typeof u === 'string' ? u.trim() : '';
+              if (!s) return '';
+              return s.startsWith('/') ? `${baseUrl}${s}` : s;
+            })
+            .filter(Boolean)
+        : [];
       const salePrice = Number(p.salePrice) || 0;
       return {
         id: p.id,
@@ -849,7 +858,11 @@ app.get('/api/products', (req, res) => {
         minStock: Number(p.minStock) || 0,
         brand: p.brand || '',
         compatibility: p.compatibility || '',
+        ...(Array.isArray(p.modelCategories) && p.modelCategories.length > 0
+          ? { modelCategories: p.modelCategories }
+          : {}),
         imageUrl: img,
+        ...(rawImageUrls.length > 0 ? { imageUrls: rawImageUrls } : {}),
         barcode: p.barcode || '',
         featured: Boolean(p.featured),
       };

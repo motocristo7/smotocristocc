@@ -18,6 +18,7 @@ import {
   UserRole,
   ProductCategory,
   DEFAULT_PRODUCT_CATEGORIES,
+  DEFAULT_MOTORCYCLE_MODEL_CATEGORIES,
   Technician,
   ServiceCommission,
   ServiceCommissionStatus,
@@ -266,6 +267,15 @@ interface AppContextType {
   onlineProducts: Product[]; // ONLY products with stock > 0
   categories: ProductCategory[];
   addCategory: (categoryName: string) => { added: boolean; category: ProductCategory };
+  modelCategories: string[];
+  addModelCategory: (modelName: string) => { added: boolean; modelCategory: string };
+  renameModelCategory: (oldName: string, newName: string) => { updated: boolean; modelCategory: string };
+  deleteModelCategory: (modelName: string) => void;
+  assignModelCategoryToProducts: (
+    productIds: string[],
+    modelCategory: string,
+    mode?: 'add' | 'remove'
+  ) => void;
   addProduct: (product: Omit<Product, 'id'>) => Product;
   updateProduct: (id: string, updates: Partial<Product>) => void;
   deleteProduct: (id: string) => void;
@@ -2238,6 +2248,18 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
                   ...(Array.isArray(prev.customCategories) ? prev.customCategories : []),
                 ])
               );
+              const mergedCustomModels = Array.from(
+                new Set([
+                  ...(Array.isArray(serverDb.settings.customModelCategories) ? serverDb.settings.customModelCategories : []),
+                  ...(Array.isArray(prev.customModelCategories) ? prev.customModelCategories : []),
+                ])
+              );
+              const mergedHiddenDefaultModels = Array.from(
+                new Set([
+                  ...(Array.isArray(serverDb.settings.hiddenDefaultModelCategories) ? serverDb.settings.hiddenDefaultModelCategories : []),
+                  ...(Array.isArray(prev.hiddenDefaultModelCategories) ? prev.hiddenDefaultModelCategories : []),
+                ])
+              );
               const mergedCustomExpenses = Array.from(
                 new Set([
                   ...(Array.isArray(serverDb.settings.customExpenseCategories) ? serverDb.settings.customExpenseCategories : []),
@@ -2265,6 +2287,8 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
               const baseNextSettings: BusinessSettings = {
                 ...serverDb.settings,
                 ...(mergedCustom.length > 0 ? { customCategories: mergedCustom } : {}),
+                ...(mergedCustomModels.length > 0 ? { customModelCategories: mergedCustomModels } : {}),
+                ...(mergedHiddenDefaultModels.length > 0 ? { hiddenDefaultModelCategories: mergedHiddenDefaultModels } : {}),
                 ...(mergedCustomExpenses.length > 0 ? { customExpenseCategories: mergedCustomExpenses } : {}),
                 ...(mergedCustomIncomes.length > 0 ? { customIncomeCategories: mergedCustomIncomes } : {}),
                 ...(mergedCustomCommitments.length > 0 ? { customCommitmentCategories: mergedCustomCommitments } : {}),
@@ -2876,6 +2900,24 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
                 ? prev.customCategories
                 : [];
               const mergedCustom = Array.from(new Set([...remoteCustom, ...localCustom]));
+              const remoteCustomModels = Array.isArray(firestoreSettings.customModelCategories)
+                ? firestoreSettings.customModelCategories
+                : [];
+              const localCustomModels = Array.isArray(prev.customModelCategories)
+                ? prev.customModelCategories
+                : [];
+              const mergedCustomModels = Array.from(
+                new Set([...remoteCustomModels, ...localCustomModels])
+              );
+              const remoteHiddenModels = Array.isArray(firestoreSettings.hiddenDefaultModelCategories)
+                ? firestoreSettings.hiddenDefaultModelCategories
+                : [];
+              const localHiddenModels = Array.isArray(prev.hiddenDefaultModelCategories)
+                ? prev.hiddenDefaultModelCategories
+                : [];
+              const mergedHiddenModels = Array.from(
+                new Set([...remoteHiddenModels, ...localHiddenModels])
+              );
               const remoteCustomExpenses = Array.isArray(firestoreSettings.customExpenseCategories)
                 ? firestoreSettings.customExpenseCategories
                 : [];
@@ -2915,6 +2957,12 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
               const baseNextSettings: BusinessSettings = {
                 ...firestoreSettings,
                 ...(mergedCustom.length > 0 ? { customCategories: mergedCustom } : {}),
+                ...(mergedCustomModels.length > 0
+                  ? { customModelCategories: mergedCustomModels }
+                  : {}),
+                ...(mergedHiddenModels.length > 0
+                  ? { hiddenDefaultModelCategories: mergedHiddenModels }
+                  : {}),
                 ...(mergedCustomExpenses.length > 0
                   ? { customExpenseCategories: mergedCustomExpenses }
                   : {}),
@@ -4076,6 +4124,274 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     });
 
     return { added: true, category: formatted };
+  };
+
+  // Categorías de Modelos de Motos Especializados (predefinidos + personalizados + presentes en productos)
+  const modelCategories = useMemo<string[]>(() => {
+    const result: string[] = [];
+    const seenLower = new Set<string>();
+    const hiddenLower = new Set<string>(
+      (Array.isArray(settings.hiddenDefaultModelCategories)
+        ? settings.hiddenDefaultModelCategories
+        : []
+      ).map((m) => m.trim().toLowerCase())
+    );
+
+    const registerModel = (model?: string, skipIfHidden = false) => {
+      const cleaned = (model || '').trim().replace(/\s+/g, ' ');
+      if (!cleaned) return;
+      const key = cleaned.toLowerCase();
+      if (skipIfHidden && hiddenLower.has(key)) return;
+      if (seenLower.has(key)) return;
+      seenLower.add(key);
+      result.push(cleaned);
+    };
+
+    DEFAULT_MOTORCYCLE_MODEL_CATEGORIES.forEach((m) => registerModel(m, true));
+    if (Array.isArray(settings.customModelCategories)) {
+      settings.customModelCategories.forEach((m) => registerModel(m, false));
+    }
+    products.forEach((p) => {
+      if (Array.isArray(p.modelCategories)) {
+        p.modelCategories.forEach((m) => registerModel(m, false));
+      }
+    });
+
+    return result;
+  }, [settings.customModelCategories, settings.hiddenDefaultModelCategories, products]);
+
+  const addModelCategory = (modelName: string): { added: boolean; modelCategory: string } => {
+    const cleaned = modelName.trim().replace(/\s+/g, ' ');
+    if (!cleaned) {
+      return { added: false, modelCategory: '' };
+    }
+
+    const existing = modelCategories.find(
+      (m) => m.trim().toLowerCase() === cleaned.toLowerCase()
+    );
+    if (existing) {
+      return { added: false, modelCategory: existing };
+    }
+
+    const cleanedLower = cleaned.toLowerCase();
+    const matchedDefault = DEFAULT_MOTORCYCLE_MODEL_CATEGORIES.find(
+      (d) => d.trim().toLowerCase() === cleanedLower
+    );
+    const finalName = matchedDefault || cleaned;
+
+    setSettings((prev) => {
+      const prevCustom = Array.isArray(prev.customModelCategories)
+        ? prev.customModelCategories
+        : [];
+      const prevHidden = Array.isArray(prev.hiddenDefaultModelCategories)
+        ? prev.hiddenDefaultModelCategories
+        : [];
+      const nextHidden = prevHidden.filter(
+        (h) => h.trim().toLowerCase() !== finalName.toLowerCase()
+      );
+      const nextCustom = matchedDefault
+        ? prevCustom
+        : prevCustom.some((c) => c.trim().toLowerCase() === finalName.toLowerCase())
+          ? prevCustom
+          : [...prevCustom, finalName];
+
+      const updated: BusinessSettings = {
+        ...prev,
+        customModelCategories: nextCustom,
+        hiddenDefaultModelCategories: nextHidden,
+      };
+      settingsRef.current = updated;
+      try {
+        localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(updated));
+      } catch {}
+      syncSettingsToFirestore(updated).catch((err) =>
+        console.warn('Firestore custom model category sync error:', err)
+      );
+      return updated;
+    });
+
+    return { added: true, modelCategory: finalName };
+  };
+
+  const renameModelCategory = (
+    oldName: string,
+    newName: string
+  ): { updated: boolean; modelCategory: string } => {
+    const oldClean = oldName.trim().replace(/\s+/g, ' ');
+    const newClean = newName.trim().replace(/\s+/g, ' ');
+    if (!oldClean || !newClean) {
+      return { updated: false, modelCategory: oldClean };
+    }
+    const oldLower = oldClean.toLowerCase();
+    const newLower = newClean.toLowerCase();
+    if (oldClean === newClean) {
+      return { updated: false, modelCategory: oldClean };
+    }
+
+    const isOldDefault = DEFAULT_MOTORCYCLE_MODEL_CATEGORIES.some(
+      (d) => d.trim().toLowerCase() === oldLower
+    );
+    const isNewDefault = DEFAULT_MOTORCYCLE_MODEL_CATEGORIES.some(
+      (d) => d.trim().toLowerCase() === newLower
+    );
+
+    setSettings((prev) => {
+      const prevCustom = Array.isArray(prev.customModelCategories)
+        ? prev.customModelCategories
+        : [];
+      const prevHidden = Array.isArray(prev.hiddenDefaultModelCategories)
+        ? prev.hiddenDefaultModelCategories
+        : [];
+
+      let nextHidden = prevHidden.filter((h) => h.trim().toLowerCase() !== newLower);
+      if (isOldDefault && oldLower !== newLower && !nextHidden.some((h) => h.toLowerCase() === oldLower)) {
+        nextHidden = [...nextHidden, oldClean];
+      }
+
+      const withoutOld = prevCustom.filter((c) => c.trim().toLowerCase() !== oldLower);
+      const nextCustom =
+        isNewDefault || withoutOld.some((c) => c.trim().toLowerCase() === newLower)
+          ? withoutOld
+          : [...withoutOld, newClean];
+
+      const updated: BusinessSettings = {
+        ...prev,
+        customModelCategories: nextCustom,
+        hiddenDefaultModelCategories: nextHidden,
+      };
+      settingsRef.current = updated;
+      try {
+        localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(updated));
+      } catch {}
+      syncSettingsToFirestore(updated).catch(() => {});
+      return updated;
+    });
+
+    // Propagate rename to any products explicitly tagged with oldName
+    setProducts((prev) => {
+      const touched: Product[] = [];
+      const next = prev.map((p) => {
+        if (!Array.isArray(p.modelCategories) || p.modelCategories.length === 0) return p;
+        const hasOld = p.modelCategories.some((m) => m.trim().toLowerCase() === oldLower);
+        if (!hasOld) return p;
+        const replaced = Array.from(
+          new Set(
+            p.modelCategories.map((m) => (m.trim().toLowerCase() === oldLower ? newClean : m))
+          )
+        );
+        const updatedProduct: Product = { ...p, modelCategories: replaced };
+        touched.push(updatedProduct);
+        return updatedProduct;
+      });
+      if (touched.length > 0) {
+        try {
+          localStorage.setItem(STORAGE_KEYS.PRODUCTS, JSON.stringify(next));
+        } catch {}
+        touched.forEach((p) => syncProductToFirestore(p).catch(() => {}));
+      }
+      return next;
+    });
+
+    return { updated: true, modelCategory: newClean };
+  };
+
+  const deleteModelCategory = (modelName: string) => {
+    const cleaned = modelName.trim().replace(/\s+/g, ' ');
+    if (!cleaned) return;
+    const targetLower = cleaned.toLowerCase();
+    const isDefault = DEFAULT_MOTORCYCLE_MODEL_CATEGORIES.some(
+      (d) => d.trim().toLowerCase() === targetLower
+    );
+
+    setSettings((prev) => {
+      const prevCustom = Array.isArray(prev.customModelCategories)
+        ? prev.customModelCategories
+        : [];
+      const prevHidden = Array.isArray(prev.hiddenDefaultModelCategories)
+        ? prev.hiddenDefaultModelCategories
+        : [];
+
+      const nextCustom = prevCustom.filter((c) => c.trim().toLowerCase() !== targetLower);
+      const nextHidden =
+        isDefault && !prevHidden.some((h) => h.trim().toLowerCase() === targetLower)
+          ? [...prevHidden, cleaned]
+          : prevHidden;
+
+      const updated: BusinessSettings = {
+        ...prev,
+        customModelCategories: nextCustom,
+        hiddenDefaultModelCategories: nextHidden,
+      };
+      settingsRef.current = updated;
+      try {
+        localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(updated));
+      } catch {}
+      syncSettingsToFirestore(updated).catch(() => {});
+      return updated;
+    });
+
+    setProducts((prev) => {
+      const touched: Product[] = [];
+      const next = prev.map((p) => {
+        if (!Array.isArray(p.modelCategories) || p.modelCategories.length === 0) return p;
+        const filtered = p.modelCategories.filter(
+          (m) => m.trim().toLowerCase() !== targetLower
+        );
+        if (filtered.length === p.modelCategories.length) return p;
+        const updatedProduct: Product = { ...p, modelCategories: filtered };
+        touched.push(updatedProduct);
+        return updatedProduct;
+      });
+      if (touched.length > 0) {
+        try {
+          localStorage.setItem(STORAGE_KEYS.PRODUCTS, JSON.stringify(next));
+        } catch {}
+        touched.forEach((p) => syncProductToFirestore(p).catch(() => {}));
+      }
+      return next;
+    });
+  };
+
+  const assignModelCategoryToProducts = (
+    productIds: string[],
+    modelCategory: string,
+    mode: 'add' | 'remove' = 'add'
+  ) => {
+    const cleaned = modelCategory.trim().replace(/\s+/g, ' ');
+    if (!cleaned || productIds.length === 0) return;
+    const idSet = new Set(productIds);
+    const targetLower = cleaned.toLowerCase();
+
+    if (mode === 'add') {
+      addModelCategory(cleaned);
+    }
+
+    setProducts((prev) => {
+      const touched: Product[] = [];
+      const next = prev.map((p) => {
+        if (!idSet.has(p.id)) return p;
+        const current = Array.isArray(p.modelCategories) ? p.modelCategories : [];
+        let updatedModels: string[];
+        if (mode === 'remove') {
+          updatedModels = current.filter((m) => m.trim().toLowerCase() !== targetLower);
+          if (updatedModels.length === current.length) return p;
+        } else {
+          if (current.some((m) => m.trim().toLowerCase() === targetLower)) return p;
+          updatedModels = [...current, cleaned];
+        }
+        const updatedProduct: Product = { ...p, modelCategories: updatedModels };
+        touched.push(updatedProduct);
+        return updatedProduct;
+      });
+
+      if (touched.length > 0) {
+        try {
+          localStorage.setItem(STORAGE_KEYS.PRODUCTS, JSON.stringify(next));
+        } catch {}
+        touched.forEach((p) => syncProductToFirestore(p).catch(() => {}));
+      }
+      return next;
+    });
   };
 
   // BCV Automatic Synchronization
@@ -12159,6 +12475,11 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
         onlineProducts,
         categories,
         addCategory,
+        modelCategories,
+        addModelCategory,
+        renameModelCategory,
+        deleteModelCategory,
+        assignModelCategoryToProducts,
         addProduct,
         updateProduct,
         deleteProduct,

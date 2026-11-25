@@ -158,6 +158,8 @@ export function handleProductImageError(
   }
 }
 
+export const MAX_PRODUCT_IMAGES = 6;
+
 /**
  * Returns true if the URL is a directly uploaded embedded image (Data URL)
  */
@@ -166,13 +168,62 @@ export function isEmbeddedImageUrl(url?: string): boolean {
 }
 
 /**
+ * Collects all normalized unique images of a product (primary `imageUrl` first, followed by `imageUrls`).
+ */
+export function getProductImages(
+  product?: { imageUrl?: string; imageUrls?: string[]; name?: string; category?: string } | null,
+  includeFallback = true
+): string[] {
+  const result: string[] = [];
+  const seen = new Set<string>();
+
+  const pushUrl = (raw?: string) => {
+    const norm = normalizeImageUrl(raw);
+    if (!norm || seen.has(norm)) return;
+    seen.add(norm);
+    result.push(norm);
+  };
+
+  if (product) {
+    if (Array.isArray(product.imageUrls) && product.imageUrls.length > 0) {
+      // Preserve explicit ordering from imageUrls first, then include imageUrl if distinct
+      product.imageUrls.forEach(pushUrl);
+      pushUrl(product.imageUrl);
+    } else {
+      pushUrl(product.imageUrl);
+    }
+  }
+
+  if (result.length === 0 && includeFallback) {
+    result.push(getFallbackProductImage(product?.name, product?.category));
+  }
+
+  return result;
+}
+
+/**
+ * Returns true if the product has at least one directly uploaded embedded photo.
+ */
+export function hasAnyEmbeddedImage(
+  product?: { imageUrl?: string; imageUrls?: string[] } | null
+): boolean {
+  if (!product) return false;
+  if (isEmbeddedImageUrl(product.imageUrl)) return true;
+  if (Array.isArray(product.imageUrls)) {
+    return product.imageUrls.some((u) => isEmbeddedImageUrl(u));
+  }
+  return false;
+}
+
+/**
  * Resizes and compresses a local image file in the browser into a compact JPEG Data URL
- * guaranteed to fit comfortably in Firestore (< 200 KB) so every visitor sees it reliably.
+ * sized safely for multi-photo Firestore documents (<= 135 KB chars per photo, up to 6 photos < 1MB).
  */
 export async function compressImageFileToDataUrl(
   file: File,
   maxDimension = 720,
-  quality = 0.82
+  quality = 0.8,
+  maxCharLength = 135_000
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -208,12 +259,15 @@ export async function compressImageFileToDataUrl(
 
         try {
           let result = renderAt(maxDimension, quality);
-          // Ensure payload stays compact for fast Firestore sync & storefront loading (~220 KB char limit)
-          if (result.length > 220_000) {
-            result = renderAt(600, 0.72);
+          // Progressive compression so up to 6 photos comfortably stay under Firestore's 1MB doc limit
+          if (result.length > maxCharLength) {
+            result = renderAt(Math.min(maxDimension, 620), 0.72);
           }
-          if (result.length > 220_000) {
-            result = renderAt(480, 0.62);
+          if (result.length > maxCharLength) {
+            result = renderAt(Math.min(maxDimension, 500), 0.62);
+          }
+          if (result.length > maxCharLength) {
+            result = renderAt(Math.min(maxDimension, 420), 0.54);
           }
           resolve(result);
         } catch (err) {

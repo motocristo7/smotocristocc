@@ -34,6 +34,11 @@ import {
   Lock,
   Calculator,
   TrendingUp,
+  Bike,
+  Check,
+  Star,
+  ChevronLeft,
+  ChevronRight,
 } from 'lucide-react';
 import {
   normalizeImageUrl,
@@ -43,7 +48,11 @@ import {
   getFallbackProductImage,
   handleProductImageError,
   compressImageFileToDataUrl,
+  MAX_PRODUCT_IMAGES,
+  getProductImages,
+  hasAnyEmbeddedImage,
 } from '../../utils/imageUrl';
+import { doesProductMatchModelCategory } from '../../utils/modelCategories';
 import { downloadInventoryTemplate, exportInventoryToExcel, ParsedProductRow } from '../../utils/excelInventory';
 import { ImportExcelModal } from './ImportExcelModal';
 
@@ -52,6 +61,11 @@ export const InventoryView: React.FC = () => {
     products,
     categories,
     addCategory,
+    modelCategories,
+    addModelCategory,
+    renameModelCategory,
+    deleteModelCategory,
+    assignModelCategoryToProducts,
     addProduct,
     updateProduct,
     deleteProduct,
@@ -64,6 +78,7 @@ export const InventoryView: React.FC = () => {
 
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
+  const [selectedModelCategory, setSelectedModelCategory] = useState<string>('all');
   const [filterStockStatus, setFilterStockStatus] = useState<'all' | 'low' | 'out'>('all');
   const [filterPhotoStatus, setFilterPhotoStatus] = useState<'all' | 'missing' | 'uploaded'>('all');
 
@@ -76,6 +91,14 @@ export const InventoryView: React.FC = () => {
   const [isBatchDeleteModalOpen, setIsBatchDeleteModalOpen] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
+
+  const [isManageModelsModalOpen, setIsManageModelsModalOpen] = useState(false);
+  const [newModelCategoryInput, setNewModelCategoryInput] = useState('');
+  const [editingModelName, setEditingModelName] = useState<string | null>(null);
+  const [editingModelDraft, setEditingModelDraft] = useState('');
+  const [batchModelTarget, setBatchModelTarget] = useState<string>('');
+  const [isAddingInlineModel, setIsAddingInlineModel] = useState(false);
+  const [newInlineModelName, setNewInlineModelName] = useState('');
 
   const rate = settings.bcvRate;
   const usdtRate = exchangeGap.usdtRate;
@@ -100,10 +123,13 @@ export const InventoryView: React.FC = () => {
     minStock: 2,
     brand: '',
     compatibility: '',
+    modelCategories: [] as string[],
     warehouseLocation: '',
     imageUrl: '',
+    imageUrls: [] as string[],
   };
   const [formData, setFormData] = useState(initialFormState);
+  const [newPhotoUrlInput, setNewPhotoUrlInput] = useState('');
   const [syncBsWithGap, setSyncBsWithGap] = useState(true);
   const [targetProfitMode, setTargetProfitMode] = useState<ProfitCalcMode>('margin');
   const [targetProfitInput, setTargetProfitInput] = useState<string>('30');
@@ -115,13 +141,22 @@ export const InventoryView: React.FC = () => {
   const filteredProducts = useMemo(() => {
     const filtered = products.filter((p) => {
       if (selectedCategory !== 'all' && p.category !== selectedCategory) return false;
+      if (
+        selectedModelCategory !== 'all' &&
+        !doesProductMatchModelCategory(p, selectedModelCategory)
+      ) {
+        return false;
+      }
       if (filterStockStatus === 'low' && p.stock > p.minStock) return false;
       if (filterStockStatus === 'out' && p.stock > 0) return false;
-      if (filterPhotoStatus === 'uploaded' && !isEmbeddedImageUrl(p.imageUrl)) return false;
-      if (filterPhotoStatus === 'missing' && isEmbeddedImageUrl(p.imageUrl)) return false;
+      if (filterPhotoStatus === 'uploaded' && !hasAnyEmbeddedImage(p)) return false;
+      if (filterPhotoStatus === 'missing' && hasAnyEmbeddedImage(p)) return false;
 
       if (searchTerm.trim()) {
         const q = searchTerm.toLowerCase();
+        const modelMatch = Array.isArray(p.modelCategories)
+          ? p.modelCategories.some((m) => m.toLowerCase().includes(q))
+          : false;
         return (
           p.name.toLowerCase().includes(q) ||
           (p.description && p.description.toLowerCase().includes(q)) ||
@@ -129,7 +164,8 @@ export const InventoryView: React.FC = () => {
           (p.barcode && p.barcode.toLowerCase().includes(q)) ||
           (p.warehouseLocation && p.warehouseLocation.toLowerCase().includes(q)) ||
           p.brand.toLowerCase().includes(q) ||
-          p.compatibility.toLowerCase().includes(q)
+          p.compatibility.toLowerCase().includes(q) ||
+          modelMatch
         );
       }
 
@@ -145,7 +181,15 @@ export const InventoryView: React.FC = () => {
       }
       return a.sku.trim().localeCompare(b.sku.trim(), 'es', { sensitivity: 'base', numeric: true });
     });
-  }, [products, selectedCategory, filterStockStatus, filterPhotoStatus, searchTerm, sortOrder]);
+  }, [
+    products,
+    selectedCategory,
+    selectedModelCategory,
+    filterStockStatus,
+    filterPhotoStatus,
+    searchTerm,
+    sortOrder,
+  ]);
 
   const [imagePreviewError, setImagePreviewError] = useState(false);
   const [isCompressingUpload, setIsCompressingUpload] = useState(false);
@@ -155,7 +199,7 @@ export const InventoryView: React.FC = () => {
   const [uploadError, setUploadError] = useState<string | null>(null);
 
   const pendingOwnPhotoCount = useMemo(
-    () => products.filter((p) => !isEmbeddedImageUrl(p.imageUrl)).length,
+    () => products.filter((p) => !hasAnyEmbeddedImage(p)).length,
     [products]
   );
 
@@ -216,8 +260,12 @@ export const InventoryView: React.FC = () => {
     setFormError(null);
     setIsAddingCategory(false);
     setNewCategoryName('');
+    setIsAddingInlineModel(false);
+    setNewInlineModelName('');
+    setNewPhotoUrlInput('');
     setSyncBsWithGap(false);
     setTargetProfitInput(String(product.targetProfitPct ?? 30));
+    const existingImages = getProductImages(product, false);
     setFormData({
       sku: product.sku,
       barcode: product.barcode || '',
@@ -232,8 +280,10 @@ export const InventoryView: React.FC = () => {
       minStock: product.minStock,
       brand: product.brand,
       compatibility: product.compatibility,
+      modelCategories: Array.isArray(product.modelCategories) ? [...product.modelCategories] : [],
       warehouseLocation: product.warehouseLocation || '',
-      imageUrl: normalizeImageUrl(product.imageUrl),
+      imageUrl: existingImages[0] || '',
+      imageUrls: existingImages,
     });
   };
 
@@ -306,54 +356,179 @@ export const InventoryView: React.FC = () => {
     }));
   };
 
-  const handleImageUrlChange = (val: string) => {
-    setImagePreviewError(false);
-    setUploadError(null);
-    const converted = normalizeImageUrl(val);
-    setFormData((prev) => ({ ...prev, imageUrl: converted }));
+  const syncFormPhotos = (nextPhotos: string[]) => {
+    const cleaned = nextPhotos.filter(Boolean).slice(0, MAX_PRODUCT_IMAGES);
+    setFormData((prev) => ({
+      ...prev,
+      imageUrls: cleaned,
+      imageUrl: cleaned[0] || '',
+    }));
   };
 
-  const processSelectedModalFile = async (file: File) => {
-    if (!file.type.startsWith('image/')) {
-      setUploadError('Selecciona un archivo de imagen válido (JPG, PNG o WebP).');
+  const handleAddExternalPhotoUrl = () => {
+    const converted = normalizeImageUrl(newPhotoUrlInput);
+    if (!converted) return;
+    setImagePreviewError(false);
+    setUploadError(null);
+    setFormData((prev) => {
+      const current = Array.isArray(prev.imageUrls) && prev.imageUrls.length > 0
+        ? prev.imageUrls
+        : prev.imageUrl
+        ? [prev.imageUrl]
+        : [];
+      if (current.length >= MAX_PRODUCT_IMAGES) {
+        setUploadError(`Máximo ${MAX_PRODUCT_IMAGES} fotos por repuesto. Elimina una para agregar otra.`);
+        return prev;
+      }
+      if (current.includes(converted)) {
+        return prev;
+      }
+      const next = [...current, converted];
+      return { ...prev, imageUrls: next, imageUrl: next[0] || '' };
+    });
+    setNewPhotoUrlInput('');
+  };
+
+  const processSelectedModalFiles = async (files: FileList | File[]) => {
+    const fileArray = Array.from(files || []);
+    if (fileArray.length === 0) return;
+
+    const validImageFiles = fileArray.filter((f) => f.type.startsWith('image/'));
+    if (validImageFiles.length === 0) {
+      setUploadError('Selecciona archivos de imagen válidos (JPG, PNG o WebP).');
       return;
     }
-    setUploadError(null);
+
+    const currentPhotos =
+      Array.isArray(formData.imageUrls) && formData.imageUrls.length > 0
+        ? formData.imageUrls
+        : formData.imageUrl
+        ? [formData.imageUrl]
+        : [];
+    const remainingSlots = MAX_PRODUCT_IMAGES - currentPhotos.length;
+    if (remainingSlots <= 0) {
+      setUploadError(`Ya tienes el máximo de ${MAX_PRODUCT_IMAGES} fotos. Elimina una para agregar más.`);
+      return;
+    }
+
+    const filesToProcess = validImageFiles.slice(0, remainingSlots);
+    setUploadError(
+      validImageFiles.length > remainingSlots
+        ? `Solo se agregaron ${remainingSlots} foto(s) para respetar el límite de ${MAX_PRODUCT_IMAGES} por repuesto.`
+        : null
+    );
     setIsCompressingUpload(true);
     try {
-      const compressedDataUrl = await compressImageFileToDataUrl(file, 720, 0.82);
+      const compressedList: string[] = [];
+      for (const file of filesToProcess) {
+        const compressedDataUrl = await compressImageFileToDataUrl(file, 720, 0.8, 135_000);
+        compressedList.push(compressedDataUrl);
+      }
       setImagePreviewError(false);
-      setFormData((prev) => ({ ...prev, imageUrl: compressedDataUrl }));
+      setFormData((prev) => {
+        const base =
+          Array.isArray(prev.imageUrls) && prev.imageUrls.length > 0
+            ? prev.imageUrls
+            : prev.imageUrl
+            ? [prev.imageUrl]
+            : [];
+        const merged = [...base, ...compressedList].slice(0, MAX_PRODUCT_IMAGES);
+        return {
+          ...prev,
+          imageUrls: merged,
+          imageUrl: merged[0] || '',
+        };
+      });
     } catch (err: any) {
-      setUploadError(err?.message || 'No se pudo procesar la foto seleccionada.');
+      setUploadError(err?.message || 'No se pudieron procesar las fotos seleccionadas.');
     } finally {
       setIsCompressingUpload(false);
     }
   };
 
+  const handleSetPrimaryPhoto = (index: number) => {
+    const current =
+      Array.isArray(formData.imageUrls) && formData.imageUrls.length > 0
+        ? [...formData.imageUrls]
+        : formData.imageUrl
+        ? [formData.imageUrl]
+        : [];
+    if (index <= 0 || index >= current.length) return;
+    const [picked] = current.splice(index, 1);
+    syncFormPhotos([picked, ...current]);
+  };
+
+  const handleMovePhoto = (index: number, delta: -1 | 1) => {
+    const current =
+      Array.isArray(formData.imageUrls) && formData.imageUrls.length > 0
+        ? [...formData.imageUrls]
+        : formData.imageUrl
+        ? [formData.imageUrl]
+        : [];
+    const target = index + delta;
+    if (target < 0 || target >= current.length) return;
+    [current[index], current[target]] = [current[target], current[index]];
+    syncFormPhotos(current);
+  };
+
+  const handleRemovePhoto = (index: number) => {
+    const current =
+      Array.isArray(formData.imageUrls) && formData.imageUrls.length > 0
+        ? [...formData.imageUrls]
+        : formData.imageUrl
+        ? [formData.imageUrl]
+        : [];
+    current.splice(index, 1);
+    syncFormPhotos(current);
+    setImagePreviewError(false);
+    setUploadError(null);
+  };
+
   const handleLocalImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
+    const files = e.target.files ? Array.from(e.target.files) : [];
     e.target.value = '';
-    if (!file) return;
-    await processSelectedModalFile(file);
+    if (files.length === 0) return;
+    await processSelectedModalFiles(files);
   };
 
   const handleQuickRowImageUpload = async (
     product: Product,
     e: React.ChangeEvent<HTMLInputElement>
   ) => {
-    const file = e.target.files?.[0];
+    const files = e.target.files ? Array.from(e.target.files) : [];
     e.target.value = '';
-    if (!file) return;
-    if (!file.type.startsWith('image/')) {
-      showToast('⚠️ Selecciona un archivo de imagen válido (JPG, PNG o WebP).');
+    if (files.length === 0) return;
+    const validFiles = files.filter((f) => f.type.startsWith('image/'));
+    if (validFiles.length === 0) {
+      showToast('⚠️ Selecciona archivos de imagen válidos (JPG, PNG o WebP).');
       return;
     }
+
+    const existingPhotos = getProductImages(product, false);
+    const keepExisting = existingPhotos.filter((u) => isEmbeddedImageUrl(u));
+    const remainingSlots = MAX_PRODUCT_IMAGES - keepExisting.length;
+    if (remainingSlots <= 0) {
+      showToast(`⚠️ "${product.name}" ya tiene el máximo de ${MAX_PRODUCT_IMAGES} fotos. Edítalo para reemplazar o quitar alguna.`);
+      return;
+    }
+
     setQuickUploadingId(product.id);
     try {
-      const compressedDataUrl = await compressImageFileToDataUrl(file, 720, 0.82);
-      updateProduct(product.id, { imageUrl: compressedDataUrl });
-      showToast(`✓ Foto subida y guardada en "${product.name}".`);
+      const uploaded: string[] = [];
+      for (const file of validFiles.slice(0, remainingSlots)) {
+        const compressedDataUrl = await compressImageFileToDataUrl(file, 720, 0.8, 135_000);
+        uploaded.push(compressedDataUrl);
+      }
+      const nextImages = [...keepExisting, ...uploaded].slice(0, MAX_PRODUCT_IMAGES);
+      updateProduct(product.id, {
+        imageUrl: nextImages[0],
+        imageUrls: nextImages,
+      });
+      showToast(
+        uploaded.length === 1
+          ? `✓ Foto agregada a "${product.name}" (${nextImages.length} foto${nextImages.length > 1 ? 's' : ''}).`
+          : `✓ ${uploaded.length} fotos subidas a "${product.name}" (${nextImages.length} en total).`
+      );
     } catch (err: any) {
       showToast(`⚠️ ${err?.message || 'No se pudo subir la imagen.'}`);
     } finally {
@@ -387,6 +562,82 @@ export const InventoryView: React.FC = () => {
     );
   };
 
+  const handleToggleFormModelCategory = (modelName: string) => {
+    setFormData((prev) => {
+      const current = Array.isArray(prev.modelCategories) ? prev.modelCategories : [];
+      const exists = current.some((m) => m.toLowerCase() === modelName.toLowerCase());
+      const next = exists
+        ? current.filter((m) => m.toLowerCase() !== modelName.toLowerCase())
+        : [...current, modelName];
+      return { ...prev, modelCategories: next };
+    });
+  };
+
+  const handleCreateInlineModelCategory = () => {
+    const trimmed = newInlineModelName.trim();
+    if (!trimmed) return;
+    const res = addModelCategory(trimmed);
+    if (res.modelCategory) {
+      setFormData((prev) => {
+        const current = Array.isArray(prev.modelCategories) ? prev.modelCategories : [];
+        if (current.some((m) => m.toLowerCase() === res.modelCategory.toLowerCase())) {
+          return prev;
+        }
+        return { ...prev, modelCategories: [...current, res.modelCategory] };
+      });
+      showToast(
+        res.added
+          ? `✓ Modelo "${res.modelCategory}" creado y asignado al repuesto.`
+          : `✓ Modelo "${res.modelCategory}" asignado al repuesto.`
+      );
+    }
+    setNewInlineModelName('');
+    setIsAddingInlineModel(false);
+  };
+
+  const handleAddModelFromManager = () => {
+    const trimmed = newModelCategoryInput.trim();
+    if (!trimmed) return;
+    const res = addModelCategory(trimmed);
+    setNewModelCategoryInput('');
+    showToast(
+      res.added
+        ? `✓ Modelo "${res.modelCategory}" agregado al filtro de la tienda online.`
+        : `El modelo "${res.modelCategory}" ya existe.`
+    );
+  };
+
+  const handleSaveRenameModel = (oldName: string) => {
+    const trimmed = editingModelDraft.trim();
+    if (!trimmed) return;
+    const res = renameModelCategory(oldName, trimmed);
+    if (res.updated) {
+      if (selectedModelCategory === oldName) {
+        setSelectedModelCategory(res.modelCategory);
+      }
+      showToast(`✓ Modelo renombrado a "${res.modelCategory}".`);
+    }
+    setEditingModelName(null);
+    setEditingModelDraft('');
+  };
+
+  const handleDeleteModelFromManager = (modelName: string) => {
+    deleteModelCategory(modelName);
+    if (selectedModelCategory === modelName) {
+      setSelectedModelCategory('all');
+    }
+    showToast(`Modelo "${modelName}" eliminado del filtro.`);
+  };
+
+  const handleBatchAssignModel = () => {
+    if (!batchModelTarget || selectedProductIds.length === 0) return;
+    assignModelCategoryToProducts(selectedProductIds, batchModelTarget, 'add');
+    showToast(
+      `✓ Modelo "${batchModelTarget}" asignado a ${selectedProductIds.length} repuesto(s).`
+    );
+    setBatchModelTarget('');
+  };
+
   const handleSaveProduct = (e: React.FormEvent) => {
     e.preventDefault();
     const trimmedSku = formData.sku.trim();
@@ -416,14 +667,26 @@ export const InventoryView: React.FC = () => {
       categoryToSave = catResult.category;
     }
 
-    const rawImage = formData.imageUrl.trim();
-    let finalImageUrl = normalizeImageUrl(rawImage);
+    const normalizedGallery = Array.from(
+      new Set(
+        [
+          ...(Array.isArray(formData.imageUrls) ? formData.imageUrls : []),
+          ...(formData.imageUrl.trim() ? [formData.imageUrl.trim()] : []),
+        ]
+          .map((u) => normalizeImageUrl(u))
+          .filter(Boolean)
+      )
+    ).slice(0, MAX_PRODUCT_IMAGES);
+
+    let finalImageUrl = normalizedGallery[0] || '';
     if (!finalImageUrl && trimmedName.toLowerCase().includes('maleta')) {
       finalImageUrl = PRESET_PRODUCT_IMAGES.maletaParaMoto;
     }
     if (!finalImageUrl) {
       finalImageUrl = PRESET_PRODUCT_IMAGES.brakeKit;
     }
+    const finalImageUrls =
+      normalizedGallery.length > 0 ? normalizedGallery : [finalImageUrl];
 
     const sanitizedBarcode = formData.barcode.trim() || undefined;
     const sanitizedLocation = formData.warehouseLocation.trim() || undefined;
@@ -456,8 +719,13 @@ export const InventoryView: React.FC = () => {
       minStock: formData.minStock,
       brand: formData.brand,
       compatibility: formData.compatibility,
+      modelCategories:
+        Array.isArray(formData.modelCategories) && formData.modelCategories.length > 0
+          ? formData.modelCategories
+          : [],
       warehouseLocation: sanitizedLocation,
       imageUrl: finalImageUrl,
+      imageUrls: finalImageUrls,
     };
 
     if (editingProduct) {
@@ -471,8 +739,11 @@ export const InventoryView: React.FC = () => {
     }
 
     setFormData(initialFormState);
+    setNewPhotoUrlInput('');
     setIsAddingCategory(false);
     setNewCategoryName('');
+    setIsAddingInlineModel(false);
+    setNewInlineModelName('');
     setImagePreviewError(false);
   };
 
@@ -552,6 +823,21 @@ export const InventoryView: React.FC = () => {
             <span>Importar Excel</span>
           </button>
 
+          {/* Gestionar Modelos de Motos Especializados */}
+          <button
+            type="button"
+            onClick={() => {
+              setEditingModelName(null);
+              setNewModelCategoryInput('');
+              setIsManageModelsModalOpen(true);
+            }}
+            className="px-3 py-2 bg-amber-50 hover:bg-amber-100 text-amber-900 font-bold text-xs rounded-xl border border-amber-300 shadow-2xs transition-colors flex items-center gap-1.5 cursor-pointer"
+            title="Gestionar los modelos de motos especializados para el filtro de la tienda online"
+          >
+            <Bike className="w-3.5 h-3.5 text-amber-600" />
+            <span>Modelos de Motos ({modelCategories.length})</span>
+          </button>
+
           {/* Nuevo Repuesto Individual */}
           <button
             onClick={() => {
@@ -564,6 +850,8 @@ export const InventoryView: React.FC = () => {
               setShowUrlInputInModal(false);
               setIsAddingCategory(false);
               setNewCategoryName('');
+              setIsAddingInlineModel(false);
+              setNewInlineModelName('');
               setIsAddModalOpen(true);
             }}
             className="px-3.5 py-2 bg-slate-900 hover:bg-slate-800 text-white font-semibold text-xs rounded-xl shadow-xs transition-colors flex items-center gap-1.5 cursor-pointer"
@@ -710,6 +998,23 @@ export const InventoryView: React.FC = () => {
             </select>
 
             <select
+              value={selectedModelCategory}
+              onChange={(e) => setSelectedModelCategory(e.target.value)}
+              className={`text-xs p-2 rounded-lg border font-medium ${
+                selectedModelCategory !== 'all'
+                  ? 'border-amber-400 bg-amber-50 text-amber-950 font-bold'
+                  : 'border-slate-200 bg-slate-50 text-slate-700'
+              }`}
+            >
+              <option value="all">Todos los modelos de moto</option>
+              {modelCategories.map((mc) => (
+                <option key={mc} value={mc}>
+                  🏍️ {mc}
+                </option>
+              ))}
+            </select>
+
+            <select
               value={filterStockStatus}
               onChange={(e) => setFilterStockStatus(e.target.value as any)}
               className="text-xs p-2 rounded-lg border border-slate-200 bg-slate-50 font-medium"
@@ -744,12 +1049,34 @@ export const InventoryView: React.FC = () => {
                 ? '1 repuesto seleccionado'
                 : `${selectedProductIds.length} repuestos seleccionados`}
             </span>
-            <span className="text-[11px] text-slate-500 hidden sm:inline">
-              (puedes eliminarlos todos a la vez)
-            </span>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Asignación masiva a Modelo de Moto */}
+            <div className="flex items-center gap-1.5 bg-white border border-amber-300 rounded-lg p-1">
+              <Bike className="w-3.5 h-3.5 text-amber-600 ml-1 shrink-0" />
+              <select
+                value={batchModelTarget}
+                onChange={(e) => setBatchModelTarget(e.target.value)}
+                className="text-xs bg-transparent font-medium text-slate-800 focus:outline-hidden pr-1"
+              >
+                <option value="">Asignar modelo de moto...</option>
+                {modelCategories.map((mc) => (
+                  <option key={mc} value={mc}>
+                    {mc}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                onClick={handleBatchAssignModel}
+                disabled={!batchModelTarget}
+                className="px-2.5 py-1 bg-amber-500 hover:bg-amber-400 disabled:opacity-40 text-slate-950 font-bold text-[11px] rounded-md transition-colors cursor-pointer whitespace-nowrap"
+              >
+                Asignar
+              </button>
+            </div>
+
             <button
               onClick={() => setSelectedProductIds([])}
               className="px-3 py-1.5 text-xs text-slate-600 hover:text-slate-900 hover:bg-amber-100 rounded-lg transition-colors cursor-pointer font-medium"
@@ -854,7 +1181,7 @@ export const InventoryView: React.FC = () => {
                         <div className="flex items-start gap-3">
                           <label
                             className="relative group w-11 h-11 rounded-lg bg-slate-100 shrink-0 border border-slate-200 overflow-hidden cursor-pointer flex items-center justify-center mt-0.5"
-                            title="Haz clic para subir o cambiar la foto de este repuesto"
+                            title="Haz clic para subir o agregar fotos de este repuesto (puedes seleccionar varias)"
                           >
                             {quickUploadingId === product.id ? (
                               <Loader2 className="w-4 h-4 animate-spin text-amber-500" />
@@ -874,6 +1201,11 @@ export const InventoryView: React.FC = () => {
                                 ) : (
                                   <Boxes className="w-4 h-4 text-slate-400" />
                                 )}
+                                {getProductImages(product, false).length > 1 && (
+                                  <span className="absolute bottom-0.5 right-0.5 bg-slate-950/85 text-amber-300 text-[9px] font-bold px-1 rounded leading-tight tabular-nums">
+                                    {getProductImages(product, false).length}
+                                  </span>
+                                )}
                                 <div className="absolute inset-0 bg-slate-900/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
                                   <Camera className="w-4 h-4 text-white" />
                                 </div>
@@ -882,6 +1214,7 @@ export const InventoryView: React.FC = () => {
                             <input
                               type="file"
                               accept="image/*"
+                              multiple
                               onChange={(e) => handleQuickRowImageUpload(product, e)}
                               disabled={quickUploadingId === product.id}
                               className="hidden"
@@ -902,25 +1235,31 @@ export const InventoryView: React.FC = () => {
                               </span>
                               <label
                                 className={`text-[10px] px-1.5 py-0.5 rounded inline-flex items-center gap-1 font-semibold cursor-pointer transition-colors ${
-                                  isEmbeddedImageUrl(product.imageUrl)
+                                  hasAnyEmbeddedImage(product)
                                     ? 'text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200'
                                     : 'text-amber-800 bg-amber-50 hover:bg-amber-100 border border-amber-300'
                                 }`}
-                                title="Subir imagen directamente desde tu dispositivo"
+                                title="Subir una o varias imágenes directamente desde tu dispositivo"
                               >
                                 <Camera className="w-2.5 h-2.5" />
                                 <span>
                                   {quickUploadingId === product.id
                                     ? 'Subiendo...'
-                                    : isEmbeddedImageUrl(product.imageUrl)
-                                    ? 'Cambiar foto'
+                                    : hasAnyEmbeddedImage(product)
+                                    ? (() => {
+                                        const cnt = getProductImages(product, false).length;
+                                        return cnt > 1
+                                          ? `${cnt} fotos · + Agregar`
+                                          : '1 foto · + Agregar';
+                                      })()
                                     : isGoogleDriveUrl(product.imageUrl)
-                                    ? 'Subir foto (reemplazar Drive)'
-                                    : 'Subir foto'}
+                                    ? 'Subir fotos (reemplazar Drive)'
+                                    : 'Subir fotos'}
                                 </span>
                                 <input
                                   type="file"
                                   accept="image/*"
+                                  multiple
                                   onChange={(e) => handleQuickRowImageUpload(product, e)}
                                   disabled={quickUploadingId === product.id}
                                   className="hidden"
@@ -966,6 +1305,19 @@ export const InventoryView: React.FC = () => {
                           >
                             {product.compatibility}
                           </p>
+                        )}
+                        {Array.isArray(product.modelCategories) && product.modelCategories.length > 0 && (
+                          <div className="mt-1 flex flex-wrap gap-1">
+                            {product.modelCategories.map((mc) => (
+                              <span
+                                key={mc}
+                                className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-amber-50 border border-amber-200 text-[9px] font-bold text-amber-900 leading-none"
+                              >
+                                <Bike className="w-2.5 h-2.5 text-amber-600 shrink-0" />
+                                <span>{mc}</span>
+                              </span>
+                            ))}
+                          </div>
                         )}
                       </td>
 
@@ -1332,6 +1684,101 @@ export const InventoryView: React.FC = () => {
                 </div>
               </div>
 
+              {/* Categorías de Modelos de Motos Especializados (Filtro Tienda Online) */}
+              <div className="rounded-xl border border-amber-200/90 bg-amber-50/40 p-3.5 space-y-2.5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <label className="font-bold text-slate-800 text-xs flex items-center gap-1.5">
+                      <Bike className="w-3.5 h-3.5 text-amber-600" />
+                      <span>Modelos de Moto Especializados (Filtro Tienda Online)</span>
+                    </label>
+                    <p className="text-[11px] text-slate-500 mt-0.5">
+                      Selecciona uno o varios modelos específicos para que este repuesto aparezca al filtrar por moto en tu tienda online.
+                    </p>
+                  </div>
+                  {!isAddingInlineModel && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsAddingInlineModel(true);
+                        setNewInlineModelName('');
+                      }}
+                      className="inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border border-amber-300 bg-white hover:bg-amber-50 text-amber-900 font-bold text-[11px] cursor-pointer shrink-0"
+                    >
+                      <Plus className="w-3 h-3" />
+                      <span>Nuevo modelo</span>
+                    </button>
+                  )}
+                </div>
+
+                {isAddingInlineModel && (
+                  <div className="flex items-center gap-2 bg-white border border-amber-300 rounded-lg p-2">
+                    <input
+                      type="text"
+                      value={newInlineModelName}
+                      onChange={(e) => setNewInlineModelName(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault();
+                          handleCreateInlineModelCategory();
+                        } else if (e.key === 'Escape') {
+                          setIsAddingInlineModel(false);
+                          setNewInlineModelName('');
+                        }
+                      }}
+                      placeholder="Ej. Suzuki GN 125, Yamaha XT 250..."
+                      autoFocus
+                      className="flex-1 text-xs p-1.5 rounded border border-slate-200 bg-slate-50 focus:bg-white focus:outline-hidden focus:border-amber-500"
+                    />
+                    <button
+                      type="button"
+                      onClick={handleCreateInlineModelCategory}
+                      disabled={!newInlineModelName.trim()}
+                      className="px-3 py-1.5 rounded-md bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-slate-950 font-bold text-xs cursor-pointer"
+                    >
+                      Agregar
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsAddingInlineModel(false);
+                        setNewInlineModelName('');
+                      }}
+                      className="px-2 py-1.5 text-xs text-slate-500 hover:text-slate-800 cursor-pointer"
+                    >
+                      Cancelar
+                    </button>
+                  </div>
+                )}
+
+                <div className="flex flex-wrap gap-1.5">
+                  {modelCategories.map((mc) => {
+                    const isChecked = (formData.modelCategories || []).some(
+                      (selected) => selected.toLowerCase() === mc.toLowerCase()
+                    );
+                    return (
+                      <button
+                        key={mc}
+                        type="button"
+                        onClick={() => handleToggleFormModelCategory(mc)}
+                        className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border text-[11px] transition-all cursor-pointer ${
+                          isChecked
+                            ? 'bg-amber-500 border-amber-600 text-slate-950 font-bold shadow-2xs'
+                            : 'bg-white border-slate-200 text-slate-700 font-medium hover:border-amber-300 hover:bg-amber-50'
+                        }`}
+                      >
+                        {isChecked ? (
+                          <Check className="w-3 h-3 text-slate-950 shrink-0" />
+                        ) : (
+                          <Plus className="w-3 h-3 text-slate-400 shrink-0" />
+                        )}
+                        <span>{mc}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
               {/* BLOQUE FINANCIERO SIMPLIFICADO: 1 COSTO EN DIVISAS + 2 PRECIOS DE VENTA ($ BCV TIENDA Y REF. DIVISAS ADMIN) */}
               <div className="rounded-xl border border-slate-200 bg-slate-50/80 p-4 space-y-4">
                 <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-slate-200">
@@ -1578,23 +2025,23 @@ export const InventoryView: React.FC = () => {
                 onDrop={(e) => {
                   e.preventDefault();
                   setIsDraggingPhoto(false);
-                  const file = e.dataTransfer.files?.[0];
-                  if (file) {
-                    void processSelectedModalFile(file);
+                  if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                    void processSelectedModalFiles(e.dataTransfer.files);
                   }
                 }}
                 onPaste={(e) => {
                   const items = e.clipboardData?.items;
                   if (!items) return;
+                  const pastedFiles: File[] = [];
                   for (let i = 0; i < items.length; i++) {
                     if (items[i].type.startsWith('image/')) {
                       const pastedFile = items[i].getAsFile();
-                      if (pastedFile) {
-                        e.preventDefault();
-                        void processSelectedModalFile(pastedFile);
-                        break;
-                      }
+                      if (pastedFile) pastedFiles.push(pastedFile);
                     }
+                  }
+                  if (pastedFiles.length > 0) {
+                    e.preventDefault();
+                    void processSelectedModalFiles(pastedFiles);
                   }
                 }}
                 className={`space-y-3 p-4 rounded-xl border-2 transition-colors ${
@@ -1603,201 +2050,361 @@ export const InventoryView: React.FC = () => {
                     : 'bg-slate-50 border-slate-200'
                 }`}
               >
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <label className="block font-semibold text-slate-800">
-                    Foto del Repuesto (Subida directa a la tienda)
-                  </label>
-                  {isEmbeddedImageUrl(formData.imageUrl) && (
-                    <span className="inline-flex items-center gap-1 text-[10px] bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full font-semibold">
-                      <CheckCircle2 className="w-3 h-3 text-emerald-600" />
-                      Foto Directa ({Math.max(1, Math.round((formData.imageUrl.length * 0.75) / 1024))} KB)
-                    </span>
-                  )}
-                </div>
+                {(() => {
+                  const modalPhotos =
+                    Array.isArray(formData.imageUrls) && formData.imageUrls.length > 0
+                      ? formData.imageUrls
+                      : formData.imageUrl
+                      ? [formData.imageUrl]
+                      : [];
+                  const totalKb = modalPhotos.reduce(
+                    (acc, url) => acc + (isEmbeddedImageUrl(url) ? Math.round((url.length * 0.75) / 1024) : 0),
+                    0
+                  );
+                  const canAddMore = modalPhotos.length < MAX_PRODUCT_IMAGES;
 
-                {/* Live Image Preview + Direct Upload Zone */}
-                <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3.5">
-                  <div className="w-24 h-24 rounded-xl bg-white border border-slate-200 overflow-hidden shrink-0 relative flex items-center justify-center shadow-2xs">
-                    {formData.imageUrl ? (
-                      <img
-                        key={formData.imageUrl}
-                        src={formData.imageUrl}
-                        alt="Vista previa del repuesto"
-                        className="w-full h-full object-cover"
-                        referrerPolicy="no-referrer"
-                        onLoad={() => setImagePreviewError(false)}
-                        onError={() => setImagePreviewError(true)}
-                      />
-                    ) : (
-                      <div className="text-center p-2 text-slate-400">
-                        <ImageIcon className="w-6 h-6 mx-auto mb-1 opacity-60" />
-                        <span className="text-[10px] block">Sin foto</span>
+                  return (
+                    <>
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <label className="block font-semibold text-slate-800">
+                          Galería de Fotos del Repuesto (Hasta {MAX_PRODUCT_IMAGES} fotos)
+                        </label>
+                        <div className="flex items-center gap-1.5">
+                          <span className="inline-flex items-center gap-1 text-[10px] bg-slate-900 text-amber-300 px-2 py-0.5 rounded-full font-bold tabular-nums">
+                            {modalPhotos.length} / {MAX_PRODUCT_IMAGES} fotos
+                          </span>
+                          {totalKb > 0 && (
+                            <span className="inline-flex items-center gap-1 text-[10px] bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full font-semibold tabular-nums">
+                              <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                              {totalKb} KB
+                            </span>
+                          )}
+                        </div>
                       </div>
-                    )}
-                  </div>
 
-                  <div className="flex-1 space-y-2 w-full">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <label className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs rounded-lg transition-colors cursor-pointer shadow-xs">
-                        {isCompressingUpload ? (
-                          <Loader2 className="w-4 h-4 animate-spin text-amber-400" />
-                        ) : (
-                          <Upload className="w-4 h-4 text-amber-400" />
+                      {/* Multi-Photo Grid */}
+                      {modalPhotos.length > 0 ? (
+                        <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
+                          {modalPhotos.map((photoUrl, idx) => (
+                            <div
+                              key={`${idx}-${photoUrl.slice(0, 40)}`}
+                              className={`relative rounded-xl bg-white border overflow-hidden shadow-2xs flex flex-col ${
+                                idx === 0
+                                  ? 'border-amber-400 ring-2 ring-amber-200'
+                                  : 'border-slate-200'
+                              }`}
+                            >
+                              <div className="relative aspect-4/3 bg-slate-100 overflow-hidden">
+                                <img
+                                  src={photoUrl}
+                                  alt={`Foto ${idx + 1} del repuesto`}
+                                  className="w-full h-full object-cover"
+                                  referrerPolicy="no-referrer"
+                                  onLoad={() => setImagePreviewError(false)}
+                                  onError={() => setImagePreviewError(true)}
+                                />
+                                {idx === 0 && (
+                                  <span className="absolute top-1.5 left-1.5 inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-amber-500 text-slate-950 text-[9px] font-extrabold shadow-xs">
+                                    <Star className="w-2.5 h-2.5 fill-slate-950" />
+                                    Principal
+                                  </span>
+                                )}
+                                <span className="absolute bottom-1 right-1 bg-slate-950/75 text-white text-[9px] font-mono font-bold px-1.5 py-0.5 rounded">
+                                  #{idx + 1}
+                                </span>
+                              </div>
+
+                              <div className="p-1.5 bg-white border-t border-slate-100 flex items-center justify-between gap-1">
+                                <div className="flex items-center gap-0.5">
+                                  {idx > 0 && (
+                                    <button
+                                      type="button"
+                                      onClick={() => handleSetPrimaryPhoto(idx)}
+                                      className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-amber-50 hover:bg-amber-100 border border-amber-200 text-amber-900 text-[10px] font-bold cursor-pointer"
+                                      title="Usar como foto principal de portada"
+                                    >
+                                      <Star className="w-2.5 h-2.5 text-amber-600" />
+                                      <span>Portada</span>
+                                    </button>
+                                  )}
+                                  {idx > 0 && (
+                                    <button
+                                      type="button"
+                                      onClick={() => handleMovePhoto(idx, -1)}
+                                      className="p-1 rounded text-slate-500 hover:text-slate-900 hover:bg-slate-100 cursor-pointer"
+                                      title="Mover a la izquierda"
+                                    >
+                                      <ChevronLeft className="w-3 h-3" />
+                                    </button>
+                                  )}
+                                  {idx < modalPhotos.length - 1 && (
+                                    <button
+                                      type="button"
+                                      onClick={() => handleMovePhoto(idx, 1)}
+                                      className="p-1 rounded text-slate-500 hover:text-slate-900 hover:bg-slate-100 cursor-pointer"
+                                      title="Mover a la derecha"
+                                    >
+                                      <ChevronRight className="w-3 h-3" />
+                                    </button>
+                                  )}
+                                </div>
+                                <button
+                                  type="button"
+                                  onClick={() => handleRemovePhoto(idx)}
+                                  className="p-1 rounded text-rose-500 hover:text-rose-700 hover:bg-rose-50 cursor-pointer"
+                                  title="Quitar esta foto"
+                                >
+                                  <Trash2 className="w-3 h-3" />
+                                </button>
+                              </div>
+                            </div>
+                          ))}
+
+                          {canAddMore && (
+                            <label className="aspect-4/3 rounded-xl border-2 border-dashed border-slate-300 hover:border-amber-400 bg-white/80 hover:bg-amber-50/50 transition-colors cursor-pointer flex flex-col items-center justify-center p-3 text-center text-slate-500 hover:text-amber-800">
+                              {isCompressingUpload ? (
+                                <Loader2 className="w-5 h-5 animate-spin text-amber-500 mb-1" />
+                              ) : (
+                                <Plus className="w-5 h-5 mb-1" />
+                              )}
+                              <span className="text-[11px] font-bold">
+                                {isCompressingUpload ? 'Optimizando...' : 'Agregar más fotos'}
+                              </span>
+                              <span className="text-[10px] opacity-75">
+                                Quedan {MAX_PRODUCT_IMAGES - modalPhotos.length}
+                              </span>
+                              <input
+                                type="file"
+                                accept="image/*"
+                                multiple
+                                onChange={handleLocalImageUpload}
+                                disabled={isCompressingUpload}
+                                className="hidden"
+                              />
+                            </label>
+                          )}
+                        </div>
+                      ) : (
+                        <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3.5">
+                          <div className="w-24 h-24 rounded-xl bg-white border border-slate-200 overflow-hidden shrink-0 flex items-center justify-center shadow-2xs">
+                            <div className="text-center p-2 text-slate-400">
+                              <ImageIcon className="w-6 h-6 mx-auto mb-1 opacity-60" />
+                              <span className="text-[10px] block">Sin fotos</span>
+                            </div>
+                          </div>
+                          <div className="flex-1 text-xs text-slate-500">
+                            Sube hasta <strong>{MAX_PRODUCT_IMAGES} fotos</strong> del repuesto (distintos ángulos, empaque, medidas o detalle).
+                          </div>
+                        </div>
+                      )}
+
+                      <div className="flex flex-wrap items-center gap-2 pt-1">
+                        <label
+                          className={`inline-flex items-center gap-1.5 px-3.5 py-2 font-bold text-xs rounded-lg transition-colors shadow-xs ${
+                            canAddMore && !isCompressingUpload
+                              ? 'bg-slate-900 hover:bg-slate-800 text-white cursor-pointer'
+                              : 'bg-slate-300 text-slate-500 cursor-not-allowed'
+                          }`}
+                        >
+                          {isCompressingUpload ? (
+                            <Loader2 className="w-4 h-4 animate-spin text-amber-400" />
+                          ) : (
+                            <Upload className="w-4 h-4 text-amber-400" />
+                          )}
+                          <span>
+                            {isCompressingUpload
+                              ? 'Optimizando fotos...'
+                              : modalPhotos.length > 0
+                              ? 'Subir más fotos desde dispositivo'
+                              : 'Subir fotos desde dispositivo (varias a la vez)'}
+                          </span>
+                          <input
+                            type="file"
+                            accept="image/*"
+                            multiple
+                            onChange={handleLocalImageUpload}
+                            disabled={isCompressingUpload || !canAddMore}
+                            className="hidden"
+                          />
+                        </label>
+
+                        {modalPhotos.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              syncFormPhotos([]);
+                              setImagePreviewError(false);
+                              setUploadError(null);
+                            }}
+                            className="px-2.5 py-2 text-[11px] font-semibold text-rose-600 hover:bg-rose-50 border border-rose-200 rounded-lg transition-colors cursor-pointer"
+                          >
+                            Quitar todas
+                          </button>
                         )}
-                        <span>
-                          {isCompressingUpload
-                            ? 'Optimizando foto...'
-                            : formData.imageUrl
-                            ? 'Cambiar foto desde dispositivo'
-                            : 'Subir foto desde dispositivo'}
-                        </span>
-                        <input
-                          type="file"
-                          accept="image/*"
-                          onChange={handleLocalImageUpload}
-                          disabled={isCompressingUpload}
-                          className="hidden"
-                        />
-                      </label>
+                      </div>
 
-                      {formData.imageUrl && (
+                      <p className="text-[11px] text-slate-500 leading-snug">
+                        Puedes seleccionar <strong>varias fotos a la vez</strong>, arrastrarlas y soltarlas aquí o pegarlas con{' '}
+                        <kbd className="px-1 py-0.5 bg-white border border-slate-300 rounded text-[10px]">Ctrl+V</kbd>. La foto #1 será la portada en el catálogo.
+                      </p>
+
+                      {uploadError && (
+                        <p className="text-[11px] text-rose-600 font-semibold">{uploadError}</p>
+                      )}
+                      {imagePreviewError && (
+                        <p className="text-[11px] text-rose-600 font-semibold flex items-center gap-1">
+                          <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+                          <span>Una imagen no cargó; sube una foto directa con el botón de arriba.</span>
+                        </p>
+                      )}
+
+                      {/* Optional External URL toggle */}
+                      <div className="pt-1">
                         <button
                           type="button"
-                          onClick={() => {
-                            setFormData((prev) => ({ ...prev, imageUrl: '' }));
-                            setImagePreviewError(false);
-                          }}
-                          className="px-2.5 py-2 text-[11px] font-semibold text-rose-600 hover:bg-rose-50 border border-rose-200 rounded-lg transition-colors cursor-pointer"
+                          onClick={() => setShowUrlInputInModal((prev) => !prev)}
+                          className="inline-flex items-center gap-1 text-[11px] font-medium text-slate-500 hover:text-slate-800 cursor-pointer"
                         >
-                          Quitar foto
+                          <Link2 className="w-3 h-3" />
+                          <span>
+                            {showUrlInputInModal
+                              ? 'Ocultar campo de enlace web'
+                              : 'Opcional: agregar foto mediante enlace web (URL)'}
+                          </span>
                         </button>
-                      )}
-                    </div>
 
-                    <p className="text-[11px] text-slate-500 leading-snug">
-                      También puedes <strong>arrastrar y soltar</strong> una imagen aquí o pegarla con <kbd className="px-1 py-0.5 bg-white border border-slate-300 rounded text-[10px]">Ctrl+V</kbd>. Se guarda directamente en la tienda y la ven todos los clientes.
-                    </p>
+                        {showUrlInputInModal && (
+                          <div className="mt-2 flex items-center gap-1.5">
+                            <input
+                              type="text"
+                              value={newPhotoUrlInput}
+                              onChange={(e) => setNewPhotoUrlInput(e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                  e.preventDefault();
+                                  handleAddExternalPhotoUrl();
+                                }
+                              }}
+                              placeholder="Pega aquí una URL directa (https://...)"
+                              className="flex-1 p-2 rounded-lg border border-slate-300 bg-white font-mono text-[11px] focus:border-amber-500 focus:outline-hidden"
+                            />
+                            <button
+                              type="button"
+                              onClick={handleAddExternalPhotoUrl}
+                              disabled={!newPhotoUrlInput.trim() || !canAddMore}
+                              className="px-3 py-2 rounded-lg bg-slate-900 hover:bg-slate-800 disabled:opacity-40 text-white font-bold text-[11px] cursor-pointer shrink-0"
+                            >
+                              + Agregar
+                            </button>
+                          </div>
+                        )}
+                      </div>
 
-                    {uploadError && (
-                      <p className="text-[11px] text-rose-600 font-semibold">{uploadError}</p>
-                    )}
-                    {imagePreviewError && (
-                      <p className="text-[11px] text-rose-600 font-semibold flex items-center gap-1">
-                        <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
-                        <span>La imagen actual no cargó; sube una foto directa con el botón de arriba.</span>
-                      </p>
-                    )}
-                  </div>
-                </div>
-
-                {/* Optional External URL toggle (secondary fallback, zero Google Drive requirement) */}
-                <div className="pt-1">
-                  <button
-                    type="button"
-                    onClick={() => setShowUrlInputInModal((prev) => !prev)}
-                    className="inline-flex items-center gap-1 text-[11px] font-medium text-slate-500 hover:text-slate-800 cursor-pointer"
-                  >
-                    <Link2 className="w-3 h-3" />
-                    <span>
-                      {showUrlInputInModal
-                        ? 'Ocultar campo de enlace web'
-                        : 'Opcional: pegar un enlace web directo (URL)'}
-                    </span>
-                  </button>
-
-                  {showUrlInputInModal && (
-                    <input
-                      type="text"
-                      value={isEmbeddedImageUrl(formData.imageUrl) ? '' : formData.imageUrl}
-                      onChange={(e) => handleImageUrlChange(e.target.value)}
-                      placeholder="Pega aquí una URL directa (https://...)"
-                      className="mt-2 w-full p-2 rounded-lg border border-slate-300 bg-white font-mono text-[11px] focus:border-amber-500 focus:outline-hidden"
-                    />
-                  )}
-                </div>
-
-                {/* Quick Presets for Products, especially Maleta para Moto */}
-                <div className="pt-2 border-t border-slate-200">
-                  <span className="text-[10px] uppercase font-bold text-slate-500 tracking-wider block mb-1.5">
-                    ¿Quieres usar la imagen oficial del catálogo?
-                  </span>
-                  <div className="flex flex-wrap items-center gap-1.5">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setFormData((prev) => ({
-                          ...prev,
-                          imageUrl: PRESET_PRODUCT_IMAGES.maletaParaMoto,
-                          name: prev.name || 'Maleta para Moto Trasera Baúl 45L con Cerradura',
-                          category: 'Accesorios',
-                          brand: prev.brand || 'GIVI Style Pro',
-                          compatibility: prev.compatibility || 'Universal con parrilla trasera',
-                        }));
-                        setImagePreviewError(false);
-                      }}
-                      className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-bold bg-amber-500 hover:bg-amber-400 text-slate-950 rounded-md transition-colors cursor-pointer shadow-2xs"
-                    >
-                      <Sparkles className="w-3 h-3" />
-                      <span>📦 Usar foto de Maleta para Moto</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setFormData((prev) => ({
-                          ...prev,
-                          imageUrl: PRESET_PRODUCT_IMAGES.helmet,
-                          category: 'Accesorios',
-                        }));
-                        setImagePreviewError(false);
-                      }}
-                      className="px-2 py-1 text-[10px] font-medium bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-md transition-colors cursor-pointer"
-                    >
-                      Casco
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setFormData((prev) => ({
-                          ...prev,
-                          imageUrl: PRESET_PRODUCT_IMAGES.brakeKit,
-                          category: 'Frenos',
-                        }));
-                        setImagePreviewError(false);
-                      }}
-                      className="px-2 py-1 text-[10px] font-medium bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-md transition-colors cursor-pointer"
-                    >
-                      Kit de Frenos
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setFormData((prev) => ({
-                          ...prev,
-                          imageUrl: PRESET_PRODUCT_IMAGES.exhaust,
-                          category: 'Motor',
-                        }));
-                        setImagePreviewError(false);
-                      }}
-                      className="px-2 py-1 text-[10px] font-medium bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-md transition-colors cursor-pointer"
-                    >
-                      Escape
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setFormData((prev) => ({
-                          ...prev,
-                          imageUrl: PRESET_PRODUCT_IMAGES.upholsterySeat,
-                          category: 'Tapicería',
-                        }));
-                        setImagePreviewError(false);
-                      }}
-                      className="px-2 py-1 text-[10px] font-medium bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-md transition-colors cursor-pointer"
-                    >
-                      Asiento
-                    </button>
-                  </div>
-                </div>
+                      {/* Quick Presets */}
+                      <div className="pt-2 border-t border-slate-200">
+                        <span className="text-[10px] uppercase font-bold text-slate-500 tracking-wider block mb-1.5">
+                          ¿Quieres usar una imagen oficial del catálogo?
+                        </span>
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const nextPhotos = Array.from(
+                                new Set([PRESET_PRODUCT_IMAGES.maletaParaMoto, ...modalPhotos])
+                              ).slice(0, MAX_PRODUCT_IMAGES);
+                              setFormData((prev) => ({
+                                ...prev,
+                                imageUrl: nextPhotos[0],
+                                imageUrls: nextPhotos,
+                                name: prev.name || 'Maleta para Moto Trasera Baúl 45L con Cerradura',
+                                category: 'Accesorios',
+                                brand: prev.brand || 'GIVI Style Pro',
+                                compatibility: prev.compatibility || 'Universal con parrilla trasera',
+                              }));
+                              setImagePreviewError(false);
+                            }}
+                            className="inline-flex items-center gap-1 px-2.5 py-1 text-[11px] font-bold bg-amber-500 hover:bg-amber-400 text-slate-950 rounded-md transition-colors cursor-pointer shadow-2xs"
+                          >
+                            <Sparkles className="w-3 h-3" />
+                            <span>📦 Usar foto de Maleta para Moto</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const nextPhotos = Array.from(
+                                new Set([PRESET_PRODUCT_IMAGES.helmet, ...modalPhotos])
+                              ).slice(0, MAX_PRODUCT_IMAGES);
+                              setFormData((prev) => ({
+                                ...prev,
+                                imageUrl: nextPhotos[0],
+                                imageUrls: nextPhotos,
+                                category: 'Accesorios',
+                              }));
+                              setImagePreviewError(false);
+                            }}
+                            className="px-2 py-1 text-[10px] font-medium bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-md transition-colors cursor-pointer"
+                          >
+                            Casco
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const nextPhotos = Array.from(
+                                new Set([PRESET_PRODUCT_IMAGES.brakeKit, ...modalPhotos])
+                              ).slice(0, MAX_PRODUCT_IMAGES);
+                              setFormData((prev) => ({
+                                ...prev,
+                                imageUrl: nextPhotos[0],
+                                imageUrls: nextPhotos,
+                                category: 'Frenos',
+                              }));
+                              setImagePreviewError(false);
+                            }}
+                            className="px-2 py-1 text-[10px] font-medium bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-md transition-colors cursor-pointer"
+                          >
+                            Kit de Frenos
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const nextPhotos = Array.from(
+                                new Set([PRESET_PRODUCT_IMAGES.exhaust, ...modalPhotos])
+                              ).slice(0, MAX_PRODUCT_IMAGES);
+                              setFormData((prev) => ({
+                                ...prev,
+                                imageUrl: nextPhotos[0],
+                                imageUrls: nextPhotos,
+                                category: 'Motor',
+                              }));
+                              setImagePreviewError(false);
+                            }}
+                            className="px-2 py-1 text-[10px] font-medium bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-md transition-colors cursor-pointer"
+                          >
+                            Escape
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const nextPhotos = Array.from(
+                                new Set([PRESET_PRODUCT_IMAGES.upholsterySeat, ...modalPhotos])
+                              ).slice(0, MAX_PRODUCT_IMAGES);
+                              setFormData((prev) => ({
+                                ...prev,
+                                imageUrl: nextPhotos[0],
+                                imageUrls: nextPhotos,
+                                category: 'Tapicería',
+                              }));
+                              setImagePreviewError(false);
+                            }}
+                            className="px-2 py-1 text-[10px] font-medium bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-md transition-colors cursor-pointer"
+                          >
+                            Asiento
+                          </button>
+                        </div>
+                      </div>
+                    </>
+                  );
+                })()}
               </div>
 
               <div>
@@ -1988,6 +2595,180 @@ export const InventoryView: React.FC = () => {
               >
                 <Trash2 className="w-3.5 h-3.5" />
                 <span>Sí, eliminar {selectedProductIds.length} repuestos</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Manage Specialized Motorcycle Model Categories Modal */}
+      {isManageModelsModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs">
+          <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-xl max-h-[88vh] flex flex-col overflow-hidden animate-in fade-in zoom-in-95 duration-150">
+            <div className="p-4 bg-slate-900 text-white flex items-center justify-between gap-3">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-amber-500/20 border border-amber-400/30 text-amber-400 flex items-center justify-center shrink-0">
+                  <Bike className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-sm font-display">
+                    Modelos de Motos Especializados
+                  </h3>
+                  <p className="text-[11px] text-slate-300">
+                    Aparecen como segundo filtro en tu Tienda Online. Agrega o edita modelos en cualquier momento.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsManageModelsModalOpen(false)}
+                className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-white/10 cursor-pointer"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+
+            <div className="p-4 border-b border-slate-200 bg-amber-50/50">
+              <label className="block text-xs font-bold text-slate-800 mb-1.5">
+                Agregar nuevo modelo de moto al catálogo online
+              </label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="text"
+                  value={newModelCategoryInput}
+                  onChange={(e) => setNewModelCategoryInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      handleAddModelFromManager();
+                    }
+                  }}
+                  placeholder="Ej. Suzuki GN 125 / Yamaha FZ16 / Empire TX 200..."
+                  className="flex-1 px-3 py-2 rounded-lg border border-amber-300 bg-white text-xs text-slate-900 focus:outline-hidden focus:border-amber-500"
+                />
+                <button
+                  type="button"
+                  onClick={handleAddModelFromManager}
+                  disabled={!newModelCategoryInput.trim()}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-slate-950 font-bold text-xs cursor-pointer shrink-0"
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>Agregar</span>
+                </button>
+              </div>
+            </div>
+
+            <div className="p-4 overflow-y-auto flex-1 space-y-2">
+              {modelCategories.length === 0 ? (
+                <p className="text-center text-xs text-slate-500 py-8">
+                  No hay modelos configurados aún. Agrega el primero arriba.
+                </p>
+              ) : (
+                modelCategories.map((mc) => {
+                  const matchCount = products.filter((p) =>
+                    doesProductMatchModelCategory(p, mc)
+                  ).length;
+                  const isEditingThis = editingModelName === mc;
+                  return (
+                    <div
+                      key={mc}
+                      className="flex items-center justify-between gap-2 p-2.5 rounded-xl border border-slate-200 bg-slate-50/70 hover:bg-white transition-colors"
+                    >
+                      {isEditingThis ? (
+                        <div className="flex items-center gap-1.5 flex-1">
+                          <input
+                            type="text"
+                            value={editingModelDraft}
+                            onChange={(e) => setEditingModelDraft(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                e.preventDefault();
+                                handleSaveRenameModel(mc);
+                              } else if (e.key === 'Escape') {
+                                setEditingModelName(null);
+                                setEditingModelDraft('');
+                              }
+                            }}
+                            autoFocus
+                            className="flex-1 px-2.5 py-1.5 rounded-lg border border-amber-400 bg-white text-xs font-semibold text-slate-900 focus:outline-hidden"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => handleSaveRenameModel(mc)}
+                            className="px-2.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-bold cursor-pointer"
+                          >
+                            Guardar
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditingModelName(null);
+                              setEditingModelDraft('');
+                            }}
+                            className="px-2 py-1.5 rounded-lg text-slate-500 hover:text-slate-800 text-[11px] font-semibold cursor-pointer"
+                          >
+                            Cancelar
+                          </button>
+                        </div>
+                      ) : (
+                        <>
+                          <div className="flex items-center gap-2 min-w-0">
+                            <Bike className="w-4 h-4 text-amber-600 shrink-0" />
+                            <span className="text-xs font-bold text-slate-900 truncate">
+                              {mc}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setSelectedModelCategory(mc);
+                                setIsManageModelsModalOpen(false);
+                              }}
+                              className="px-2 py-0.5 rounded-md bg-amber-100 hover:bg-amber-200 text-amber-900 font-mono text-[10px] font-bold shrink-0 cursor-pointer"
+                              title="Filtrar inventario por este modelo"
+                            >
+                              {matchCount} rep.
+                            </button>
+                          </div>
+
+                          <div className="flex items-center gap-1 shrink-0">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEditingModelName(mc);
+                                setEditingModelDraft(mc);
+                              }}
+                              className="p-1.5 rounded-lg text-slate-500 hover:text-slate-900 hover:bg-slate-200/70 transition-colors cursor-pointer"
+                              title="Renombrar modelo"
+                            >
+                              <Edit2 className="w-3.5 h-3.5" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteModelFromManager(mc)}
+                              className="p-1.5 rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors cursor-pointer"
+                              title="Eliminar modelo del filtro"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+
+            <div className="p-3.5 bg-slate-50 border-t border-slate-200 flex items-center justify-between gap-2 text-[11px] text-slate-500">
+              <span>
+                Tip: También puedes seleccionar varios repuestos en la tabla y asignarles un modelo en bloque.
+              </span>
+              <button
+                type="button"
+                onClick={() => setIsManageModelsModalOpen(false)}
+                className="px-4 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs cursor-pointer shrink-0"
+              >
+                Listo
               </button>
             </div>
           </div>

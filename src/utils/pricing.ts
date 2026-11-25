@@ -317,7 +317,13 @@ export function sanitizeProductForPublic(product: Product): Product {
     minStock: product.minStock,
     brand: product.brand,
     compatibility: product.compatibility,
+    ...(Array.isArray(product.modelCategories) && product.modelCategories.length > 0
+      ? { modelCategories: product.modelCategories }
+      : {}),
     imageUrl: product.imageUrl,
+    ...(Array.isArray(product.imageUrls) && product.imageUrls.length > 0
+      ? { imageUrls: product.imageUrls }
+      : {}),
     barcode: product.barcode,
     featured: product.featured,
   };
@@ -342,7 +348,13 @@ export function serializePublicProductForApi(product: Record<string, any>, bcvRa
     minStock: Number(product.minStock) || 0,
     brand: product.brand || '',
     compatibility: product.compatibility || '',
+    ...(Array.isArray(product.modelCategories) && product.modelCategories.length > 0
+      ? { modelCategories: product.modelCategories }
+      : {}),
     imageUrl: product.imageUrl || '',
+    ...(Array.isArray(product.imageUrls) && product.imageUrls.length > 0
+      ? { imageUrls: product.imageUrls }
+      : {}),
     barcode: product.barcode || '',
     featured: Boolean(product.featured),
   };

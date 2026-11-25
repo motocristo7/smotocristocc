@@ -19,13 +19,23 @@ import {
   TrendingUp,
   X,
   Share2,
+  Bike,
+  Plus,
+  Filter,
+  ChevronLeft,
+  Images,
 } from 'lucide-react';
 import {
   normalizeImageUrl,
   PRESET_PRODUCT_IMAGES,
   getFallbackProductImage,
   handleProductImageError,
+  getProductImages,
 } from '../../utils/imageUrl';
+import {
+  doesProductMatchModelCategory,
+  getProductModelCategories,
+} from '../../utils/modelCategories';
 import { CustomerPendingAccountsModal } from '../modals/CustomerPendingAccountsModal';
 
 interface StorefrontProps {
@@ -36,6 +46,9 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
   const {
     onlineProducts,
     categories: allCategories,
+    modelCategories,
+    addModelCategory,
+    isAdmin,
     addToCart,
     settings,
     setCurrentView,
@@ -44,12 +57,33 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
   } = useApp();
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
+  const [selectedModelCategory, setSelectedModelCategory] = useState<string>('all');
+  const [isAddingStoreModel, setIsAddingStoreModel] = useState(false);
+  const [newStoreModelName, setNewStoreModelName] = useState('');
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
+  const [modalImageIndex, setModalImageIndex] = useState<number>(0);
+  const [cardImageIndices, setCardImageIndices] = useState<Record<string, number>>({});
   const [copiedBank, setCopiedBank] = useState<string | null>(null);
   const [copiedStoreLink, setCopiedStoreLink] = useState(false);
   const [recentlyAddedId, setRecentlyAddedId] = useState<string | null>(null);
   const [cartToast, setCartToast] = useState<{ productName: string } | null>(null);
   const [isPendingAccountsOpen, setIsPendingAccountsOpen] = useState(false);
+
+  const openProductDetailModal = (product: Product, startIndex = 0) => {
+    setSelectedProduct(product);
+    setModalImageIndex(startIndex);
+  };
+
+  const handleQuickAddModelFromStore = () => {
+    const trimmed = newStoreModelName.trim();
+    if (!trimmed) return;
+    const res = addModelCategory(trimmed);
+    if (res.modelCategory) {
+      setSelectedModelCategory(res.modelCategory);
+    }
+    setNewStoreModelName('');
+    setIsAddingStoreModel(false);
+  };
 
   const storeName = onlineStoreBrand || 'Mercado Moto CC';
 
@@ -98,6 +132,18 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
     );
   }, [allCategories, onlineProducts]);
 
+  // Products filtered only by selected model (used for live part-category counts)
+  const productsByModel = useMemo(() => {
+    if (selectedModelCategory === 'all') return onlineProducts;
+    return onlineProducts.filter((p) => doesProductMatchModelCategory(p, selectedModelCategory));
+  }, [onlineProducts, selectedModelCategory]);
+
+  // Products filtered only by selected spare-part category (used for live model-category counts)
+  const productsByPartCategory = useMemo(() => {
+    if (selectedCategory === 'all') return onlineProducts;
+    return onlineProducts.filter((p) => p.category === selectedCategory);
+  }, [onlineProducts, selectedCategory]);
+
   const filteredProducts = useMemo(() => {
     const filtered = onlineProducts.filter((product) => {
       if (product.stock <= 0) return false;
@@ -106,14 +152,25 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
         return false;
       }
 
+      if (
+        selectedModelCategory !== 'all' &&
+        !doesProductMatchModelCategory(product, selectedModelCategory)
+      ) {
+        return false;
+      }
+
       if (searchTerm.trim()) {
         const query = searchTerm.toLowerCase();
+        const modelMatch = Array.isArray(product.modelCategories)
+          ? product.modelCategories.some((m) => m.toLowerCase().includes(query))
+          : false;
         return (
           product.name.toLowerCase().includes(query) ||
           (product.description && product.description.toLowerCase().includes(query)) ||
           product.sku.toLowerCase().includes(query) ||
           product.brand.toLowerCase().includes(query) ||
-          product.compatibility.toLowerCase().includes(query)
+          product.compatibility.toLowerCase().includes(query) ||
+          modelMatch
         );
       }
 
@@ -123,7 +180,10 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
     return [...filtered].sort((a, b) =>
       a.name.trim().localeCompare(b.name.trim(), 'es', { sensitivity: 'base', numeric: true })
     );
-  }, [onlineProducts, selectedCategory, searchTerm]);
+  }, [onlineProducts, selectedCategory, selectedModelCategory, searchTerm]);
+
+  const hasActiveFilters =
+    selectedCategory !== 'all' || selectedModelCategory !== 'all' || Boolean(searchTerm.trim());
 
   const handleCopy = (text: string, label: string) => {
     navigator.clipboard.writeText(text);
@@ -245,7 +305,7 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
                 type="text"
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
-                placeholder="Buscar por repuesto, marca, referencia o moto (ej. Bera SBR, Horse, NMAX, GN)..."
+                placeholder="Buscar por repuesto, marca, referencia o moto (ej. DR650, KLR, Falcon 400, Supershadow, Gavilán)..."
                 className="w-full pl-10 pr-4 py-2 text-sm rounded-lg border border-slate-200 bg-slate-50 focus:bg-white focus:outline-hidden focus:border-amber-500 transition-colors"
               />
               {searchTerm && (
@@ -269,45 +329,241 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
             </div>
           </div>
 
-          {/* Category Tabs */}
-          <div className="mt-3 pt-3 border-t border-slate-100 flex items-center gap-1.5 overflow-x-auto pb-0.5 scrollbar-none">
-            <button
-              onClick={() => setSelectedCategory('all')}
-              className={`px-3 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap shrink-0 transition-colors cursor-pointer ${
-                selectedCategory === 'all'
-                  ? 'bg-slate-900 text-white shadow-2xs'
-                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
-              }`}
-            >
-              Todos ({onlineProducts.length})
-            </button>
-            {categories.map((cat) => {
-              const count = onlineProducts.filter((p) => p.category === cat).length;
-              return (
+          {/* Filter Row 1: Categorías de Repuestos */}
+          <div className="mt-3 pt-3 border-t border-slate-100 space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <span className="inline-flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider text-slate-500">
+                <Wrench className="w-3.5 h-3.5 text-slate-400" />
+                <span>Categoría de Repuesto</span>
+              </span>
+              {selectedCategory !== 'all' && (
                 <button
-                  key={cat}
-                  onClick={() => setSelectedCategory(cat)}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap shrink-0 transition-colors cursor-pointer ${
-                    selectedCategory === cat
-                      ? 'bg-slate-900 text-white font-semibold shadow-2xs'
-                      : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
-                  }`}
+                  type="button"
+                  onClick={() => setSelectedCategory('all')}
+                  className="text-[11px] font-semibold text-slate-500 hover:text-slate-900 cursor-pointer"
                 >
-                  {cat} {count > 0 && <span className="opacity-70 font-mono tabular-nums">({count})</span>}
+                  Ver todas
                 </button>
-              );
-            })}
+              )}
+            </div>
+            <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5 scrollbar-none">
+              <button
+                type="button"
+                onClick={() => setSelectedCategory('all')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap shrink-0 transition-colors cursor-pointer ${
+                  selectedCategory === 'all'
+                    ? 'bg-slate-900 text-white shadow-2xs'
+                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                }`}
+              >
+                Todos ({productsByModel.length})
+              </button>
+              {categories.map((cat) => {
+                const count = productsByModel.filter((p) => p.category === cat).length;
+                return (
+                  <button
+                    key={cat}
+                    type="button"
+                    onClick={() => setSelectedCategory(cat)}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap shrink-0 transition-colors cursor-pointer ${
+                      selectedCategory === cat
+                        ? 'bg-slate-900 text-white font-semibold shadow-2xs'
+                        : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+                    }`}
+                  >
+                    {cat} {count > 0 && <span className="opacity-70 font-mono tabular-nums">({count})</span>}
+                  </button>
+                );
+              })}
+            </div>
           </div>
+
+          {/* Filter Row 2: Modelos de Motos Especializados */}
+          <div className="mt-3 pt-3 border-t border-slate-100 space-y-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="inline-flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wider text-amber-700">
+                <Bike className="w-3.5 h-3.5 text-amber-600" />
+                <span>Modelos de Motos Especializados</span>
+              </span>
+              <div className="flex items-center gap-2">
+                {selectedModelCategory !== 'all' && (
+                  <button
+                    type="button"
+                    onClick={() => setSelectedModelCategory('all')}
+                    className="text-[11px] font-semibold text-amber-700 hover:text-amber-900 cursor-pointer"
+                  >
+                    Ver todos los modelos
+                  </button>
+                )}
+                {isAdmin && !isAddingStoreModel && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsAddingStoreModel(true);
+                      setNewStoreModelName('');
+                    }}
+                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md border border-amber-300 bg-amber-50 hover:bg-amber-100 text-amber-900 text-[11px] font-bold transition-colors cursor-pointer"
+                    title="Agregar un nuevo modelo especializado al filtro de la tienda online"
+                  >
+                    <Plus className="w-3 h-3" />
+                    <span>Agregar modelo</span>
+                  </button>
+                )}
+              </div>
+            </div>
+
+            {isAdmin && isAddingStoreModel && (
+              <div className="flex flex-wrap items-center gap-2 bg-amber-50/70 border border-amber-200 rounded-lg p-2">
+                <input
+                  type="text"
+                  value={newStoreModelName}
+                  onChange={(e) => setNewStoreModelName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault();
+                      handleQuickAddModelFromStore();
+                    } else if (e.key === 'Escape') {
+                      setIsAddingStoreModel(false);
+                      setNewStoreModelName('');
+                    }
+                  }}
+                  placeholder="Ej. Suzuki GN 125 / Yamaha FZ16 / KLR 650..."
+                  autoFocus
+                  className="flex-1 min-w-[200px] px-2.5 py-1.5 rounded-md border border-amber-300 bg-white text-xs text-slate-900 focus:outline-hidden focus:border-amber-500"
+                />
+                <button
+                  type="button"
+                  onClick={handleQuickAddModelFromStore}
+                  disabled={!newStoreModelName.trim()}
+                  className="px-3 py-1.5 rounded-md bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-slate-950 font-bold text-xs cursor-pointer"
+                >
+                  Guardar modelo
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsAddingStoreModel(false);
+                    setNewStoreModelName('');
+                  }}
+                  className="px-2 py-1.5 rounded-md text-slate-500 hover:text-slate-800 text-xs font-medium cursor-pointer"
+                >
+                  Cancelar
+                </button>
+              </div>
+            )}
+
+            <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5 scrollbar-none">
+              <button
+                type="button"
+                onClick={() => setSelectedModelCategory('all')}
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap shrink-0 transition-colors cursor-pointer border ${
+                  selectedModelCategory === 'all'
+                    ? 'bg-amber-500 border-amber-500 text-slate-950 shadow-2xs'
+                    : 'bg-amber-50/60 border-amber-200/80 text-amber-950 hover:bg-amber-100'
+                }`}
+              >
+                Todos los modelos ({productsByPartCategory.length})
+              </button>
+              {modelCategories.map((modelCat) => {
+                const count = productsByPartCategory.filter((p) =>
+                  doesProductMatchModelCategory(p, modelCat)
+                ).length;
+                const isSelected = selectedModelCategory === modelCat;
+                return (
+                  <button
+                    key={modelCat}
+                    type="button"
+                    onClick={() =>
+                      setSelectedModelCategory(isSelected ? 'all' : modelCat)
+                    }
+                    className={`px-3 py-1.5 rounded-lg text-xs whitespace-nowrap shrink-0 transition-colors cursor-pointer border ${
+                      isSelected
+                        ? 'bg-amber-500 border-amber-500 text-slate-950 font-bold shadow-2xs'
+                        : 'bg-white border-slate-200 text-slate-700 font-medium hover:border-amber-300 hover:bg-amber-50/70 hover:text-slate-900'
+                    }`}
+                  >
+                    {modelCat}{' '}
+                    {count > 0 && (
+                      <span
+                        className={`font-mono tabular-nums ${
+                          isSelected ? 'text-slate-900/80' : 'text-slate-400'
+                        }`}
+                      >
+                        ({count})
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Active Combined Filters Summary */}
+          {hasActiveFilters && (
+            <div className="mt-3 pt-2.5 border-t border-slate-100 flex flex-wrap items-center justify-between gap-2 text-xs">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-slate-500 mr-1">
+                  <Filter className="w-3 h-3" />
+                  Filtros activos:
+                </span>
+                {selectedCategory !== 'all' && (
+                  <button
+                    type="button"
+                    onClick={() => setSelectedCategory('all')}
+                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-slate-900 text-white text-[11px] font-semibold cursor-pointer hover:bg-slate-700"
+                  >
+                    <span>Repuesto: {selectedCategory}</span>
+                    <X className="w-3 h-3" />
+                  </button>
+                )}
+                {selectedModelCategory !== 'all' && (
+                  <button
+                    type="button"
+                    onClick={() => setSelectedModelCategory('all')}
+                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-500 text-slate-950 text-[11px] font-bold cursor-pointer hover:bg-amber-400"
+                  >
+                    <span>Moto: {selectedModelCategory}</span>
+                    <X className="w-3 h-3" />
+                  </button>
+                )}
+                {searchTerm.trim() && (
+                  <button
+                    type="button"
+                    onClick={() => setSearchTerm('')}
+                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-slate-200 text-slate-800 text-[11px] font-semibold cursor-pointer hover:bg-slate-300"
+                  >
+                    <span>"{searchTerm.trim()}"</span>
+                    <X className="w-3 h-3" />
+                  </button>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedCategory('all');
+                  setSelectedModelCategory('all');
+                  setSearchTerm('');
+                }}
+                className="text-[11px] font-bold text-rose-600 hover:text-rose-700 cursor-pointer"
+              >
+                Limpiar filtros
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Section Header */}
         <div className="flex flex-col sm:flex-row sm:items-baseline justify-between gap-2 mb-4">
           <div>
             <h2 className="text-lg sm:text-2xl font-bold font-display text-slate-900">
-              Repuestos y Accesorios Disponibles en Mérida
+              {selectedModelCategory !== 'all'
+                ? `Repuestos para ${selectedModelCategory}`
+                : 'Repuestos y Accesorios Disponibles en Mérida'}
             </h2>
             <p className="text-xs text-slate-500 mt-0.5 tabular-nums">
-              Mostrando {filteredProducts.length} repuestos con precio en $ USD y equivalente en Bs. según tasa oficial BCV
+              Mostrando {filteredProducts.length} repuestos
+              {selectedCategory !== 'all' ? ` en ${selectedCategory}` : ''}
+              {selectedModelCategory !== 'all' ? ` · Modelo ${selectedModelCategory}` : ''} con precio en $ USD y equivalente en Bs. según tasa oficial BCV
             </p>
           </div>
 
@@ -329,12 +585,16 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
             </div>
             <h3 className="font-bold text-slate-900 text-base">No se encontraron repuestos</h3>
             <p className="text-xs text-slate-500 mt-1 leading-relaxed">
-              No hay productos con stock disponible para los filtros seleccionados o la búsqueda "{searchTerm}".
+              No hay productos con stock disponible para los filtros seleccionados
+              {selectedModelCategory !== 'all' ? ` (Modelo: ${selectedModelCategory})` : ''}
+              {selectedCategory !== 'all' ? ` (Categoría: ${selectedCategory})` : ''}
+              {searchTerm.trim() ? ` o la búsqueda "${searchTerm}"` : ''}.
             </p>
             <button
               onClick={() => {
                 setSearchTerm('');
                 setSelectedCategory('all');
+                setSelectedModelCategory('all');
               }}
               className="mt-4 px-4 py-2 bg-slate-900 text-white text-xs font-semibold rounded-lg hover:bg-slate-800 transition-colors cursor-pointer"
             >
@@ -345,27 +605,87 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-2.5 sm:gap-3.5">
             {filteredProducts.map((product) => {
               const priceBs = product.salePrice * settings.bcvRate;
+              const productImages = getProductImages(product, true);
+              const rawIdx = cardImageIndices[product.id] ?? 0;
+              const activeIdx = rawIdx >= 0 && rawIdx < productImages.length ? rawIdx : 0;
+              const activeSrc = productImages[activeIdx];
+              const hasMultipleImages = productImages.length > 1;
 
               return (
                 <article
                   key={product.id}
                   className="group bg-white rounded-xl border border-slate-200 overflow-hidden flex flex-col hover:border-slate-300 hover:shadow-md hover:-translate-y-0.5 transition-all duration-150"
                 >
-                  {/* Product Image */}
+                  {/* Product Image / Mini Carousel */}
                   <div
-                    onClick={() => setSelectedProduct(product)}
+                    onClick={() => openProductDetailModal(product, activeIdx)}
                     className="relative aspect-4/3 bg-slate-100 overflow-hidden cursor-pointer"
                   >
                     <img
-                      src={
-                        normalizeImageUrl(product.imageUrl) ||
-                        getFallbackProductImage(product.name, product.category)
-                      }
+                      key={`${product.id}-${activeIdx}`}
+                      src={activeSrc}
                       alt={product.name}
                       className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                       referrerPolicy="no-referrer"
                       onError={(e) => handleProductImageError(e, product)}
                     />
+                    {hasMultipleImages && (
+                      <>
+                        <span className="absolute top-2 left-2 inline-flex items-center gap-1 bg-slate-950/75 backdrop-blur-xs text-white text-[10px] font-semibold px-1.5 py-0.5 rounded tabular-nums">
+                          <Images className="w-2.5 h-2.5 text-amber-400" />
+                          <span>
+                            {activeIdx + 1}/{productImages.length}
+                          </span>
+                        </span>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setCardImageIndices((prev) => ({
+                              ...prev,
+                              [product.id]:
+                                (activeIdx - 1 + productImages.length) % productImages.length,
+                            }));
+                          }}
+                          className="absolute left-1.5 top-1/2 -translate-y-1/2 w-6 h-6 rounded-full bg-slate-950/65 hover:bg-slate-950/90 text-white flex items-center justify-center sm:opacity-0 sm:group-hover:opacity-100 transition-opacity cursor-pointer"
+                          aria-label="Foto anterior"
+                        >
+                          <ChevronLeft className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setCardImageIndices((prev) => ({
+                              ...prev,
+                              [product.id]: (activeIdx + 1) % productImages.length,
+                            }));
+                          }}
+                          className="absolute right-1.5 top-1/2 -translate-y-1/2 w-6 h-6 rounded-full bg-slate-950/65 hover:bg-slate-950/90 text-white flex items-center justify-center sm:opacity-0 sm:group-hover:opacity-100 transition-opacity cursor-pointer"
+                          aria-label="Foto siguiente"
+                        >
+                          <ChevronRight className="w-3.5 h-3.5" />
+                        </button>
+                        <div className="absolute bottom-1.5 left-1/2 -translate-x-1/2 flex items-center gap-1 bg-slate-950/45 backdrop-blur-xs px-1.5 py-0.5 rounded-full">
+                          {productImages.map((_, dotIdx) => (
+                            <button
+                              key={dotIdx}
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setCardImageIndices((prev) => ({ ...prev, [product.id]: dotIdx }));
+                              }}
+                              aria-label={`Ver foto ${dotIdx + 1}`}
+                              className={`h-1.5 rounded-full transition-all cursor-pointer ${
+                                dotIdx === activeIdx
+                                  ? 'w-3.5 bg-amber-400'
+                                  : 'w-1.5 bg-white/70 hover:bg-white'
+                              }`}
+                            />
+                          ))}
+                        </div>
+                      </>
+                    )}
                     <span className="absolute top-2 right-2 bg-slate-950/80 backdrop-blur-xs text-white text-[10px] font-semibold px-1.5 py-0.5 rounded tabular-nums">
                       {product.stock} disp.
                     </span>
@@ -379,7 +699,7 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
                     </div>
 
                     <h3
-                      onClick={() => setSelectedProduct(product)}
+                      onClick={() => openProductDetailModal(product, activeIdx)}
                       className="mt-1 font-bold text-slate-900 text-xs sm:text-[13px] leading-snug whitespace-normal break-words hover:text-amber-600 cursor-pointer transition-colors"
                     >
                       {product.name}
@@ -397,6 +717,31 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
                       </p>
                     )}
 
+                    {Array.isArray(product.modelCategories) && product.modelCategories.length > 0 && (
+                      <div className="mt-1 flex flex-wrap gap-1">
+                        {product.modelCategories.slice(0, 3).map((mc) => (
+                          <button
+                            key={mc}
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSelectedModelCategory(mc);
+                            }}
+                            className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-amber-50 border border-amber-200/90 text-[10px] font-semibold text-amber-900 hover:bg-amber-100 transition-colors cursor-pointer leading-none"
+                            title={`Filtrar todos los repuestos para ${mc}`}
+                          >
+                            <Bike className="w-2.5 h-2.5 text-amber-600 shrink-0" />
+                            <span>{mc}</span>
+                          </button>
+                        ))}
+                        {product.modelCategories.length > 3 && (
+                          <span className="text-[10px] font-semibold text-amber-700 px-1">
+                            +{product.modelCategories.length - 3}
+                          </span>
+                        )}
+                      </div>
+                    )}
+
                     {/* Dual Pricing ($ USD and Bs.) & 2 Compact Action Buttons */}
                     <div className="mt-auto pt-1.5 border-t border-slate-100 flex flex-col gap-1.5">
                       <div className="flex items-end justify-between gap-1">
@@ -412,7 +757,7 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
 
                         <button
                           type="button"
-                          onClick={() => setSelectedProduct(product)}
+                          onClick={() => openProductDetailModal(product, activeIdx)}
                           className="inline-flex items-center justify-center gap-1 text-[11px] font-medium text-slate-500 hover:text-slate-900 hover:bg-slate-100 p-1.5 sm:px-2 sm:py-1 rounded-md transition-colors cursor-pointer shrink-0 whitespace-nowrap"
                           title="Ver ficha completa del repuesto"
                           aria-label={`Ver detalles de ${product.name}`}
@@ -649,19 +994,88 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
               </div>
 
               <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-6">
-                <div className="aspect-4/3 rounded-xl overflow-hidden bg-slate-100 border border-slate-200">
-                  <img
-                    key={selectedProduct.id}
-                    src={
-                      normalizeImageUrl(selectedProduct.imageUrl) ||
-                      getFallbackProductImage(selectedProduct.name, selectedProduct.category)
-                    }
-                    alt={selectedProduct.name}
-                    className="w-full h-full object-cover"
-                    referrerPolicy="no-referrer"
-                    onError={(e) => handleProductImageError(e, selectedProduct)}
-                  />
-                </div>
+                {(() => {
+                  const modalImages = getProductImages(selectedProduct, true);
+                  const safeModalIdx =
+                    modalImageIndex >= 0 && modalImageIndex < modalImages.length
+                      ? modalImageIndex
+                      : 0;
+                  const activeModalSrc = modalImages[safeModalIdx];
+                  const hasMultiple = modalImages.length > 1;
+
+                  return (
+                    <div className="space-y-2.5">
+                      <div className="relative aspect-4/3 rounded-xl overflow-hidden bg-slate-100 border border-slate-200">
+                        <img
+                          key={`${selectedProduct.id}-${safeModalIdx}`}
+                          src={activeModalSrc}
+                          alt={`${selectedProduct.name} - Foto ${safeModalIdx + 1}`}
+                          className="w-full h-full object-cover"
+                          referrerPolicy="no-referrer"
+                          onError={(e) => handleProductImageError(e, selectedProduct)}
+                        />
+                        {hasMultiple && (
+                          <>
+                            <span className="absolute top-2.5 left-2.5 inline-flex items-center gap-1 bg-slate-950/75 backdrop-blur-xs text-white text-[11px] font-bold px-2 py-0.5 rounded-md tabular-nums">
+                              <Images className="w-3 h-3 text-amber-400" />
+                              <span>
+                                {safeModalIdx + 1} / {modalImages.length}
+                              </span>
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setModalImageIndex(
+                                  (safeModalIdx - 1 + modalImages.length) % modalImages.length
+                                )
+                              }
+                              className="absolute left-2 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full bg-slate-950/70 hover:bg-slate-950 text-white flex items-center justify-center shadow-md transition-colors cursor-pointer"
+                              aria-label="Foto anterior"
+                            >
+                              <ChevronLeft className="w-4 h-4" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setModalImageIndex((safeModalIdx + 1) % modalImages.length)
+                              }
+                              className="absolute right-2 top-1/2 -translate-y-1/2 w-8 h-8 rounded-full bg-slate-950/70 hover:bg-slate-950 text-white flex items-center justify-center shadow-md transition-colors cursor-pointer"
+                              aria-label="Foto siguiente"
+                            >
+                              <ChevronRight className="w-4 h-4" />
+                            </button>
+                          </>
+                        )}
+                      </div>
+
+                      {hasMultiple && (
+                        <div className="grid grid-cols-6 gap-1.5">
+                          {modalImages.map((imgSrc, idx) => (
+                            <button
+                              key={`${idx}-${imgSrc.slice(0, 32)}`}
+                              type="button"
+                              onClick={() => setModalImageIndex(idx)}
+                              className={`aspect-square rounded-lg overflow-hidden border-2 transition-all cursor-pointer bg-slate-100 ${
+                                idx === safeModalIdx
+                                  ? 'border-amber-500 ring-2 ring-amber-200 scale-[1.03]'
+                                  : 'border-slate-200 opacity-75 hover:opacity-100 hover:border-slate-400'
+                              }`}
+                              title={`Ver foto ${idx + 1}`}
+                            >
+                              <img
+                                src={imgSrc}
+                                alt={`Miniatura ${idx + 1}`}
+                                className="w-full h-full object-cover"
+                                referrerPolicy="no-referrer"
+                                onError={(e) => handleProductImageError(e, selectedProduct)}
+                              />
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
 
                 <div className="flex flex-col justify-between">
                   <div className="space-y-3">
@@ -689,8 +1103,30 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
                     <div>
                       <span className="text-xs font-semibold text-slate-500 uppercase block">Compatibilidad</span>
                       <p className="text-xs text-slate-700 mt-0.5 bg-slate-50 p-2 rounded-lg border border-slate-200">
-                        {selectedProduct.compatibility}
+                        {selectedProduct.compatibility || 'Consultar compatibilidad por WhatsApp'}
                       </p>
+                      {(() => {
+                        const matchedModels = getProductModelCategories(selectedProduct, modelCategories);
+                        if (matchedModels.length === 0) return null;
+                        return (
+                          <div className="mt-2 flex flex-wrap gap-1.5">
+                            {matchedModels.map((mc) => (
+                              <button
+                                key={mc}
+                                type="button"
+                                onClick={() => {
+                                  setSelectedModelCategory(mc);
+                                  setSelectedProduct(null);
+                                }}
+                                className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-50 border border-amber-200 text-[11px] font-semibold text-amber-900 hover:bg-amber-100 cursor-pointer"
+                              >
+                                <Bike className="w-3 h-3 text-amber-600" />
+                                <span>{mc}</span>
+                              </button>
+                            ))}
+                          </div>
+                        );
+                      })()}
                     </div>
 
                     <div>

@@ -85,10 +85,10 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
   const [shoppingMode, setShoppingMode] = useState<'retail' | 'wholesale'>('retail');
   const [onlyWholesaleProducts, setOnlyWholesaleProducts] = useState<boolean>(false);
 
-  const openProductDetailModal = (product: Product, startIndex = 0) => {
+  const openProductDetailModal = (product: Product, startIndex = 0, initialQty = 1) => {
     setSelectedProduct(product);
     setModalImageIndex(startIndex);
-    setModalOrderQty(1);
+    setModalOrderQty(Math.max(1, initialQty));
   };
 
   const handleQuickAddModelFromStore = () => {
@@ -805,11 +805,19 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
               const firstWholesaleTier = wholesaleDisplay.tiers[0];
               const maxWholesaleTier =
                 wholesaleDisplay.tiers[wholesaleDisplay.tiers.length - 1];
+              const matchedModels = getProductModelCategories(product, modelCategories);
+              const rawCompat = (product.compatibility || '').trim();
+              const compatibilityText =
+                rawCompat || (matchedModels.length > 0 ? matchedModels.join(' · ') : '');
 
               return (
                 <article
                   key={product.id}
-                  className="group bg-white rounded-xl border border-slate-200 overflow-hidden flex flex-col hover:border-slate-300 hover:shadow-md hover:-translate-y-0.5 transition-all duration-150"
+                  className={`group bg-white rounded-xl border overflow-hidden flex flex-col hover:shadow-md hover:-translate-y-0.5 transition-all duration-150 ${
+                    wholesaleDisplay.hasWholesale
+                      ? 'border-emerald-300/80 hover:border-emerald-400'
+                      : 'border-slate-200 hover:border-slate-300'
+                  }`}
                 >
                   {/* Product Image / Mini Carousel */}
                   <div
@@ -890,17 +898,28 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
                     </span>
                   </div>
 
-                  {/* Compact Content + Price + Actions */}
-                  <div className="p-2.5 flex-1 flex flex-col gap-1.5">
-                    <h3
-                      onClick={() => openProductDetailModal(product, activeIdx)}
-                      title={product.name}
-                      className="font-bold text-slate-900 text-xs sm:text-[13px] leading-snug line-clamp-2 hover:text-amber-600 cursor-pointer transition-colors"
-                    >
-                      {product.name}
-                    </h3>
+                  {/* Compact Content + Compatibility + Price + Wholesale + Actions */}
+                  <div className="p-2 sm:p-2.5 flex-1 flex flex-col gap-1">
+                    <div>
+                      <h3
+                        onClick={() => openProductDetailModal(product, activeIdx)}
+                        title={product.name}
+                        className="font-bold text-slate-900 text-xs sm:text-[13px] leading-tight line-clamp-2 hover:text-amber-600 cursor-pointer transition-colors"
+                      >
+                        {product.name}
+                      </h3>
+                      {compatibilityText && (
+                        <p
+                          title={`Compatible con: ${compatibilityText}`}
+                          className="mt-0.5 text-[11px] text-slate-600 leading-tight truncate"
+                        >
+                          <span className="font-semibold text-slate-500">Para:</span>{' '}
+                          {compatibilityText}
+                        </p>
+                      )}
+                    </div>
 
-                    {/* Dual Pricing ($ USD and Bs.) & 2 Compact Action Buttons */}
+                    {/* Dual Pricing ($ USD and Bs.), Compact Wholesale Tiers & 2 Action Buttons */}
                     <div className="mt-auto pt-1.5 border-t border-slate-100 flex flex-col gap-1.5">
                       <div className="flex items-end justify-between gap-1">
                         <div className="min-w-0">
@@ -917,7 +936,7 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
                               <span className="text-[10px] sm:text-[11px] font-bold text-emerald-700 font-mono tabular-nums block leading-tight mt-0.5 truncate">
                                 {formatBs(firstWholesaleTier.unitPriceUSD * settings.bcvRate)}{' '}
                                 <span className="font-normal text-slate-500 text-[9px]">
-                                  ({firstWholesaleTier.minQty}+ u · -{firstWholesaleTier.discountPct}%)
+                                  ({firstWholesaleTier.minQty}+ u)
                                 </span>
                               </span>
                             </>
@@ -937,7 +956,7 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
                         <button
                           type="button"
                           onClick={() => openProductDetailModal(product, activeIdx)}
-                          className="inline-flex items-center justify-center gap-1 text-[11px] font-medium text-slate-500 hover:text-slate-900 hover:bg-slate-100 p-1.5 sm:px-2 sm:py-1 rounded-md transition-colors cursor-pointer shrink-0 whitespace-nowrap"
+                          className="inline-flex items-center justify-center gap-1 text-[11px] font-medium text-slate-500 hover:text-slate-900 hover:bg-slate-100 p-1 sm:px-1.5 sm:py-1 rounded-md transition-colors cursor-pointer shrink-0 whitespace-nowrap"
                           title="Ver descripción y detalles completos"
                           aria-label={`Ver detalles de ${product.name}`}
                         >
@@ -946,53 +965,76 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
                         </button>
                       </div>
 
-                      {shoppingMode === 'wholesale' && wholesaleDisplay.hasWholesale ? (
-                        <div className="flex flex-wrap gap-1">
-                          {wholesaleDisplay.tiers.slice(0, 3).map((tier) => {
-                            const hasStockForTier =
-                              !productTracksInventory(product) || product.stock >= tier.minQty;
-                            return (
+                      {wholesaleDisplay.hasWholesale && firstWholesaleTier && (
+                        <div className="rounded-md bg-emerald-50/90 border border-emerald-200 px-1.5 py-1 space-y-0.5">
+                          <div className="flex items-center justify-between gap-1 text-[10px] leading-none pb-0.5 border-b border-emerald-200/70">
+                            <span className="font-extrabold text-emerald-950">
+                              Descuento al Mayor
+                            </span>
+                            <span className="font-mono font-extrabold text-emerald-700 tabular-nums whitespace-nowrap">
+                              {maxWholesaleTier && maxWholesaleTier.discountPct > firstWholesaleTier.discountPct
+                                ? `hasta -${maxWholesaleTier.discountPct}%`
+                                : `-${firstWholesaleTier.discountPct}%`}
+                            </span>
+                          </div>
+                          <div className="space-y-0.5">
+                            {wholesaleDisplay.tiers.slice(0, 3).map((tier) => {
+                              const hasStockForTier =
+                                !productTracksInventory(product) || product.stock >= tier.minQty;
+                              const isWholesaleMode = shoppingMode === 'wholesale';
+                              return (
+                                <button
+                                  key={tier.minQty}
+                                  type="button"
+                                  disabled={isWholesaleMode && !hasStockForTier}
+                                  onClick={() =>
+                                    isWholesaleMode
+                                      ? handleAddToCart(product, tier.minQty)
+                                      : openProductDetailModal(product, activeIdx, tier.minQty)
+                                  }
+                                  className={`group/tier w-full flex items-center justify-between gap-1 px-1 py-0.5 rounded text-[10px] leading-tight transition-colors cursor-pointer disabled:opacity-45 disabled:cursor-not-allowed ${
+                                    isWholesaleMode
+                                      ? 'hover:bg-emerald-600 hover:text-white text-emerald-950'
+                                      : 'hover:bg-emerald-100 text-emerald-950'
+                                  }`}
+                                  title={
+                                    isWholesaleMode
+                                      ? hasStockForTier
+                                        ? `Agregar ${tier.minQty} uds al carrito a ${formatUSD(tier.unitPriceUSD)} c/u (-${tier.discountPct}%)`
+                                        : `Stock actual (${product.stock}) menor a ${tier.minQty} uds`
+                                      : `Ver ${tier.minQty}+ uds a ${formatUSD(tier.unitPriceUSD)} c/u (-${tier.discountPct}%)`
+                                  }
+                                >
+                                  <span className="font-semibold tabular-nums whitespace-nowrap">
+                                    {isWholesaleMode ? `+${tier.minQty}` : `${tier.minQty}+`} uds
+                                  </span>
+                                  <span
+                                    className={`font-mono font-extrabold tabular-nums whitespace-nowrap ${
+                                      isWholesaleMode
+                                        ? 'text-emerald-700 group-hover/tier:text-white'
+                                        : 'text-emerald-700'
+                                    }`}
+                                  >
+                                    -{tier.discountPct}%
+                                  </span>
+                                  <span className="font-mono font-bold tabular-nums whitespace-nowrap">
+                                    {formatUSD(tier.unitPriceUSD)}
+                                  </span>
+                                </button>
+                              );
+                            })}
+                            {wholesaleDisplay.tiers.length > 3 && (
                               <button
-                                key={tier.minQty}
                                 type="button"
-                                disabled={!hasStockForTier}
-                                onClick={() => handleAddToCart(product, tier.minQty)}
-                                className="flex-1 min-w-[62px] py-1 px-1.5 rounded-md bg-emerald-50 hover:bg-emerald-600 hover:text-white disabled:opacity-40 border border-emerald-200 text-emerald-900 font-mono font-bold text-[10px] tabular-nums transition-colors cursor-pointer text-center"
-                                title={
-                                  hasStockForTier
-                                    ? `Agregar ${tier.minQty} unidades al carrito a ${formatUSD(tier.unitPriceUSD)} c/u (-${tier.discountPct}%)`
-                                    : `Stock actual (${product.stock}) menor a ${tier.minQty} uds`
-                                }
+                                onClick={() => openProductDetailModal(product, activeIdx)}
+                                className="w-full text-center text-[10px] font-bold text-emerald-700 hover:text-emerald-900 hover:underline pt-0.5 cursor-pointer"
                               >
-                                +{tier.minQty} (-{tier.discountPct}%)
+                                +{wholesaleDisplay.tiers.length - 3} escala
+                                {wholesaleDisplay.tiers.length - 3 === 1 ? '' : 's'} más
                               </button>
-                            );
-                          })}
+                            )}
+                          </div>
                         </div>
-                      ) : (
-                        wholesaleDisplay.hasWholesale &&
-                        firstWholesaleTier && (
-                          <button
-                            type="button"
-                            onClick={() => openProductDetailModal(product, activeIdx)}
-                            className="w-full text-left bg-emerald-50/80 hover:bg-emerald-100/80 border border-emerald-200/80 rounded-md px-2 py-1 transition-colors cursor-pointer"
-                            title="Ver tabla completa de precios al mayor"
-                          >
-                            <div className="flex items-center justify-between gap-1 text-[10px] leading-tight">
-                              <span className="font-bold text-emerald-900 truncate">
-                                Mayor {firstWholesaleTier.minQty}+ u:{' '}
-                                <span className="font-mono tabular-nums">
-                                  {formatUSD(firstWholesaleTier.unitPriceUSD)}
-                                </span>
-                              </span>
-                              <span className="font-mono font-extrabold text-emerald-700 tabular-nums shrink-0">
-                                {maxWholesaleTier && maxWholesaleTier.discountPct > firstWholesaleTier.discountPct
-                                  ? `-${firstWholesaleTier.discountPct}% a -${maxWholesaleTier.discountPct}%`
-                                  : `-${firstWholesaleTier.discountPct}%`}
-                              </span>
-                            </div>
-                          </button>
-                        )
                       )}
 
                       <div className="grid grid-cols-2 gap-1.5">

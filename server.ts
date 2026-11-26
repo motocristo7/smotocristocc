@@ -98,6 +98,9 @@ interface DeletedIdsMap {
   treasuryDebts: string[];
   openAccounts: string[];
   adminTasks: string[];
+  users: string[];
+  staffAttendance: string[];
+  staffNotifications: string[];
 }
 
 const EMPTY_DELETED_IDS: DeletedIdsMap = {
@@ -118,6 +121,9 @@ const EMPTY_DELETED_IDS: DeletedIdsMap = {
   treasuryDebts: [],
   openAccounts: [],
   adminTasks: [],
+  users: [],
+  staffAttendance: [],
+  staffNotifications: [],
 };
 
 function mergeDeletedIds(a?: Partial<DeletedIdsMap>, b?: Partial<DeletedIdsMap>): DeletedIdsMap {
@@ -139,6 +145,9 @@ function mergeDeletedIds(a?: Partial<DeletedIdsMap>, b?: Partial<DeletedIdsMap>)
     treasuryDebts: Array.from(new Set([...(a?.treasuryDebts || []), ...(b?.treasuryDebts || [])])),
     openAccounts: Array.from(new Set([...(a?.openAccounts || []), ...(b?.openAccounts || [])])),
     adminTasks: Array.from(new Set([...(a?.adminTasks || []), ...(b?.adminTasks || [])])),
+    users: Array.from(new Set([...(a?.users || []), ...(b?.users || [])])),
+    staffAttendance: Array.from(new Set([...(a?.staffAttendance || []), ...(b?.staffAttendance || [])])),
+    staffNotifications: Array.from(new Set([...(a?.staffNotifications || []), ...(b?.staffNotifications || [])])),
   };
 }
 
@@ -161,6 +170,8 @@ interface AppDatabase {
   treasuryDebts: any[];
   openAccounts: any[];
   adminTasks: any[];
+  staffAttendance: any[];
+  staffNotifications: any[];
   users: any[];
   deletedIds: DeletedIdsMap;
   updatedAt: string;
@@ -186,6 +197,8 @@ function getInitialDatabase(): AppDatabase {
     treasuryDebts: [],
     openAccounts: [],
     adminTasks: [],
+    staffAttendance: [],
+    staffNotifications: [],
     users: [DEFAULT_ADMIN_USER],
     deletedIds: { ...EMPTY_DELETED_IDS, sales: ['sale-102', 'sale-103'] },
     updatedAt: new Date().toISOString(),
@@ -228,6 +241,9 @@ function readDatabase(): AppDatabase {
       const deletedTreasuryDebtSet = new Set(deletedIds.treasuryDebts);
       const deletedOpenAccountSet = new Set(deletedIds.openAccounts);
       const deletedAdminTaskSet = new Set(deletedIds.adminTasks);
+      const deletedUsersSet = new Set(deletedIds.users);
+      const deletedStaffAttendanceSet = new Set(deletedIds.staffAttendance);
+      const deletedStaffNotificationSet = new Set(deletedIds.staffNotifications);
 
       return {
         settings: parsed.settings || INITIAL_SETTINGS,
@@ -248,7 +264,9 @@ function readDatabase(): AppDatabase {
         treasuryDebts: (Array.isArray(parsed.treasuryDebts) ? parsed.treasuryDebts : []).filter((d: any) => !deletedTreasuryDebtSet.has(d.id)),
         openAccounts: (Array.isArray(parsed.openAccounts) ? parsed.openAccounts : []).filter((a: any) => !deletedOpenAccountSet.has(a.id)),
         adminTasks: (Array.isArray(parsed.adminTasks) ? parsed.adminTasks : []).filter((t: any) => !deletedAdminTaskSet.has(t.id)),
-        users: guaranteedUsers,
+        staffAttendance: (Array.isArray(parsed.staffAttendance) ? parsed.staffAttendance : []).filter((a: any) => !deletedStaffAttendanceSet.has(a.id)),
+        staffNotifications: (Array.isArray(parsed.staffNotifications) ? parsed.staffNotifications : []).filter((n: any) => !deletedStaffNotificationSet.has(n.id)),
+        users: guaranteedUsers.filter((u: any) => u.id === 'usr-admin-1' || u.role === 'ADMIN' || !deletedUsersSet.has(u.id)),
         deletedIds,
         updatedAt: parsed.updatedAt || new Date().toISOString(),
       };
@@ -332,6 +350,9 @@ function writeDatabase(
     const deletedTreasuryDebtSet = new Set(mergedDeletedIds.treasuryDebts);
     const deletedOpenAccountSet = new Set(mergedDeletedIds.openAccounts);
     const deletedAdminTaskSet = new Set(mergedDeletedIds.adminTasks);
+    const deletedUsersSet = new Set(mergedDeletedIds.users);
+    const deletedStaffAttendanceSet = new Set(mergedDeletedIds.staffAttendance);
+    const deletedStaffNotificationSet = new Set(mergedDeletedIds.staffNotifications);
 
     const rawProducts = Array.isArray(data.products)
       ? mergeCollections
@@ -418,6 +439,58 @@ function writeDatabase(
         ? mergeCollectionById(current.adminTasks || [], data.adminTasks, deletedAdminTaskSet)
         : data.adminTasks
       : current.adminTasks || [];
+    const rawStaffAttendance = Array.isArray(data.staffAttendance)
+      ? mergeCollections
+        ? mergeCollectionById(current.staffAttendance || [], data.staffAttendance, deletedStaffAttendanceSet)
+        : data.staffAttendance
+      : current.staffAttendance || [];
+    const rawStaffNotifications = Array.isArray(data.staffNotifications)
+      ? mergeCollections
+        ? mergeCollectionById(current.staffNotifications || [], data.staffNotifications, deletedStaffNotificationSet)
+        : data.staffNotifications
+      : current.staffNotifications || [];
+    // Merge users safely without ever dropping stored password hashes or the primary admin account
+    const existingUsers = Array.isArray(current.users) ? current.users : [DEFAULT_ADMIN_USER];
+    let mergedUsers = existingUsers;
+    if (Array.isArray(data.users)) {
+      if (mergeCollections) {
+        const existingById = new Map(existingUsers.map((u: any) => [u.id, u]));
+        const incomingMapped = data.users
+          .filter((u: any) => u?.id && (u.id === 'usr-admin-1' || u.role === 'ADMIN' || !deletedUsersSet.has(u.id)))
+          .map((inc: any) => {
+            const prev = existingById.get(inc.id);
+            const resolvedPassword =
+              inc.password ||
+              (typeof inc.passwordHash === 'string' && inc.passwordHash.startsWith('pbkdf2$')
+                ? inc.passwordHash
+                : prev?.password || prev?.passwordHash);
+            return {
+              ...(prev || {}),
+              ...inc,
+              password: resolvedPassword,
+              passwordHash:
+                typeof inc.passwordHash === 'string' && inc.passwordHash.startsWith('pbkdf2$')
+                  ? inc.passwordHash
+                  : prev?.passwordHash,
+            };
+          });
+        const incomingIds = new Set(incomingMapped.map((u: any) => u.id));
+        const preservedExisting = existingUsers.filter(
+          (u: any) =>
+            u?.id &&
+            !incomingIds.has(u.id) &&
+            (u.id === 'usr-admin-1' || u.role === 'ADMIN' || !deletedUsersSet.has(u.id))
+        );
+        mergedUsers = [...incomingMapped, ...preservedExisting];
+      } else {
+        mergedUsers = data.users.filter(
+          (u: any) => u?.id === 'usr-admin-1' || u?.role === 'ADMIN' || !deletedUsersSet.has(u?.id)
+        );
+      }
+    }
+    if (!mergedUsers.some((u: any) => u.role === 'ADMIN' || u.id === 'usr-admin-1')) {
+      mergedUsers = [DEFAULT_ADMIN_USER, ...mergedUsers];
+    }
 
     // Protect fresher official BCV rate from being overwritten by stale client POST /api/data payloads
     let mergedSettings = data.settings !== undefined ? data.settings : current.settings;
@@ -462,6 +535,9 @@ function writeDatabase(
       treasuryDebts: Array.isArray(rawTreasuryDebts) ? rawTreasuryDebts.filter((d: any) => !deletedTreasuryDebtSet.has(d.id)) : [],
       openAccounts: Array.isArray(rawOpenAccounts) ? rawOpenAccounts.filter((a: any) => !deletedOpenAccountSet.has(a.id)) : [],
       adminTasks: Array.isArray(rawAdminTasks) ? rawAdminTasks.filter((t: any) => !deletedAdminTaskSet.has(t.id)) : [],
+      staffAttendance: Array.isArray(rawStaffAttendance) ? rawStaffAttendance.filter((a: any) => !deletedStaffAttendanceSet.has(a.id)) : [],
+      staffNotifications: Array.isArray(rawStaffNotifications) ? rawStaffNotifications.filter((n: any) => !deletedStaffNotificationSet.has(n.id)) : [],
+      users: mergedUsers,
       deletedIds: mergedDeletedIds,
       updatedAt: new Date().toISOString(),
     };
@@ -993,9 +1069,9 @@ app.post('/api/auth/register', (req, res) => {
 
 app.post('/api/auth/login', (req, res) => {
   try {
-    const { identifier, password, cloudAdminUser } = req.body || {};
+    const { identifier, password, cloudAdminUser, cloudStaffUser } = req.body || {};
     if (!identifier || !identifier.trim()) {
-      return res.status(400).json({ success: false, error: 'Ingresa tu correo, teléfono o cédula' });
+      return res.status(400).json({ success: false, error: 'Ingresa tu usuario, correo, teléfono o cédula' });
     }
     if (!password) {
       return res.status(400).json({ success: false, error: 'Ingresa tu contraseña' });
@@ -1041,6 +1117,29 @@ app.post('/api/auth/login', (req, res) => {
       }
     }
 
+    // Synchronize employee account from Firestore if present and newer
+    if (
+      cloudStaffUser &&
+      typeof cloudStaffUser === 'object' &&
+      cloudStaffUser.id &&
+      cloudStaffUser.role === 'EMPLEADO' &&
+      typeof cloudStaffUser.passwordHash === 'string' &&
+      cloudStaffUser.passwordHash.startsWith('pbkdf2$')
+    ) {
+      const idx = users.findIndex((u: any) => u.id === cloudStaffUser.id);
+      const mergedStaff = {
+        ...(idx >= 0 ? users[idx] : {}),
+        ...cloudStaffUser,
+        password: cloudStaffUser.passwordHash,
+      };
+      if (idx >= 0) {
+        users[idx] = mergedStaff;
+      } else {
+        users.push(mergedStaff);
+      }
+      writeDatabase({ users });
+    }
+
     const cleanInput = identifier.trim().toLowerCase();
     const cleanNumbers = identifier.replace(/\D/g, '');
 
@@ -1054,12 +1153,14 @@ app.post('/api/auth/login', (req, res) => {
       cleanNumbers === '584127860509' ||
       cleanNumbers === '19996141';
 
-    // Find user
+    // Find user (supports username, email, phone, cédula, or owner shortcut)
     const matchedIdx = users.findIndex((u: any) => {
+      const uUsername = (u.username || '').trim().toLowerCase();
       const uEmail = (u.email || '').trim().toLowerCase();
       const uPhone = (u.phone || '').replace(/\D/g, '');
       const uDoc = (u.documentId || '').replace(/\D/g, '');
 
+      if (uUsername && uUsername === cleanInput) return true;
       if (uEmail && uEmail === cleanInput) return true;
       if (cleanNumbers && uPhone && uPhone === cleanNumbers) return true;
       if (cleanNumbers && uDoc && uDoc === cleanNumbers) return true;
@@ -1070,20 +1171,28 @@ app.post('/api/auth/login', (req, res) => {
     if (matchedIdx === -1) {
       return res.status(401).json({
         success: false,
-        error: 'Usuario no encontrado. Verifica tu correo, cédula o teléfono, o regístrate.',
+        error: 'Usuario no encontrado. Verifica tu usuario, correo, cédula o teléfono.',
       });
     }
 
     let matchedUser = users[matchedIdx];
 
-    // Password check
+    if (matchedUser.role === 'EMPLEADO' && matchedUser.active === false) {
+      return res.status(403).json({
+        success: false,
+        error: 'Esta cuenta de trabajador está desactivada. Contacta al administrador.',
+      });
+    }
+
+    // Password check (supports password or passwordHash fields)
+    const storedSecret = matchedUser.password || matchedUser.passwordHash || '';
     const isDefaultAdminUnchanged =
       matchedUser.role === 'ADMIN' &&
       !matchedUser.hasCustomPassword &&
-      (!matchedUser.password || matchedUser.password === 'admin');
+      (!storedSecret || storedSecret === 'admin');
 
     const validPassword =
-      verifyPassword(password, matchedUser.password) ||
+      verifyPassword(password, storedSecret) ||
       (isDefaultAdminUnchanged && (password === 'admin' || password === 'admin123' || password === '123456'));
 
     if (!validPassword) {
@@ -1110,11 +1219,23 @@ app.post('/api/auth/login', (req, res) => {
     const safeUser = {
       id: matchedUser.id,
       name: matchedUser.name,
+      username: matchedUser.username,
       documentId: matchedUser.documentId,
       phone: matchedUser.phone,
       email: matchedUser.email,
       role: matchedUser.role,
+      position: matchedUser.position,
+      active: matchedUser.active !== false,
+      allowedModules: Array.isArray(matchedUser.allowedModules) ? matchedUser.allowedModules : undefined,
+      scheduledStartTime: matchedUser.scheduledStartTime,
+      scheduledEndTime: matchedUser.scheduledEndTime,
+      lateToleranceMinutes: matchedUser.lateToleranceMinutes,
+      monthlySalesGoalUSD: matchedUser.monthlySalesGoalUSD,
+      linkedTechnicianId: matchedUser.linkedTechnicianId,
+      notes: matchedUser.notes,
+      lastLoginAt: new Date().toISOString(),
       createdAt: matchedUser.createdAt,
+      updatedAt: matchedUser.updatedAt,
       hasCustomPassword: Boolean(matchedUser.hasCustomPassword),
       passwordUpdatedAt: matchedUser.passwordUpdatedAt,
     };
@@ -1420,7 +1541,11 @@ app.get('/api/auth/users', (_req, res) => {
 app.get('/api/data', (_req, res) => {
   try {
     const dbData = readDatabase();
-    return res.json({ success: true, data: dbData });
+    // Never expose raw password or passwordHash fields in the general /api/data payload
+    const safeUsers = (Array.isArray(dbData.users) ? dbData.users : []).map(
+      ({ password: _pw, passwordHash: _ph, ...safe }: any) => safe
+    );
+    return res.json({ success: true, data: { ...dbData, users: safeUsers } });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err.message });
   }

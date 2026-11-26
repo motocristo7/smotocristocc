@@ -20,6 +20,7 @@ import { CommissionsView } from './components/admin/CommissionsView';
 import { OrdersView } from './components/admin/OrdersView';
 import { CustomersView } from './components/admin/CustomersView';
 import { SettingsView } from './components/admin/SettingsView';
+import { StaffManagementView } from './components/admin/StaffManagementView';
 import { AdminSidebar } from './components/layout/AdminSidebar';
 import { InvoiceModal } from './components/modals/InvoiceModal';
 import { WhatsAppModal } from './components/modals/WhatsAppModal';
@@ -43,6 +44,9 @@ const AppContent: React.FC = () => {
     enterPublicStore,
     onlineStoreBrand,
     isAdmin,
+    isStaff,
+    canAccessView,
+    getDefaultStaffView,
     currentUser,
     isAuthModalOpen,
     closeAuthModal,
@@ -67,7 +71,8 @@ const AppContent: React.FC = () => {
     setIsCartOpen(true);
   };
 
-  const isCurrentViewAdmin = currentView.startsWith('admin_') && isAdmin;
+  const isCurrentViewAdmin = currentView.startsWith('admin_') && isStaff;
+  const hasCurrentViewAccess = !isCurrentViewAdmin || canAccessView(currentView);
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col text-slate-900">
@@ -82,24 +87,48 @@ const AppContent: React.FC = () => {
           {currentView === 'tienda' && <Storefront onOpenCart={(step) => handleOpenCart(step || 'cart')} />}
           {currentView === 'consulta_cliente' && <CustomerPortal />}
 
-          {/* Admin Views - strictly restricted to authenticated Admin */}
+          {/* Staff / Admin Views - enforced by role and module permissions */}
           {isCurrentViewAdmin && (
             <main className="max-w-[1440px] w-full mx-auto px-3 sm:px-5 lg:px-7 py-6 sm:py-7 flex-1">
-              {currentView === 'admin_dashboard' && <AdminDashboard />}
-              {currentView === 'admin_tareas' && <TasksView />}
-              {currentView === 'admin_pos' && <PosView />}
-              {currentView === 'admin_ventas' && <SalesDatabaseView />}
-              {currentView === 'admin_cuentas_cobrar' && <AccountsReceivableView />}
-              {currentView === 'admin_compras' && <PurchaseOrdersView />}
-              {currentView === 'admin_gastos' && <ExpensesView />}
-              {currentView === 'admin_tesoreria' && <TreasuryFinanceView />}
-              {currentView === 'admin_inventario' && <InventoryView />}
-              {currentView === 'admin_mayorista' && <WholesalePricingView />}
-              {currentView === 'admin_taller' && <ServiceOrdersView />}
-              {currentView === 'admin_comisiones' && <CommissionsView />}
-              {currentView === 'admin_pedidos' && <OrdersView />}
-              {currentView === 'admin_clientes' && <CustomersView />}
-              {currentView === 'admin_ajustes' && <SettingsView />}
+              {!hasCurrentViewAccess ? (
+                <div className="max-w-lg mx-auto my-12 bg-white rounded-2xl border border-slate-200 p-8 text-center space-y-4">
+                  <div className="w-12 h-12 rounded-xl bg-amber-50 border border-amber-200 text-amber-700 flex items-center justify-center mx-auto">
+                    <Lock className="w-6 h-6" />
+                  </div>
+                  <div className="space-y-1">
+                    <h2 className="text-lg font-bold text-slate-900">Área restringida</h2>
+                    <p className="text-xs text-slate-600">
+                      Tu usuario no tiene permisos habilitados para acceder a este módulo. Solicita autorización al administrador si lo necesitas para tu trabajo.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setCurrentView(getDefaultStaffView())}
+                    className="px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white font-semibold text-xs rounded-xl cursor-pointer transition-colors"
+                  >
+                    Ir a mi área autorizada
+                  </button>
+                </div>
+              ) : (
+                <>
+                  {currentView === 'admin_dashboard' && <AdminDashboard />}
+                  {currentView === 'admin_tareas' && <TasksView />}
+                  {currentView === 'admin_pos' && <PosView />}
+                  {currentView === 'admin_ventas' && <SalesDatabaseView />}
+                  {currentView === 'admin_cuentas_cobrar' && <AccountsReceivableView />}
+                  {currentView === 'admin_compras' && <PurchaseOrdersView />}
+                  {currentView === 'admin_gastos' && <ExpensesView />}
+                  {currentView === 'admin_tesoreria' && <TreasuryFinanceView />}
+                  {currentView === 'admin_inventario' && <InventoryView />}
+                  {currentView === 'admin_mayorista' && <WholesalePricingView />}
+                  {currentView === 'admin_taller' && <ServiceOrdersView />}
+                  {currentView === 'admin_comisiones' && <CommissionsView />}
+                  {currentView === 'admin_pedidos' && <OrdersView />}
+                  {currentView === 'admin_clientes' && <CustomersView />}
+                  {currentView === 'admin_usuarios' && isAdmin && <StaffManagementView />}
+                  {currentView === 'admin_ajustes' && <SettingsView />}
+                </>
+              )}
             </main>
           )}
         </div>
@@ -119,7 +148,7 @@ const AppContent: React.FC = () => {
         defaultTab={authModalTab}
       />
       <ChangeAdminPasswordModal />
-      {isAdmin && <TaskReminderNotifier />}
+      {isStaff && <TaskReminderNotifier />}
 
       {/* Clean Domain Footer */}
       <footer className="bg-slate-950 text-slate-400 text-xs border-t border-slate-800 mt-auto no-print">
@@ -228,7 +257,7 @@ const AppContent: React.FC = () => {
                     Consultar Moto
                   </button>
                   <span>·</span>
-                  <button onClick={() => setCurrentView('admin_dashboard')} className="hover:text-slate-300 cursor-pointer">
+                  <button onClick={enterAdminMode} className="hover:text-slate-300 cursor-pointer">
                     Panel Administración
                   </button>
                 </>

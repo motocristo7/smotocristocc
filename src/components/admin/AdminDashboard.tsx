@@ -34,6 +34,7 @@ import {
   Receipt,
   Percent,
   BellRing,
+  UserCog,
 } from 'lucide-react';
 import QRCode from 'qrcode';
 
@@ -60,6 +61,8 @@ export const AdminDashboard: React.FC = () => {
     onlineStoreBrand,
     currentMonthExpensesUSD,
     adminTasks,
+    isAdmin,
+    staffUsers,
   } = useApp();
 
   const [showMlDetails, setShowMlDetails] = useState(false);
@@ -264,6 +267,18 @@ Ingresa directamente desde tu teléfono aquí:
               Tareas ({adminTasks.filter((t) => t.status === 'PENDIENTE').length})
             </span>
           </button>
+          {isAdmin && (
+            <button
+              onClick={() => setCurrentView('admin_usuarios')}
+              className="px-4 py-2.5 bg-slate-900 hover:bg-slate-800 text-white border border-slate-800 font-bold text-xs rounded-xl shadow-xs transition-colors flex items-center gap-1.5 cursor-pointer"
+              title="Crear usuarios de empleados, ver puntualidad, ventas y reportes"
+            >
+              <UserCog className="w-4 h-4 text-amber-400" />
+              <span>
+                Equipo ({staffUsers.filter((u) => u.role === 'EMPLEADO' && u.active !== false).length})
+              </span>
+            </button>
+          )}
           <button
             onClick={() => setCurrentView('admin_gastos')}
             className="px-4 py-2.5 bg-white hover:bg-slate-50 text-slate-800 border border-slate-300 font-semibold text-xs rounded-xl shadow-xs transition-colors flex items-center gap-1.5 cursor-pointer"

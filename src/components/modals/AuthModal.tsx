@@ -69,7 +69,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     setSuccessMessage(null);
 
     if (!loginIdentifier.trim()) {
-      setErrorMessage('Por favor ingresa tu correo, cédula o teléfono.');
+      setErrorMessage('Por favor ingresa tu usuario, correo, cédula o teléfono.');
       return;
     }
     if (!loginPassword) {
@@ -84,6 +84,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         setSuccessMessage(
           result.user.role === 'ADMIN'
             ? `¡Bienvenido Administrador ${result.user.name}!`
+            : result.user.role === 'EMPLEADO'
+            ? `¡Bienvenido, ${result.user.name}! Hora de llegada registrada.`
             : `¡Bienvenido de nuevo, ${result.user.name}!`
         );
         setTimeout(() => {
@@ -212,7 +214,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           </h2>
           <p className="text-xs text-slate-300 mt-1">
             {activeTab === 'login'
-              ? 'Accede como Cliente para ver tus compras o como Administrador del taller.'
+              ? 'Accede como Cliente, Trabajador del equipo o Administrador del taller.'
               : 'Crea tu perfil en segundos para consultar pedidos, facturas y solicitar repuestos.'}
           </p>
         </div>
@@ -272,7 +274,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             <form onSubmit={handleLoginSubmit} className="space-y-4">
               <div>
                 <label className="block text-xs font-bold text-slate-700 mb-1">
-                  Correo, Cédula o Teléfono
+                  Usuario, Correo, Cédula o Teléfono
                 </label>
                 <div className="relative">
                   <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-400">
@@ -282,7 +284,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                     type="text"
                     value={loginIdentifier}
                     onChange={(e) => setLoginIdentifier(e.target.value)}
-                    placeholder="ej. SERVIMOTOSCRISTOCENTRO@gmail.com o 0412-1234567"
+                    placeholder="ej. carlos.ventas, correo@ejemplo.com o 0412-1234567"
                     className="w-full pl-9 pr-3 py-2 text-xs rounded-xl border border-slate-300 focus:outline-hidden focus:ring-2 focus:ring-amber-500 bg-white"
                     required
                   />
@@ -354,7 +356,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                   <span>¿No te acepta la clave? Restablecer clave de Administrador</span>
                 </button>
                 <p className="text-[10px] text-center text-slate-400">
-                  Los clientes pueden registrarse gratis para ver sus motos y pedidos.
+                  Trabajadores: ingresa con el usuario y clave creados por el administrador.
                 </p>
               </div>
             </form>

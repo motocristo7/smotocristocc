@@ -32,6 +32,8 @@ interface TriggeredTaskTracker {
 export const TaskReminderNotifier: React.FC = () => {
   const {
     isAdmin,
+    isStaff,
+    canAccessView,
     adminTasks,
     toggleAdminTaskStatus,
     markAdminTaskNotified,
@@ -55,12 +57,12 @@ export const TaskReminderNotifier: React.FC = () => {
 
   // Tick every 10 seconds so 5-minute-before reminders fire promptly
   useEffect(() => {
-    if (!isAdmin) return;
+    if (!isStaff) return;
     const interval = setInterval(() => {
       setNowMs(Date.now());
     }, 10000);
     return () => clearInterval(interval);
-  }, [isAdmin]);
+  }, [isStaff]);
 
   // Listen to mute toggle changes from TasksView or other tabs
   useEffect(() => {
@@ -88,10 +90,28 @@ export const TaskReminderNotifier: React.FC = () => {
 
   // Compute active alerts strictly for tasks with status === 'PENDIENTE'
   // As soon as a task is marked 'REALIZADA', it is excluded immediately and stops all alerts.
+  // Employees only receive reminders for tasks assigned to them; Admins see all team reminders.
   const activeAlerts = useMemo(() => {
-    if (!isAdmin) return [];
+    if (!isStaff) return [];
+    const currentUserNameNorm = (currentUser?.name || '').trim().toLowerCase();
+    const currentUserPhoneDigits = (currentUser?.phone || '').replace(/\D/g, '');
+
     return adminTasks
-      .filter((task) => task.status === 'PENDIENTE')
+      .filter((task) => {
+        if (task.status !== 'PENDIENTE') return false;
+        if (isAdmin) return true;
+        if (!currentUser) return false;
+        if (task.assignedUserId && task.assignedUserId === currentUser.id) return true;
+        if (currentUser.linkedTechnicianId && task.assignedWorkerId === currentUser.linkedTechnicianId) return true;
+        if (currentUserNameNorm && task.assignedWorkerName.trim().toLowerCase() === currentUserNameNorm) return true;
+        if (
+          currentUserPhoneDigits.length >= 7 &&
+          (task.assignedWorkerPhone || '').replace(/\D/g, '') === currentUserPhoneDigits
+        ) {
+          return true;
+        }
+        return false;
+      })
       .map((task) => ({
         task,
         timing: getTaskTimingState(task, nowMs),
@@ -106,7 +126,7 @@ export const TaskReminderNotifier: React.FC = () => {
         const tsB = b.timing.dueTimestamp ?? Number.MAX_SAFE_INTEGER;
         return tsA - tsB;
       });
-  }, [isAdmin, adminTasks, nowMs, snoozedUntilMap]);
+  }, [isStaff, isAdmin, currentUser, adminTasks, nowMs, snoozedUntilMap]);
 
   // Clean up tracker & snooze entries for completed or deleted tasks
   useEffect(() => {
@@ -141,7 +161,13 @@ export const TaskReminderNotifier: React.FC = () => {
 
   // Fire chime & OS browser notification when entering 5-min window, due time, or periodic overdue ping
   useEffect(() => {
-    if (!isAdmin || activeAlerts.length === 0) return;
+    if (!isStaff || activeAlerts.length === 0) return;
+
+    const navigateToTasks = () => {
+      if (canAccessView('admin_tareas')) {
+        setCurrentView('admin_tareas');
+      }
+    };
 
     let shouldPlayChime = false;
     let isUrgentChime = false;
@@ -164,7 +190,7 @@ export const TaskReminderNotifier: React.FC = () => {
           `⏰ Faltan ${mins} min: ${task.title}`,
           `Responsable: ${task.assignedWorkerName} · ${scheduleText}`,
           `task-pre-${task.id}`,
-          () => setCurrentView('admin_tareas')
+          navigateToTasks
         );
       } else if (timing.isDueNow && !record.dueNotified) {
         record.dueNotified = true;
@@ -175,7 +201,7 @@ export const TaskReminderNotifier: React.FC = () => {
           `🔔 ¡Es la hora!: ${task.title}`,
           `Responsable: ${task.assignedWorkerName} · ${scheduleText}`,
           `task-due-${task.id}`,
-          () => setCurrentView('admin_tareas')
+          navigateToTasks
         );
       } else if (timing.isOverdue) {
         // First time noticing overdue or every 10 minutes while still pending
@@ -189,7 +215,7 @@ export const TaskReminderNotifier: React.FC = () => {
             `🚨 Tarea pendiente (${timing.urgencyLabel}): ${task.title}`,
             `Responsable: ${task.assignedWorkerName} · ${scheduleText}`,
             `task-overdue-${task.id}`,
-            () => setCurrentView('admin_tareas')
+            navigateToTasks
           );
         }
       }
@@ -200,9 +226,9 @@ export const TaskReminderNotifier: React.FC = () => {
     if (shouldPlayChime && !isMuted) {
       playTaskReminderChime(isUrgentChime);
     }
-  }, [isAdmin, activeAlerts, isMuted, nowMs, setCurrentView]);
+  }, [isStaff, activeAlerts, isMuted, nowMs, canAccessView, setCurrentView]);
 
-  if (!isAdmin || activeAlerts.length === 0) {
+  if (!isStaff || activeAlerts.length === 0) {
     return null;
   }
 
@@ -245,14 +271,16 @@ export const TaskReminderNotifier: React.FC = () => {
             {isMuted ? <VolumeX className="w-3.5 h-3.5 text-rose-400" /> : <Volume2 className="w-3.5 h-3.5 text-emerald-400" />}
             <span className="text-[11px]">{isMuted ? 'Silenciado' : 'Sonido'}</span>
           </button>
-          <button
-            type="button"
-            onClick={() => setCurrentView('admin_tareas')}
-            className="text-amber-400 hover:text-amber-300 font-semibold text-[11px] flex items-center gap-0.5 cursor-pointer"
-          >
-            <span>Ver todas</span>
-            <ArrowRight className="w-3 h-3" />
-          </button>
+          {canAccessView('admin_tareas') && (
+            <button
+              type="button"
+              onClick={() => setCurrentView('admin_tareas')}
+              className="text-amber-400 hover:text-amber-300 font-semibold text-[11px] flex items-center gap-0.5 cursor-pointer"
+            >
+              <span>Ver todas</span>
+              <ArrowRight className="w-3 h-3" />
+            </button>
+          )}
         </div>
       </div>
 
@@ -368,7 +396,7 @@ export const TaskReminderNotifier: React.FC = () => {
         );
       })}
 
-      {hiddenCount > 0 && (
+      {hiddenCount > 0 && canAccessView('admin_tareas') && (
         <button
           type="button"
           onClick={() => setCurrentView('admin_tareas')}

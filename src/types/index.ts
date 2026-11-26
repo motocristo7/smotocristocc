@@ -1,13 +1,117 @@
-export type UserRole = 'ADMIN' | 'CLIENTE';
+export type UserRole = 'ADMIN' | 'EMPLEADO' | 'CLIENTE';
+
+export type AdminModuleId =
+  | 'admin_dashboard'
+  | 'admin_tareas'
+  | 'admin_pos'
+  | 'admin_ventas'
+  | 'admin_cuentas_cobrar'
+  | 'admin_compras'
+  | 'admin_gastos'
+  | 'admin_tesoreria'
+  | 'admin_inventario'
+  | 'admin_mayorista'
+  | 'admin_taller'
+  | 'admin_comisiones'
+  | 'admin_pedidos'
+  | 'admin_clientes'
+  | 'admin_ajustes'
+  | 'admin_usuarios';
+
+export interface AdminModuleCatalogItem {
+  id: AdminModuleId;
+  label: string;
+  description: string;
+  adminOnly?: boolean;
+}
+
+export const ADMIN_MODULES_CATALOG: AdminModuleCatalogItem[] = [
+  { id: 'admin_dashboard', label: 'Panel Principal', description: 'Resumen diario e indicadores generales' },
+  { id: 'admin_tareas', label: 'Tareas Pendientes', description: 'Ver y completar tareas asignadas y recordatorios' },
+  { id: 'admin_pos', label: 'Punto de Venta (POS)', description: 'Registrar ventas de contado, mixto, crédito y cuentas abiertas' },
+  { id: 'admin_ventas', label: 'Registro de Ventas', description: 'Consultar facturas, abonos y comprobantes' },
+  { id: 'admin_cuentas_cobrar', label: 'Cuentas por Cobrar', description: 'Gestionar créditos, apartados y cobranzas' },
+  { id: 'admin_pedidos', label: 'Pedidos Online', description: 'Alistar y despachar pedidos de la tienda online' },
+  { id: 'admin_clientes', label: 'Clientes y Motos', description: 'Consultar y registrar clientes y motocicletas' },
+  { id: 'admin_inventario', label: 'Inventario', description: 'Ver y actualizar repuestos, precios y stock' },
+  { id: 'admin_mayorista', label: 'Precios al Mayor', description: 'Configurar descuentos por volumen' },
+  { id: 'admin_taller', label: 'Órdenes de Taller', description: 'Recibir motos/asientos y actualizar estado de reparación' },
+  { id: 'admin_comisiones', label: 'Comisiones de Taller', description: 'Revisar trabajos y comisiones de técnicos' },
+  { id: 'admin_compras', label: 'Compras y Proveedores', description: 'Registrar compras de mercancía y proveedores' },
+  { id: 'admin_gastos', label: 'Gastos Operativos', description: 'Registrar egresos y gastos diarios' },
+  { id: 'admin_tesoreria', label: 'Tesorería y Cuentas', description: 'Saldos bancarios, movimientos y deudas' },
+  { id: 'admin_ajustes', label: 'Configuración', description: 'Datos fiscales, tasa BCV y respaldo' },
+  { id: 'admin_usuarios', label: 'Equipo y Reportes', description: 'Crear usuarios, asistencia y evaluación (Solo Administrador)', adminOnly: true },
+];
+
+export interface StaffRolePreset {
+  id: string;
+  label: string;
+  defaultPosition: string;
+  modules: AdminModuleId[];
+}
+
+export const STAFF_ROLE_PRESETS: StaffRolePreset[] = [
+  {
+    id: 'vendedor_caja',
+    label: 'Vendedor / Caja',
+    defaultPosition: 'Vendedor',
+    modules: ['admin_pos', 'admin_ventas', 'admin_cuentas_cobrar', 'admin_pedidos', 'admin_clientes', 'admin_inventario', 'admin_tareas'],
+  },
+  {
+    id: 'taller_mecanico',
+    label: 'Mecánico / Tapicero',
+    defaultPosition: 'Mecánico / Tapicero',
+    modules: ['admin_taller', 'admin_tareas', 'admin_inventario', 'admin_clientes'],
+  },
+  {
+    id: 'almacen_despacho',
+    label: 'Almacén / Despacho',
+    defaultPosition: 'Encargado de Almacén',
+    modules: ['admin_inventario', 'admin_pedidos', 'admin_compras', 'admin_tareas'],
+  },
+  {
+    id: 'encargado_general',
+    label: 'Encargado General',
+    defaultPosition: 'Encargado',
+    modules: [
+      'admin_dashboard',
+      'admin_tareas',
+      'admin_pos',
+      'admin_ventas',
+      'admin_cuentas_cobrar',
+      'admin_pedidos',
+      'admin_clientes',
+      'admin_inventario',
+      'admin_mayorista',
+      'admin_taller',
+      'admin_comisiones',
+      'admin_compras',
+      'admin_gastos',
+    ],
+  },
+];
 
 export interface AppUser {
   id: string;
   name: string;
+  username?: string; // Usuario corto para iniciar sesión (ej. carlos.vendedor)
   documentId: string; // Cédula (V- / E-)
   phone: string; // WhatsApp / Móvil
   email?: string;
   role: UserRole;
+  position?: string; // Cargo en la empresa (Vendedor, Cajero, Mecánico, Tapicero, etc.)
+  active?: boolean; // Si está desactivado no puede iniciar sesión
+  allowedModules?: AdminModuleId[]; // Áreas del sistema habilitadas para rol EMPLEADO
+  scheduledStartTime?: string; // Hora de entrada esperada HH:mm (ej. "08:00")
+  scheduledEndTime?: string; // Hora de salida esperada HH:mm (ej. "18:00")
+  lateToleranceMinutes?: number; // Minutos de tolerancia antes de marcar tardanza (default 10)
+  monthlySalesGoalUSD?: number; // Meta mensual de ventas en USD (opcional para evaluación)
+  linkedTechnicianId?: string; // Enlace opcional con ficha de técnico de taller
+  notes?: string; // Observaciones internas de RRHH / evaluación
+  lastLoginAt?: string; // Último inicio de sesión ISO
   createdAt: string;
+  updatedAt?: string;
   hasCustomPassword?: boolean;
   passwordUpdatedAt?: string;
   passwordHash?: string;
@@ -260,6 +364,11 @@ export interface Sale {
   shippingState?: string;
   shippingAgency?: string;
   shippingNotes?: string;
+
+  // Atribución de vendedor / trabajador que registró la venta
+  soldByUserId?: string;
+  soldByUserName?: string;
+  soldByUserRole?: UserRole;
 }
 
 export interface MercadoLibreEntry {
@@ -977,6 +1086,7 @@ export interface AdminTask {
   category: AdminTaskCategory;
   priority: AdminTaskPriority;
   assignedWorkerId?: string;
+  assignedUserId?: string; // ID de usuario EMPLEADO vinculado para notificaciones en pantalla y métricas
   assignedWorkerName: string;
   assignedWorkerPhone?: string;
   dueDate: string; // YYYY-MM-DD
@@ -990,4 +1100,53 @@ export interface AdminTask {
   createdAt: string;
   updatedAt?: string;
 }
+
+export type AttendancePunctualityStatus = 'PUNTUAL' | 'TARDE' | 'AUSENTE' | 'PERMISO';
+
+export interface StaffAttendanceRecord {
+  id: string;
+  userId: string;
+  userName: string;
+  userPosition?: string;
+  date: string; // YYYY-MM-DD (fecha local)
+  scheduledStartTime: string; // HH:mm
+  scheduledEndTime?: string; // HH:mm
+  checkInAt?: string; // ISO timestamp
+  checkInTime?: string; // HH:mm (24h)
+  checkOutAt?: string; // ISO timestamp
+  checkOutTime?: string; // HH:mm (24h)
+  punctualityStatus: AttendancePunctualityStatus;
+  minutesLate: number; // 0 si puntual, >0 si llegó tarde
+  workedMinutes?: number; // Minutos laborados entre llegada y salida
+  checkInSource: 'AUTO_LOGIN' | 'MANUAL_STAFF' | 'ADMIN';
+  notes?: string;
+  createdAt: string;
+  updatedAt?: string;
+}
+
+export type StaffNotificationType =
+  | 'TAREA_ASIGNADA'
+  | 'RECORDATORIO_TAREA'
+  | 'MENSAJE_ADMIN'
+  | 'META_VENTA'
+  | 'SISTEMA';
+
+export type StaffNotificationPriority = 'INFO' | 'IMPORTANTE' | 'URGENTE';
+
+export interface StaffNotification {
+  id: string;
+  recipientUserId: string;
+  recipientUserName: string;
+  senderUserId?: string;
+  senderName: string;
+  title: string;
+  message: string;
+  type: StaffNotificationType;
+  priority: StaffNotificationPriority;
+  relatedTaskId?: string;
+  relatedView?: AdminModuleId;
+  readAt?: string; // ISO timestamp cuando el trabajador la leyó
+  createdAt: string;
+}
+
 

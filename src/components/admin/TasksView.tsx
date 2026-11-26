@@ -51,7 +51,8 @@ interface TaskFormState {
   description: string;
   category: AdminTaskCategory;
   priority: AdminTaskPriority;
-  assignedWorkerId: string; // technician.id or 'CUSTOM'
+  assignedWorkerId: string; // 'user:<id>' | 'tech:<id>' | 'CUSTOM'
+  assignedUserId?: string;
   assignedWorkerName: string;
   assignedWorkerPhone: string;
   dueDate: string;
@@ -114,6 +115,7 @@ export const TasksView: React.FC = () => {
     markAdminTaskNotified,
     deleteAdminTask,
     technicians,
+    staffUsers,
     currentUser,
     settings,
     setWhatsappModalData,
@@ -202,9 +204,17 @@ export const TasksView: React.FC = () => {
     [technicians]
   );
 
+  const activeStaffEmployees = useMemo(
+    () => staffUsers.filter((u) => u.role === 'EMPLEADO' && u.active !== false),
+    [staffUsers]
+  );
+
   // Worker options for filter bar
   const workerFilterOptions = useMemo(() => {
     const names = new Set<string>();
+    activeStaffEmployees.forEach((u) => {
+      if (u.name.trim()) names.add(u.name.trim());
+    });
     activeTechnicians.forEach((t) => {
       if (t.name.trim()) names.add(t.name.trim());
     });
@@ -212,7 +222,7 @@ export const TasksView: React.FC = () => {
       if (t.assignedWorkerName.trim()) names.add(t.assignedWorkerName.trim());
     });
     return Array.from(names).sort((a, b) => a.localeCompare(b, 'es'));
-  }, [activeTechnicians, adminTasks]);
+  }, [activeStaffEmployees, activeTechnicians, adminTasks]);
 
   const todayISO = getLocalTodayISO(new Date(nowMs));
 
@@ -316,6 +326,7 @@ export const TasksView: React.FC = () => {
 
   const openCreateModal = () => {
     const def = getDefaultDueTimePlusMinutes(30);
+    const firstEmployee = activeStaffEmployees[0];
     const firstTech = activeTechnicians[0];
     setEditingTaskId(null);
     setFormError('');
@@ -324,9 +335,14 @@ export const TasksView: React.FC = () => {
       description: '',
       category: 'ENVIOS',
       priority: 'MEDIA',
-      assignedWorkerId: firstTech ? firstTech.id : 'CUSTOM',
-      assignedWorkerName: firstTech ? firstTech.name : '',
-      assignedWorkerPhone: firstTech?.phone || '',
+      assignedWorkerId: firstEmployee
+        ? `user:${firstEmployee.id}`
+        : firstTech
+        ? `tech:${firstTech.id}`
+        : 'CUSTOM',
+      assignedUserId: firstEmployee?.id,
+      assignedWorkerName: firstEmployee ? firstEmployee.name : firstTech ? firstTech.name : '',
+      assignedWorkerPhone: firstEmployee?.phone || firstTech?.phone || '',
       dueDate: def.date,
       dueTime: def.time,
       reminderMinutesBefore: 5,
@@ -336,6 +352,11 @@ export const TasksView: React.FC = () => {
   };
 
   const openEditModal = (task: AdminTask) => {
+    const matchedEmployee = activeStaffEmployees.find(
+      (u) =>
+        (task.assignedUserId && u.id === task.assignedUserId) ||
+        u.name.trim().toLowerCase() === task.assignedWorkerName.trim().toLowerCase()
+    );
     const matchedTech = activeTechnicians.find(
       (t) => t.id === task.assignedWorkerId || t.name === task.assignedWorkerName
     );
@@ -346,7 +367,12 @@ export const TasksView: React.FC = () => {
       description: task.description || '',
       category: task.category,
       priority: task.priority,
-      assignedWorkerId: matchedTech ? matchedTech.id : 'CUSTOM',
+      assignedWorkerId: matchedEmployee
+        ? `user:${matchedEmployee.id}`
+        : matchedTech
+        ? `tech:${matchedTech.id}`
+        : 'CUSTOM',
+      assignedUserId: matchedEmployee?.id || task.assignedUserId,
       assignedWorkerName: task.assignedWorkerName,
       assignedWorkerPhone: task.assignedWorkerPhone || '',
       dueDate: task.dueDate,
@@ -362,18 +388,36 @@ export const TasksView: React.FC = () => {
       setForm((prev) => ({
         ...prev,
         assignedWorkerId: 'CUSTOM',
+        assignedUserId: undefined,
         assignedWorkerName: '',
         assignedWorkerPhone: '',
       }));
       return;
     }
-    const tech = activeTechnicians.find((t) => t.id === value);
+    if (value.startsWith('user:')) {
+      const uid = value.slice(5);
+      const emp = activeStaffEmployees.find((u) => u.id === uid);
+      if (emp) {
+        setForm((prev) => ({
+          ...prev,
+          assignedWorkerId: value,
+          assignedUserId: emp.id,
+          assignedWorkerName: emp.name,
+          assignedWorkerPhone: emp.phone || '',
+        }));
+      }
+      return;
+    }
+    const techId = value.startsWith('tech:') ? value.slice(5) : value;
+    const tech = activeTechnicians.find((t) => t.id === techId);
     if (tech) {
+      const linkedEmp = activeStaffEmployees.find((u) => u.linkedTechnicianId === tech.id);
       setForm((prev) => ({
         ...prev,
-        assignedWorkerId: tech.id,
+        assignedWorkerId: `tech:${tech.id}`,
+        assignedUserId: linkedEmp?.id,
         assignedWorkerName: tech.name,
-        assignedWorkerPhone: tech.phone || '',
+        assignedWorkerPhone: tech.phone || linkedEmp?.phone || '',
       }));
     }
   };
@@ -422,13 +466,28 @@ export const TasksView: React.FC = () => {
 
     let savedTask: AdminTask | null = null;
 
+    let resolvedWorkerId: string | undefined;
+    let resolvedUserId: string | undefined = form.assignedUserId;
+
+    if (form.assignedWorkerId.startsWith('user:')) {
+      const uid = form.assignedWorkerId.slice(5);
+      const emp = activeStaffEmployees.find((u) => u.id === uid);
+      resolvedUserId = emp?.id || uid;
+      resolvedWorkerId = emp?.linkedTechnicianId;
+    } else if (form.assignedWorkerId.startsWith('tech:')) {
+      resolvedWorkerId = form.assignedWorkerId.slice(5);
+    } else if (form.assignedWorkerId !== 'CUSTOM') {
+      resolvedWorkerId = form.assignedWorkerId;
+    }
+
     if (editingTaskId) {
       savedTask = updateAdminTask(editingTaskId, {
         title: form.title.trim(),
         description: form.description.trim() || undefined,
         category: form.category,
         priority: form.priority,
-        assignedWorkerId: form.assignedWorkerId !== 'CUSTOM' ? form.assignedWorkerId : undefined,
+        assignedWorkerId: resolvedWorkerId,
+        assignedUserId: resolvedUserId,
         assignedWorkerName: form.assignedWorkerName.trim(),
         assignedWorkerPhone: cleanPhone || undefined,
         dueDate: form.dueDate,
@@ -441,7 +500,8 @@ export const TasksView: React.FC = () => {
         description: form.description.trim() || undefined,
         category: form.category,
         priority: form.priority,
-        assignedWorkerId: form.assignedWorkerId !== 'CUSTOM' ? form.assignedWorkerId : undefined,
+        assignedWorkerId: resolvedWorkerId,
+        assignedUserId: resolvedUserId,
         assignedWorkerName: form.assignedWorkerName.trim(),
         assignedWorkerPhone: cleanPhone || undefined,
         dueDate: form.dueDate,
@@ -1131,13 +1191,28 @@ export const TasksView: React.FC = () => {
                     onChange={(e) => handleWorkerSelectChange(e.target.value)}
                     className="w-full px-3 py-2 text-xs font-semibold border border-slate-300 rounded-lg bg-white focus:outline-hidden focus:ring-2 focus:ring-amber-400"
                   >
-                    {activeTechnicians.map((tech) => (
-                      <option key={tech.id} value={tech.id}>
-                        {tech.name}
-                        {tech.specialty ? ` (${tech.specialty})` : ''}
-                        {tech.phone ? ` · ${tech.phone}` : ''}
-                      </option>
-                    ))}
+                    {activeStaffEmployees.length > 0 && (
+                      <optgroup label="Usuarios del Sistema (Reciben notificación en pantalla)">
+                        {activeStaffEmployees.map((emp) => (
+                          <option key={emp.id} value={`user:${emp.id}`}>
+                            {emp.name}
+                            {emp.position ? ` — ${emp.position}` : ''}
+                            {emp.username ? ` (@${emp.username})` : ''}
+                          </option>
+                        ))}
+                      </optgroup>
+                    )}
+                    {activeTechnicians.length > 0 && (
+                      <optgroup label="Técnicos de Taller">
+                        {activeTechnicians.map((tech) => (
+                          <option key={tech.id} value={`tech:${tech.id}`}>
+                            {tech.name}
+                            {tech.specialty ? ` (${tech.specialty})` : ''}
+                            {tech.phone ? ` · ${tech.phone}` : ''}
+                          </option>
+                        ))}
+                      </optgroup>
+                    )}
                     <option value="CUSTOM">Otro trabajador (escribir nombre y WhatsApp)</option>
                   </select>
                 </div>

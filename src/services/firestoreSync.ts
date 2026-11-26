@@ -30,6 +30,8 @@ import {
   TreasuryDebt,
   OpenAccount,
   AdminTask,
+  StaffAttendanceRecord,
+  StaffNotification,
 } from '../types';
 
 export interface SnapshotSyncMeta {
@@ -55,6 +57,9 @@ export interface DeletedIdsMap {
   treasuryDebts: string[];
   openAccounts: string[];
   adminTasks: string[];
+  users: string[];
+  staffAttendance: string[];
+  staffNotifications: string[];
 }
 
 export const EMPTY_DELETED_IDS: DeletedIdsMap = {
@@ -75,6 +80,9 @@ export const EMPTY_DELETED_IDS: DeletedIdsMap = {
   treasuryDebts: [],
   openAccounts: [],
   adminTasks: [],
+  users: [],
+  staffAttendance: [],
+  staffNotifications: [],
 };
 
 // Recursively remove undefined values because Firestore throws on undefined fields
@@ -244,29 +252,6 @@ export function subscribeToOnlineOrders(callback: (orders: OnlineOrder[], meta: 
     );
   } catch (error) {
     console.warn('Error starting online orders listener:', error);
-    return () => {};
-  }
-}
-
-// Real-time listener for users
-export function subscribeToUsers(callback: (users: AppUser[]) => void) {
-  try {
-    const colRef = collection(db, 'users');
-    return onSnapshot(
-      colRef,
-      (snapshot) => {
-        const list: AppUser[] = [];
-        snapshot.forEach((docSnap) => {
-          list.push({ ...(docSnap.data() as AppUser), id: docSnap.id });
-        });
-        callback(list);
-      },
-      (error) => {
-        logFirestoreError(error, OperationType.GET, 'users');
-      }
-    );
-  } catch (error) {
-    console.warn('Error starting users listener:', error);
     return () => {};
   }
 }
@@ -583,6 +568,103 @@ export function subscribeToAdminTasks(callback: (tasks: AdminTask[], meta: Snaps
   }
 }
 
+// Real-time listener for users (admin & employees)
+export function subscribeToUsers(callback: (users: AppUser[], meta: SnapshotSyncMeta) => void) {
+  try {
+    const colRef = collection(db, 'users');
+    return onSnapshot(
+      colRef,
+      (snapshot) => {
+        const list: AppUser[] = [];
+        snapshot.forEach((docSnap) => {
+          list.push({ ...(docSnap.data() as AppUser), id: docSnap.id });
+        });
+        callback(list, {
+          hasPendingWrites: snapshot.metadata.hasPendingWrites,
+          fromCache: snapshot.metadata.fromCache,
+        });
+      },
+      (error) => {
+        logFirestoreError(error, OperationType.GET, 'users');
+      }
+    );
+  } catch (error) {
+    console.warn('Error starting users listener:', error);
+    return () => {};
+  }
+}
+
+// One-shot fetch for all staff users (for cross-domain employee login fallback)
+export async function fetchUsersFromFirestore(): Promise<AppUser[]> {
+  try {
+    const snapshot = await getDocs(collection(db, 'users'));
+    const list: AppUser[] = [];
+    snapshot.forEach((docSnap) => {
+      list.push({ ...(docSnap.data() as AppUser), id: docSnap.id });
+    });
+    return list;
+  } catch (error) {
+    logFirestoreError(error, OperationType.LIST, 'users');
+    return [];
+  }
+}
+
+// Real-time listener for staff attendance records
+export function subscribeToStaffAttendance(
+  callback: (records: StaffAttendanceRecord[], meta: SnapshotSyncMeta) => void
+) {
+  try {
+    const colRef = collection(db, 'staffAttendance');
+    return onSnapshot(
+      colRef,
+      (snapshot) => {
+        const list: StaffAttendanceRecord[] = [];
+        snapshot.forEach((docSnap) => {
+          list.push({ ...(docSnap.data() as StaffAttendanceRecord), id: docSnap.id });
+        });
+        callback(list, {
+          hasPendingWrites: snapshot.metadata.hasPendingWrites,
+          fromCache: snapshot.metadata.fromCache,
+        });
+      },
+      (error) => {
+        logFirestoreError(error, OperationType.GET, 'staffAttendance');
+      }
+    );
+  } catch (error) {
+    console.warn('Error starting staffAttendance listener:', error);
+    return () => {};
+  }
+}
+
+// Real-time listener for staff notifications
+export function subscribeToStaffNotifications(
+  callback: (notifications: StaffNotification[], meta: SnapshotSyncMeta) => void
+) {
+  try {
+    const colRef = collection(db, 'staffNotifications');
+    return onSnapshot(
+      colRef,
+      (snapshot) => {
+        const list: StaffNotification[] = [];
+        snapshot.forEach((docSnap) => {
+          list.push({ ...(docSnap.data() as StaffNotification), id: docSnap.id });
+        });
+        callback(list, {
+          hasPendingWrites: snapshot.metadata.hasPendingWrites,
+          fromCache: snapshot.metadata.fromCache,
+        });
+      },
+      (error) => {
+        logFirestoreError(error, OperationType.GET, 'staffNotifications');
+      }
+    );
+  } catch (error) {
+    console.warn('Error starting staffNotifications listener:', error);
+    return () => {};
+  }
+}
+
 // One-shot fetch for deleted IDs tombstones before starting collection listeners
 export async function fetchDeletedIdsFromFirestore(): Promise<DeletedIdsMap | null> {
   try {
@@ -608,6 +690,9 @@ export async function fetchDeletedIdsFromFirestore(): Promise<DeletedIdsMap | nu
       treasuryDebts: Array.isArray(data.treasuryDebts) ? data.treasuryDebts : [],
       openAccounts: Array.isArray(data.openAccounts) ? data.openAccounts : [],
       adminTasks: Array.isArray(data.adminTasks) ? data.adminTasks : [],
+      users: Array.isArray(data.users) ? data.users : [],
+      staffAttendance: Array.isArray(data.staffAttendance) ? data.staffAttendance : [],
+      staffNotifications: Array.isArray(data.staffNotifications) ? data.staffNotifications : [],
     };
   } catch (error) {
     console.warn('Error fetching deletedIds registry:', error);
@@ -642,6 +727,9 @@ export function subscribeToDeletedIds(callback: (deletedIds: DeletedIdsMap) => v
             treasuryDebts: Array.isArray(data.treasuryDebts) ? data.treasuryDebts : [],
             openAccounts: Array.isArray(data.openAccounts) ? data.openAccounts : [],
             adminTasks: Array.isArray(data.adminTasks) ? data.adminTasks : [],
+            users: Array.isArray(data.users) ? data.users : [],
+            staffAttendance: Array.isArray(data.staffAttendance) ? data.staffAttendance : [],
+            staffNotifications: Array.isArray(data.staffNotifications) ? data.staffNotifications : [],
           });
         }
       },
@@ -987,6 +1075,46 @@ export async function removeAdminTaskFromFirestore(taskId: string): Promise<void
   }
 }
 
+export async function removeUserFromFirestore(userId: string): Promise<void> {
+  try {
+    await deleteDoc(doc(db, 'users', userId));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, `users/${userId}`);
+  }
+}
+
+export async function syncStaffAttendanceToFirestore(record: StaffAttendanceRecord): Promise<void> {
+  try {
+    await setDoc(doc(db, 'staffAttendance', record.id), stripUndefined(record));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, `staffAttendance/${record.id}`);
+  }
+}
+
+export async function removeStaffAttendanceFromFirestore(attendanceId: string): Promise<void> {
+  try {
+    await deleteDoc(doc(db, 'staffAttendance', attendanceId));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, `staffAttendance/${attendanceId}`);
+  }
+}
+
+export async function syncStaffNotificationToFirestore(notification: StaffNotification): Promise<void> {
+  try {
+    await setDoc(doc(db, 'staffNotifications', notification.id), stripUndefined(notification));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, `staffNotifications/${notification.id}`);
+  }
+}
+
+export async function removeStaffNotificationFromFirestore(notificationId: string): Promise<void> {
+  try {
+    await deleteDoc(doc(db, 'staffNotifications', notificationId));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, `staffNotifications/${notificationId}`);
+  }
+}
+
 export async function recordDeletedIdsInFirestore(
   category: keyof DeletedIdsMap,
   ids: string[]
@@ -1031,6 +1159,8 @@ export async function uploadAllToFirestore(data: {
   treasuryDebts?: TreasuryDebt[];
   openAccounts?: OpenAccount[];
   adminTasks?: AdminTask[];
+  staffAttendance?: StaffAttendanceRecord[];
+  staffNotifications?: StaffNotification[];
   users?: AppUser[];
   deletedIds?: DeletedIdsMap;
 }): Promise<{ success: boolean; count: number }> {
@@ -1096,6 +1226,15 @@ export async function uploadAllToFirestore(data: {
       }
       for (const id of data.deletedIds.adminTasks || []) {
         await deleteDoc(doc(db, 'adminTasks', id)).catch(() => {});
+      }
+      for (const id of data.deletedIds.users || []) {
+        await deleteDoc(doc(db, 'users', id)).catch(() => {});
+      }
+      for (const id of data.deletedIds.staffAttendance || []) {
+        await deleteDoc(doc(db, 'staffAttendance', id)).catch(() => {});
+      }
+      for (const id of data.deletedIds.staffNotifications || []) {
+        await deleteDoc(doc(db, 'staffNotifications', id)).catch(() => {});
       }
     }
 
@@ -1224,6 +1363,29 @@ export async function uploadAllToFirestore(data: {
       for (const task of data.adminTasks) {
         await setDoc(doc(db, 'adminTasks', task.id), stripUndefined(task));
         totalCount++;
+      }
+    }
+
+    if (Array.isArray(data.staffAttendance) && data.staffAttendance.length > 0) {
+      for (const rec of data.staffAttendance) {
+        await setDoc(doc(db, 'staffAttendance', rec.id), stripUndefined(rec));
+        totalCount++;
+      }
+    }
+
+    if (Array.isArray(data.staffNotifications) && data.staffNotifications.length > 0) {
+      for (const notif of data.staffNotifications) {
+        await setDoc(doc(db, 'staffNotifications', notif.id), stripUndefined(notif));
+        totalCount++;
+      }
+    }
+
+    if (Array.isArray(data.users) && data.users.length > 0) {
+      for (const u of data.users) {
+        if (u.id) {
+          await setDoc(doc(db, 'users', u.id), stripUndefined(u), { merge: true });
+          totalCount++;
+        }
       }
     }
 

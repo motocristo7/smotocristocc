@@ -134,5 +134,17 @@ service cloud.firestore {
       allow list: if true;
       allow get, create, update, delete: if isValidId(taskId);
     }
+
+    // Panel Administrativo: Registro de Asistencia y Puntualidad de Trabajadores
+    match /staffAttendance/{attendanceId} {
+      allow list: if true;
+      allow get, create, update, delete: if isValidId(attendanceId);
+    }
+
+    // Panel Administrativo: Notificaciones Internas para Trabajadores
+    match /staffNotifications/{notificationId} {
+      allow list: if true;
+      allow get, create, update, delete: if isValidId(notificationId);
+    }
   }
 }

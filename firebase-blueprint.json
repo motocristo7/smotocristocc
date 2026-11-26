@@ -486,6 +486,7 @@
         "category": { "type": "string", "description": "Categoría de la tarea" },
         "priority": { "type": "string", "enum": ["ALTA", "MEDIA", "BAJA"], "description": "Prioridad de la tarea" },
         "assignedWorkerId": { "type": "string", "description": "ID del trabajador asignado (opcional)" },
+        "assignedUserId": { "type": "string", "description": "ID del usuario EMPLEADO asignado para notificaciones y métricas" },
         "assignedWorkerName": { "type": "string", "description": "Nombre del trabajador responsable" },
         "assignedWorkerPhone": { "type": "string", "description": "Teléfono WhatsApp del trabajador para notificaciones" },
         "dueDate": { "type": "string", "description": "Fecha programada YYYY-MM-DD" },
@@ -500,6 +501,53 @@
         "updatedAt": { "type": "string", "description": "Última actualización ISO" }
       },
       "required": ["id", "title", "category", "priority", "assignedWorkerName", "dueDate", "dueTime", "status", "reminderMinutesBefore", "createdAt"]
+    },
+    "StaffAttendanceRecord": {
+      "title": "StaffAttendanceRecord",
+      "description": "Registro diario de hora de llegada, salida y puntualidad de un trabajador",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userId": { "type": "string" },
+        "userName": { "type": "string" },
+        "userPosition": { "type": "string" },
+        "date": { "type": "string", "description": "Fecha local YYYY-MM-DD" },
+        "scheduledStartTime": { "type": "string", "description": "Hora esperada de entrada HH:mm" },
+        "scheduledEndTime": { "type": "string", "description": "Hora esperada de salida HH:mm" },
+        "checkInAt": { "type": "string" },
+        "checkInTime": { "type": "string" },
+        "checkOutAt": { "type": "string" },
+        "checkOutTime": { "type": "string" },
+        "punctualityStatus": { "type": "string", "enum": ["PUNTUAL", "TARDE", "AUSENTE", "PERMISO"] },
+        "minutesLate": { "type": "number" },
+        "workedMinutes": { "type": "number" },
+        "checkInSource": { "type": "string", "enum": ["AUTO_LOGIN", "MANUAL_STAFF", "ADMIN"] },
+        "notes": { "type": "string" },
+        "createdAt": { "type": "string" },
+        "updatedAt": { "type": "string" }
+      },
+      "required": ["id", "userId", "userName", "date", "scheduledStartTime", "punctualityStatus", "minutesLate", "checkInSource", "createdAt"]
+    },
+    "StaffNotification": {
+      "title": "StaffNotification",
+      "description": "Notificación interna en pantalla dirigida a un trabajador de la empresa",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "recipientUserId": { "type": "string" },
+        "recipientUserName": { "type": "string" },
+        "senderUserId": { "type": "string" },
+        "senderName": { "type": "string" },
+        "title": { "type": "string" },
+        "message": { "type": "string" },
+        "type": { "type": "string", "enum": ["TAREA_ASIGNADA", "RECORDATORIO_TAREA", "MENSAJE_ADMIN", "META_VENTA", "SISTEMA"] },
+        "priority": { "type": "string", "enum": ["INFO", "IMPORTANTE", "URGENTE"] },
+        "relatedTaskId": { "type": "string" },
+        "relatedView": { "type": "string" },
+        "readAt": { "type": "string" },
+        "createdAt": { "type": "string" }
+      },
+      "required": ["id", "recipientUserId", "recipientUserName", "senderName", "title", "message", "type", "priority", "createdAt"]
     }
   },
   "firestore": {
@@ -582,6 +630,14 @@
     "/adminTasks/{taskId}": {
       "schema": { "$ref": "#/entities/AdminTask" },
       "description": "Tareas pendientes del panel administrativo asignadas a trabajadores con recordatorios"
+    },
+    "/staffAttendance/{attendanceId}": {
+      "schema": { "$ref": "#/entities/StaffAttendanceRecord" },
+      "description": "Control diario de llegada, salida y puntualidad de los trabajadores"
+    },
+    "/staffNotifications/{notificationId}": {
+      "schema": { "$ref": "#/entities/StaffNotification" },
+      "description": "Notificaciones internas enviadas a los trabajadores dentro del sistema"
     }
   }
 }

@@ -64,6 +64,12 @@ import {
   OpenAccountItem,
   AdminTask,
   AdminTaskStatus,
+  AdminModuleId,
+  AttendancePunctualityStatus,
+  StaffAttendanceRecord,
+  StaffNotificationType,
+  StaffNotificationPriority,
+  StaffNotification,
 } from '../types';
 import {
   INITIAL_SETTINGS,
@@ -142,6 +148,15 @@ import {
   removeOpenAccountFromFirestore,
   syncAdminTaskToFirestore,
   removeAdminTaskFromFirestore,
+  subscribeToUsers,
+  fetchUsersFromFirestore,
+  removeUserFromFirestore,
+  subscribeToStaffAttendance,
+  syncStaffAttendanceToFirestore,
+  removeStaffAttendanceFromFirestore,
+  subscribeToStaffNotifications,
+  syncStaffNotificationToFirestore,
+  removeStaffNotificationFromFirestore,
   recordDeletedIdsInFirestore,
   clearDeletedIdsInFirestore,
   uploadAllToFirestore,
@@ -159,6 +174,8 @@ import {
   verifyOwnerRecoveryIdentity,
   verifyPasswordClient,
 } from '../utils/authCrypto';
+import { computePunctuality, calculateWorkedMinutes } from '../utils/staffAnalytics';
+import { getLocalTodayISO, getLocalTimeHHMM } from '../utils/taskNotifications';
 
 function normalizePhoneKey(phone?: string): string {
   if (!phone) return '';
@@ -220,6 +237,9 @@ function mergeDeletedMaps(a?: Partial<DeletedIdsMap>, b?: Partial<DeletedIdsMap>
     treasuryDebts: Array.from(new Set([...(a?.treasuryDebts || []), ...(b?.treasuryDebts || [])])),
     openAccounts: Array.from(new Set([...(a?.openAccounts || []), ...(b?.openAccounts || [])])),
     adminTasks: Array.from(new Set([...(a?.adminTasks || []), ...(b?.adminTasks || [])])),
+    users: Array.from(new Set([...(a?.users || []), ...(b?.users || [])])),
+    staffAttendance: Array.from(new Set([...(a?.staffAttendance || []), ...(b?.staffAttendance || [])])),
+    staffNotifications: Array.from(new Set([...(a?.staffNotifications || []), ...(b?.staffNotifications || [])])),
   };
 }
 
@@ -240,6 +260,7 @@ export type AppView =
   | 'admin_comisiones'
   | 'admin_pedidos'
   | 'admin_clientes'
+  | 'admin_usuarios'
   | 'admin_ajustes';
 
 export interface CartItem {
@@ -877,10 +898,14 @@ interface AppContextType {
   isAdminMobileMenuOpen: boolean;
   setIsAdminMobileMenuOpen: (open: boolean) => void;
 
-  // User Authentication & Roles (ADMIN / CLIENTE)
+  // User Authentication & Roles (ADMIN / EMPLEADO / CLIENTE)
   currentUser: AppUser | null;
   isAuthenticated: boolean;
   isAdmin: boolean;
+  isEmployee: boolean;
+  isStaff: boolean;
+  canAccessView: (view: AppView) => boolean;
+  getDefaultStaffView: (user?: AppUser | null) => AppView;
   isAuthModalOpen: boolean;
   authModalTab: 'login' | 'register';
   openAuthModal: (tab?: 'login' | 'register') => void;
@@ -898,6 +923,69 @@ interface AppContextType {
   isChangePasswordModalOpen: boolean;
   setIsChangePasswordModalOpen: (open: boolean) => void;
   logout: () => void;
+
+  // Staff Accounts, Attendance & Internal Notifications
+  staffUsers: AppUser[];
+  createStaffUser: (data: {
+    name: string;
+    username: string;
+    documentId: string;
+    phone: string;
+    email?: string;
+    position: string;
+    password: string;
+    allowedModules: AdminModuleId[];
+    scheduledStartTime: string;
+    scheduledEndTime?: string;
+    lateToleranceMinutes?: number;
+    monthlySalesGoalUSD?: number;
+    linkedTechnicianId?: string;
+    notes?: string;
+    active?: boolean;
+  }) => Promise<{ success: boolean; user?: AppUser; error?: string }>;
+  updateStaffUser: (
+    userId: string,
+    updates: Partial<Omit<AppUser, 'id' | 'role' | 'passwordHash'>>,
+    newPassword?: string
+  ) => Promise<{ success: boolean; user?: AppUser; error?: string }>;
+  deleteStaffUser: (userId: string) => boolean;
+
+  staffAttendance: StaffAttendanceRecord[];
+  todayUserAttendance: StaffAttendanceRecord | null;
+  recordStaffCheckIn: (
+    targetUser: AppUser,
+    source?: 'AUTO_LOGIN' | 'MANUAL_STAFF' | 'ADMIN',
+    customTimeHHMM?: string,
+    notes?: string
+  ) => StaffAttendanceRecord;
+  recordStaffCheckOut: (userIdOrAttendanceId: string, customTimeHHMM?: string) => StaffAttendanceRecord | null;
+  upsertStaffAttendance: (data: {
+    id?: string;
+    userId: string;
+    date: string;
+    checkInTime?: string;
+    checkOutTime?: string;
+    punctualityStatus?: AttendancePunctualityStatus;
+    notes?: string;
+    checkInSource?: 'AUTO_LOGIN' | 'MANUAL_STAFF' | 'ADMIN';
+  }) => StaffAttendanceRecord | null;
+  deleteStaffAttendance: (attendanceId: string) => boolean;
+
+  staffNotifications: StaffNotification[];
+  myStaffNotifications: StaffNotification[];
+  unreadStaffNotificationCount: number;
+  sendStaffNotification: (data: {
+    recipientUserId: string; // user.id or 'ALL_STAFF'
+    title: string;
+    message: string;
+    type?: StaffNotificationType;
+    priority?: StaffNotificationPriority;
+    relatedTaskId?: string;
+    relatedView?: AdminModuleId;
+  }) => StaffNotification[];
+  markStaffNotificationRead: (notificationId: string) => void;
+  markAllStaffNotificationsRead: (userId?: string) => void;
+  deleteStaffNotification: (notificationId: string) => boolean;
 
   // Firebase Real-time Synchronization
   isFirebaseConnected: boolean;
@@ -930,6 +1018,9 @@ const STORAGE_KEYS = {
   TREASURY_DEBTS: 'servimotos_treasury_debts_ve_v1',
   OPEN_ACCOUNTS: 'servimotos_open_accounts_ve_v1',
   ADMIN_TASKS: 'servimotos_admin_tasks_ve_v1',
+  STAFF_USERS: 'servimotos_staff_users_ve_v1',
+  STAFF_ATTENDANCE: 'servimotos_staff_attendance_ve_v1',
+  STAFF_NOTIFICATIONS: 'servimotos_staff_notifications_ve_v1',
   DEBT_CATEGORIES: 'servimotos_debt_categories_ve_v1',
   CART: 'servimotos_cart_ve_v2',
   ML_ENTRIES: 'servimotos_ml_entries_ve_v2',
@@ -1013,6 +1104,29 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const isAuthenticated = Boolean(currentUser);
   const isAdmin = currentUser?.role === 'ADMIN';
+  const isEmployee = currentUser?.role === 'EMPLEADO' && currentUser?.active !== false;
+  const isStaff = isAdmin || isEmployee;
+
+  const getDefaultStaffView = (user: AppUser | null = currentUser): AppView => {
+    if (!user) return 'tienda';
+    if (user.role === 'ADMIN') return 'admin_dashboard';
+    if (user.role === 'EMPLEADO') {
+      const mods = (user.allowedModules || []).filter((m) => m !== 'admin_usuarios');
+      return mods.length > 0 ? mods[0] : 'admin_tareas';
+    }
+    return 'tienda';
+  };
+
+  const canAccessView = (view: AppView): boolean => {
+    if (!view.startsWith('admin_')) return true;
+    if (isAdmin) return true;
+    if (isEmployee) {
+      if (view === 'admin_usuarios') return false;
+      const mods = currentUser?.allowedModules || [];
+      return mods.includes(view as AdminModuleId);
+    }
+    return false;
+  };
 
   const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
   const [authModalTab, setAuthModalTab] = useState<'login' | 'register'>('login');
@@ -1027,15 +1141,30 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setIsAuthModalOpen(false);
   };
 
+  // Ref for auto check-in hook wired after staffAttendance state is initialized
+  const autoCheckInOnLoginRef = useRef<((user: AppUser) => void) | null>(null);
+
   const applyAuthenticatedUser = (user: AppUser) => {
     const cleanUser: AppUser = {
       id: user.id,
       name: user.name,
+      username: user.username,
       documentId: user.documentId,
       phone: user.phone,
       email: user.email,
       role: user.role,
+      position: user.position,
+      active: user.active !== false,
+      allowedModules: Array.isArray(user.allowedModules) ? user.allowedModules : undefined,
+      scheduledStartTime: user.scheduledStartTime,
+      scheduledEndTime: user.scheduledEndTime,
+      lateToleranceMinutes: user.lateToleranceMinutes,
+      monthlySalesGoalUSD: user.monthlySalesGoalUSD,
+      linkedTechnicianId: user.linkedTechnicianId,
+      notes: user.notes,
+      lastLoginAt: new Date().toISOString(),
       createdAt: user.createdAt,
+      updatedAt: user.updatedAt,
       hasCustomPassword: Boolean(user.hasCustomPassword),
       passwordUpdatedAt: user.passwordUpdatedAt,
     };
@@ -1044,13 +1173,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       localStorage.setItem('servimotos_auth_user_v1', JSON.stringify(cleanUser));
     } catch {}
 
-    if (cleanUser.role === 'ADMIN') {
+    if (cleanUser.role === 'ADMIN' || cleanUser.role === 'EMPLEADO') {
       setIsPublicClientMode(false);
-      _setCurrentView('admin_dashboard');
+      _setCurrentView(getDefaultStaffView(cleanUser));
       if (typeof window !== 'undefined') {
         try {
           window.history.pushState(null, '', '/admin');
         } catch {}
+      }
+      if (cleanUser.role === 'EMPLEADO') {
+        queueMicrotask(() => {
+          autoCheckInOnLoginRef.current?.(cleanUser);
+        });
       }
     } else {
       setIsPublicClientMode(true);
@@ -1063,14 +1197,36 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
   const login = async (identifier: string, password: string) => {
     const trimmedId = identifier.trim();
+    const cleanInput = trimmedId.toLowerCase();
+    const cleanNumbers = trimmedId.replace(/\D/g, '');
     const isAdminAttempt = isOwnerAdminIdentifier(trimmedId);
 
-    // Fetch latest shared admin credential record from Firestore so Dev and Published apps share the same password
+    // Fetch latest shared credential records from Firestore so Dev and Published apps stay in sync
     let cloudAdminUser: AppUser | null = null;
+    let cloudStaffUser: AppUser | null = null;
     try {
-      cloudAdminUser = await fetchAdminUserFromFirestore();
+      if (isAdminAttempt) {
+        cloudAdminUser = await fetchAdminUserFromFirestore();
+      } else {
+        const remoteUsers = await fetchUsersFromFirestore();
+        const combinedPool = [...remoteUsers, ...staffUsersRef.current];
+        cloudStaffUser =
+          combinedPool.find((u) => {
+            if (u.role !== 'EMPLEADO') return false;
+            const uUser = (u.username || '').trim().toLowerCase();
+            const uEmail = (u.email || '').trim().toLowerCase();
+            const uPhone = (u.phone || '').replace(/\D/g, '');
+            const uDoc = (u.documentId || '').replace(/\D/g, '');
+            if (uUser && uUser === cleanInput) return true;
+            if (uEmail && uEmail === cleanInput) return true;
+            if (cleanNumbers && uPhone && uPhone === cleanNumbers) return true;
+            if (cleanNumbers && uDoc && uDoc === cleanNumbers) return true;
+            return false;
+          }) || null;
+      }
     } catch {
       cloudAdminUser = null;
+      cloudStaffUser = null;
     }
 
     let serverError: string | null = null;
@@ -1084,6 +1240,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           identifier: trimmedId,
           password,
           cloudAdminUser: isAdminAttempt ? cloudAdminUser : undefined,
+          cloudStaffUser: !isAdminAttempt ? cloudStaffUser : undefined,
         }),
       });
       const contentType = res.headers.get('content-type') || '';
@@ -1117,7 +1274,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       serverUnavailable = true;
     }
 
-    // Fallback: verify owner admin credentials directly against shared Firestore + Web Crypto PBKDF2
+    // Fallback 1: verify owner admin credentials directly against shared Firestore + Web Crypto PBKDF2
     if (isAdminAttempt) {
       const targetAdmin = cloudAdminUser || DEFAULT_ADMIN_PROFILE;
       let validInCloud = false;
@@ -1140,6 +1297,26 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             ? 'Contraseña incorrecta. Verifica mayúsculas/minúsculas o usa "Restablecer clave de Administrador".'
             : 'Contraseña incorrecta. En este dominio aún no hay clave personalizada sincronizada: prueba con "admin" o usa "Restablecer clave de Administrador".',
         };
+      }
+    }
+
+    // Fallback 2: verify employee account directly against Firestore / local staff list via PBKDF2
+    if (!isAdminAttempt && cloudStaffUser) {
+      if (cloudStaffUser.active === false) {
+        return {
+          success: false,
+          error: 'Esta cuenta de trabajador está desactivada. Contacta al administrador.',
+        };
+      }
+      if (cloudStaffUser.passwordHash) {
+        const validStaff = await verifyPasswordClient(password, cloudStaffUser.passwordHash);
+        if (validStaff) {
+          const cleanUser = applyAuthenticatedUser(cloudStaffUser);
+          return { success: true, user: cleanUser };
+        }
+        if (serverUnavailable) {
+          return { success: false, error: 'Contraseña incorrecta. Verifica tus datos con el administrador.' };
+        }
       }
     }
 
@@ -1443,12 +1620,12 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   };
 
   const enterAdminMode = () => {
-    if (!isAdmin) {
+    if (!isStaff) {
       openAuthModal('login');
       return;
     }
     setIsPublicClientMode(false);
-    _setCurrentView('admin_dashboard');
+    _setCurrentView(getDefaultStaffView(currentUser));
     if (typeof window !== 'undefined') {
       window.scrollTo({ top: 0, behavior: 'instant' });
       try {
@@ -1482,9 +1659,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setIsPublicClientMode(true);
         _setCurrentView('tienda');
       } else if (isAdminPath) {
-        if (isAdmin) {
+        if (isStaff) {
           setIsPublicClientMode(false);
-          _setCurrentView('admin_dashboard');
+          _setCurrentView(getDefaultStaffView(currentUser));
         } else {
           openAuthModal('login');
           _setCurrentView('tienda');
@@ -1494,12 +1671,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
-  }, [isAdmin]);
+  }, [isStaff, currentUser]);
 
   const setCurrentView = (view: AppView) => {
-    // Non-admin users cannot access admin views
-    if (view.startsWith('admin_') && !isAdmin) {
+    // Non-staff users cannot access admin views
+    if (view.startsWith('admin_') && !isStaff) {
       openAuthModal('login');
+      return;
+    }
+
+    // Employees can only navigate to views authorized in their allowedModules
+    if (view.startsWith('admin_') && !canAccessView(view)) {
+      _setCurrentView(getDefaultStaffView(currentUser));
       return;
     }
 
@@ -1946,6 +2129,44 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     return [];
   });
 
+  const [staffUsers, setStaffUsers] = useState<AppUser[]>(() => {
+    try {
+      const delSet = new Set(deletedIdsRef.current.users);
+      const stored = localStorage.getItem(STORAGE_KEYS.STAFF_USERS);
+      if (stored) {
+        const parsed: AppUser[] = JSON.parse(stored);
+        return Array.isArray(parsed)
+          ? parsed.filter((u) => (u.role === 'EMPLEADO' || u.role === 'ADMIN') && !delSet.has(u.id))
+          : [];
+      }
+    } catch {}
+    return [];
+  });
+
+  const [staffAttendance, setStaffAttendance] = useState<StaffAttendanceRecord[]>(() => {
+    try {
+      const delSet = new Set(deletedIdsRef.current.staffAttendance);
+      const stored = localStorage.getItem(STORAGE_KEYS.STAFF_ATTENDANCE);
+      if (stored) {
+        const parsed: StaffAttendanceRecord[] = JSON.parse(stored);
+        return Array.isArray(parsed) ? parsed.filter((a) => !delSet.has(a.id)) : [];
+      }
+    } catch {}
+    return [];
+  });
+
+  const [staffNotifications, setStaffNotifications] = useState<StaffNotification[]>(() => {
+    try {
+      const delSet = new Set(deletedIdsRef.current.staffNotifications);
+      const stored = localStorage.getItem(STORAGE_KEYS.STAFF_NOTIFICATIONS);
+      if (stored) {
+        const parsed: StaffNotification[] = JSON.parse(stored);
+        return Array.isArray(parsed) ? parsed.filter((n) => !delSet.has(n.id)) : [];
+      }
+    } catch {}
+    return [];
+  });
+
   const [customDebtCategories, setCustomDebtCategories] = useState<string[]>(() => {
     try {
       const stored = localStorage.getItem(STORAGE_KEYS.DEBT_CATEGORIES);
@@ -2019,6 +2240,9 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
   const pendingSyncTreasuryDebtIdsRef = useRef<Set<string>>(new Set());
   const pendingSyncOpenAccountIdsRef = useRef<Set<string>>(new Set());
   const pendingSyncAdminTaskIdsRef = useRef<Set<string>>(new Set());
+  const pendingSyncStaffUserIdsRef = useRef<Set<string>>(new Set());
+  const pendingSyncStaffAttendanceIdsRef = useRef<Set<string>>(new Set());
+  const pendingSyncStaffNotificationIdsRef = useRef<Set<string>>(new Set());
 
   // Live refs so concurrent callbacks never read stale closures
   const salesRef = useRef<Sale[]>(sales);
@@ -2038,6 +2262,9 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
   const treasuryDebtsRef = useRef<TreasuryDebt[]>(treasuryDebts);
   const openAccountsRef = useRef<OpenAccount[]>(openAccounts);
   const adminTasksRef = useRef<AdminTask[]>(adminTasks);
+  const staffUsersRef = useRef<AppUser[]>(staffUsers);
+  const staffAttendanceRef = useRef<StaffAttendanceRecord[]>(staffAttendance);
+  const staffNotificationsRef = useRef<StaffNotification[]>(staffNotifications);
   const settingsRef = useRef<BusinessSettings>(settings);
 
   // Sync to LocalStorage and live refs immediately on any state change
@@ -2130,6 +2357,22 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     adminTasksRef.current = adminTasks;
     localStorage.setItem(STORAGE_KEYS.ADMIN_TASKS, JSON.stringify(adminTasks));
   }, [adminTasks]);
+
+  useEffect(() => {
+    staffUsersRef.current = staffUsers;
+    // Strip passwordHash before writing staff directory to localStorage except for employees needing offline fallback
+    localStorage.setItem(STORAGE_KEYS.STAFF_USERS, JSON.stringify(staffUsers));
+  }, [staffUsers]);
+
+  useEffect(() => {
+    staffAttendanceRef.current = staffAttendance;
+    localStorage.setItem(STORAGE_KEYS.STAFF_ATTENDANCE, JSON.stringify(staffAttendance));
+  }, [staffAttendance]);
+
+  useEffect(() => {
+    staffNotificationsRef.current = staffNotifications;
+    localStorage.setItem(STORAGE_KEYS.STAFF_NOTIFICATIONS, JSON.stringify(staffNotifications));
+  }, [staffNotifications]);
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEYS.DEBT_CATEGORIES, JSON.stringify(customDebtCategories));
@@ -2769,6 +3012,74 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
               return mergedList;
             });
           }
+          if (Array.isArray(serverDb.users)) {
+            const deletedUsersSet = new Set(deletedIdsRef.current.users);
+            const serverStaff = (serverDb.users as AppUser[]).filter(
+              (u) => (u.role === 'EMPLEADO' || u.role === 'ADMIN') && !deletedUsersSet.has(u.id)
+            );
+            setStaffUsers((prev) => {
+              const map = new Map<string, AppUser>();
+              for (const su of serverStaff) map.set(su.id, su);
+              for (const lu of prev) {
+                if (deletedUsersSet.has(lu.id)) continue;
+                const existing = map.get(lu.id);
+                if (!existing) {
+                  map.set(lu.id, lu);
+                } else {
+                  map.set(lu.id, {
+                    ...existing,
+                    ...lu,
+                    passwordHash: lu.passwordHash || existing.passwordHash,
+                  });
+                }
+              }
+              const merged = Array.from(map.values());
+              staffUsersRef.current = merged;
+              return merged;
+            });
+          }
+          if (Array.isArray(serverDb.staffAttendance)) {
+            const delSet = new Set(deletedIdsRef.current.staffAttendance);
+            setStaffAttendance((prev) => {
+              const map = new Map<string, StaffAttendanceRecord>();
+              for (const r of serverDb.staffAttendance as StaffAttendanceRecord[]) {
+                if (!delSet.has(r.id)) map.set(r.id, r);
+              }
+              for (const l of prev) {
+                if (!delSet.has(l.id)) {
+                  const r = map.get(l.id);
+                  if (!r || (l.updatedAt || l.createdAt) > (r.updatedAt || r.createdAt)) {
+                    map.set(l.id, l);
+                  }
+                }
+              }
+              const merged = Array.from(map.values()).sort((a, b) => b.date.localeCompare(a.date));
+              staffAttendanceRef.current = merged;
+              return merged;
+            });
+          }
+          if (Array.isArray(serverDb.staffNotifications)) {
+            const delSet = new Set(deletedIdsRef.current.staffNotifications);
+            setStaffNotifications((prev) => {
+              const map = new Map<string, StaffNotification>();
+              for (const n of serverDb.staffNotifications as StaffNotification[]) {
+                if (!delSet.has(n.id)) map.set(n.id, n);
+              }
+              for (const l of prev) {
+                if (!delSet.has(l.id)) {
+                  const r = map.get(l.id);
+                  if (!r || (l.readAt && !r.readAt)) {
+                    map.set(l.id, l);
+                  }
+                }
+              }
+              const merged = Array.from(map.values()).sort((a, b) =>
+                (b.createdAt || '').localeCompare(a.createdAt || '')
+              );
+              staffNotificationsRef.current = merged;
+              return merged;
+            });
+          }
         }
       } catch (err) {
         console.warn('Servidor de datos no respondió, usando datos locales:', err);
@@ -2799,6 +3110,9 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
                 treasuryDebts: treasuryDebtsRef.current,
                 openAccounts: openAccountsRef.current,
                 adminTasks: adminTasksRef.current,
+                staffAttendance: staffAttendanceRef.current,
+                staffNotifications: staffNotificationsRef.current,
+                users: staffUsersRef.current,
                 deletedIds: deletedIdsRef.current,
               }),
             }).catch(() => {});
@@ -2835,6 +3149,9 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     treasuryDebts: false,
     openAccounts: false,
     adminTasks: false,
+    staffUsers: false,
+    staffAttendance: false,
+    staffNotifications: false,
   });
   const seenFirestoreIdsRef = useRef<{
     products: Set<string>;
@@ -2854,6 +3171,9 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     treasuryDebts: Set<string>;
     openAccounts: Set<string>;
     adminTasks: Set<string>;
+    staffUsers: Set<string>;
+    staffAttendance: Set<string>;
+    staffNotifications: Set<string>;
   }>({
     products: new Set(),
     customers: new Set(),
@@ -2872,6 +3192,9 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     treasuryDebts: new Set(),
     openAccounts: new Set(),
     adminTasks: new Set(),
+    staffUsers: new Set(),
+    staffAttendance: new Set(),
+    staffNotifications: new Set(),
   });
 
   useEffect(() => {
@@ -2896,6 +3219,9 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       const delTreasuryDebts = new Set(merged.treasuryDebts);
       const delOpenAccounts = new Set(merged.openAccounts);
       const delAdminTasks = new Set(merged.adminTasks);
+      const delUsers = new Set(merged.users);
+      const delStaffAttendance = new Set(merged.staffAttendance);
+      const delStaffNotifications = new Set(merged.staffNotifications);
 
       setSales((prev) => prev.filter((s) => !delSales.has(s.id)));
       setProducts((prev) => prev.filter((p) => !delProds.has(p.id)));
@@ -2914,6 +3240,9 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       setTreasuryDebts((prev) => prev.filter((d) => !delTreasuryDebts.has(d.id)));
       setOpenAccounts((prev) => prev.filter((a) => !delOpenAccounts.has(a.id)));
       setAdminTasks((prev) => prev.filter((t) => !delAdminTasks.has(t.id)));
+      setStaffUsers((prev) => prev.filter((u) => u.role === 'ADMIN' || !delUsers.has(u.id)));
+      setStaffAttendance((prev) => prev.filter((a) => !delStaffAttendance.has(a.id)));
+      setStaffNotifications((prev) => prev.filter((n) => !delStaffNotifications.has(n.id)));
     };
 
     async function initFirestore() {
@@ -4070,6 +4399,198 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
           setFirebaseSyncStatus('synced');
         });
 
+        // 19. Real-time Users (Admin + Employees) listener
+        const unsubUsers = subscribeToUsers((firestoreUsers, meta) => {
+          if (!Array.isArray(firestoreUsers)) return;
+          const delSet = new Set(deletedIdsRef.current.users);
+          const cleanStaff = firestoreUsers.filter(
+            (u) => (u.role === 'EMPLEADO' || u.role === 'ADMIN') && (u.role === 'ADMIN' || !delSet.has(u.id))
+          );
+          const remoteById = new Map(cleanStaff.map((u) => [u.id, u]));
+          const remoteIdSet = new Set(cleanStaff.map((u) => u.id));
+          const prevSeen = seenFirestoreIdsRef.current.staffUsers;
+          const isServerConfirmed = !meta?.fromCache && !meta?.hasPendingWrites;
+
+          if (isServerConfirmed) {
+            remoteIdSet.forEach((id) => pendingSyncStaffUserIdsRef.current.delete(id));
+          }
+
+          setStaffUsers((prev) => {
+            const toUpload: AppUser[] = [];
+            const mergedMap = new Map<string, AppUser>();
+            for (const ru of cleanStaff) mergedMap.set(ru.id, ru);
+
+            for (const lu of prev) {
+              if (lu.role !== 'ADMIN' && delSet.has(lu.id)) continue;
+              const ru = remoteById.get(lu.id);
+              const isPendingLocal = pendingSyncStaffUserIdsRef.current.has(lu.id);
+              const isNewerLocal =
+                ru &&
+                (lu.updatedAt || lu.createdAt) &&
+                (!(ru.updatedAt || ru.createdAt) ||
+                  (lu.updatedAt || lu.createdAt) > (ru.updatedAt || ru.createdAt));
+
+              if (!ru) {
+                if (isPendingLocal || !isServerConfirmed || !prevSeen.has(lu.id)) {
+                  mergedMap.set(lu.id, lu);
+                  toUpload.push(lu);
+                }
+              } else if (isPendingLocal || isNewerLocal) {
+                mergedMap.set(lu.id, { ...ru, ...lu, passwordHash: lu.passwordHash || ru.passwordHash });
+                toUpload.push({ ...ru, ...lu, passwordHash: lu.passwordHash || ru.passwordHash });
+              }
+            }
+
+            if (toUpload.length > 0 && isServerConfirmed) {
+              queueMicrotask(() => {
+                toUpload.forEach((u) => {
+                  pendingSyncStaffUserIdsRef.current.add(u.id);
+                  syncUserToFirestore(u)
+                    .then(() => pendingSyncStaffUserIdsRef.current.delete(u.id))
+                    .catch(() => {});
+                });
+              });
+            }
+
+            const merged = Array.from(mergedMap.values());
+            staffUsersRef.current = merged;
+            return merged;
+          });
+
+          if (isServerConfirmed) {
+            seenFirestoreIdsRef.current.staffUsers = remoteIdSet;
+            firestoreSyncedFlags.current.staffUsers = true;
+          }
+        });
+
+        // 20. Real-time Staff Attendance listener
+        const unsubStaffAttendance = subscribeToStaffAttendance((firestoreRecs, meta) => {
+          if (!Array.isArray(firestoreRecs)) return;
+          const delSet = new Set(deletedIdsRef.current.staffAttendance);
+          firestoreRecs.forEach((r) => {
+            if (delSet.has(r.id)) removeStaffAttendanceFromFirestore(r.id).catch(() => {});
+          });
+          const cleanRecs = firestoreRecs.filter((r) => !delSet.has(r.id));
+          const remoteById = new Map(cleanRecs.map((r) => [r.id, r]));
+          const remoteIdSet = new Set(cleanRecs.map((r) => r.id));
+          const prevSeen = seenFirestoreIdsRef.current.staffAttendance;
+          const isServerConfirmed = !meta?.fromCache && !meta?.hasPendingWrites;
+
+          if (isServerConfirmed) {
+            remoteIdSet.forEach((id) => pendingSyncStaffAttendanceIdsRef.current.delete(id));
+          }
+
+          setStaffAttendance((prev) => {
+            const toUpload: StaffAttendanceRecord[] = [];
+            const mergedMap = new Map<string, StaffAttendanceRecord>();
+            for (const rr of cleanRecs) mergedMap.set(rr.id, rr);
+
+            for (const lr of prev) {
+              if (delSet.has(lr.id)) continue;
+              const rr = remoteById.get(lr.id);
+              const isPendingLocal = pendingSyncStaffAttendanceIdsRef.current.has(lr.id);
+              const isNewerLocal =
+                rr &&
+                (lr.updatedAt || lr.createdAt) &&
+                (!(rr.updatedAt || rr.createdAt) ||
+                  (lr.updatedAt || lr.createdAt) > (rr.updatedAt || rr.createdAt));
+
+              if (!rr) {
+                if (isPendingLocal || !isServerConfirmed || !prevSeen.has(lr.id)) {
+                  mergedMap.set(lr.id, lr);
+                  toUpload.push(lr);
+                }
+              } else if (isPendingLocal || isNewerLocal) {
+                mergedMap.set(lr.id, lr);
+                toUpload.push(lr);
+              }
+            }
+
+            if (toUpload.length > 0 && isServerConfirmed) {
+              queueMicrotask(() => {
+                toUpload.forEach((r) => {
+                  pendingSyncStaffAttendanceIdsRef.current.add(r.id);
+                  syncStaffAttendanceToFirestore(r)
+                    .then(() => pendingSyncStaffAttendanceIdsRef.current.delete(r.id))
+                    .catch(() => {});
+                });
+              });
+            }
+
+            const merged = Array.from(mergedMap.values()).sort((a, b) => b.date.localeCompare(a.date));
+            staffAttendanceRef.current = merged;
+            return merged;
+          });
+
+          if (isServerConfirmed) {
+            seenFirestoreIdsRef.current.staffAttendance = remoteIdSet;
+            firestoreSyncedFlags.current.staffAttendance = true;
+          }
+        });
+
+        // 21. Real-time Staff Notifications listener
+        const unsubStaffNotifications = subscribeToStaffNotifications((firestoreNotifs, meta) => {
+          if (!Array.isArray(firestoreNotifs)) return;
+          const delSet = new Set(deletedIdsRef.current.staffNotifications);
+          firestoreNotifs.forEach((n) => {
+            if (delSet.has(n.id)) removeStaffNotificationFromFirestore(n.id).catch(() => {});
+          });
+          const cleanNotifs = firestoreNotifs.filter((n) => !delSet.has(n.id));
+          const remoteById = new Map(cleanNotifs.map((n) => [n.id, n]));
+          const remoteIdSet = new Set(cleanNotifs.map((n) => n.id));
+          const prevSeen = seenFirestoreIdsRef.current.staffNotifications;
+          const isServerConfirmed = !meta?.fromCache && !meta?.hasPendingWrites;
+
+          if (isServerConfirmed) {
+            remoteIdSet.forEach((id) => pendingSyncStaffNotificationIdsRef.current.delete(id));
+          }
+
+          setStaffNotifications((prev) => {
+            const toUpload: StaffNotification[] = [];
+            const mergedMap = new Map<string, StaffNotification>();
+            for (const rn of cleanNotifs) mergedMap.set(rn.id, rn);
+
+            for (const ln of prev) {
+              if (delSet.has(ln.id)) continue;
+              const rn = remoteById.get(ln.id);
+              const isPendingLocal = pendingSyncStaffNotificationIdsRef.current.has(ln.id);
+              const isReadLocally = Boolean(ln.readAt && rn && !rn.readAt);
+
+              if (!rn) {
+                if (isPendingLocal || !isServerConfirmed || !prevSeen.has(ln.id)) {
+                  mergedMap.set(ln.id, ln);
+                  toUpload.push(ln);
+                }
+              } else if (isPendingLocal || isReadLocally) {
+                mergedMap.set(ln.id, ln);
+                toUpload.push(ln);
+              }
+            }
+
+            if (toUpload.length > 0 && isServerConfirmed) {
+              queueMicrotask(() => {
+                toUpload.forEach((n) => {
+                  pendingSyncStaffNotificationIdsRef.current.add(n.id);
+                  syncStaffNotificationToFirestore(n)
+                    .then(() => pendingSyncStaffNotificationIdsRef.current.delete(n.id))
+                    .catch(() => {});
+                });
+              });
+            }
+
+            const merged = Array.from(mergedMap.values()).sort((a, b) =>
+              (b.createdAt || '').localeCompare(a.createdAt || '')
+            );
+            staffNotificationsRef.current = merged;
+            return merged;
+          });
+
+          if (isServerConfirmed) {
+            seenFirestoreIdsRef.current.staffNotifications = remoteIdSet;
+            firestoreSyncedFlags.current.staffNotifications = true;
+          }
+        });
+
         unsubs = [
           unsubDeleted,
           unsubProducts,
@@ -4090,6 +4611,9 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
           unsubTreasuryDebts,
           unsubOpenAccounts,
           unsubAdminTasks,
+          unsubUsers,
+          unsubStaffAttendance,
+          unsubStaffNotifications,
         ];
       } catch (err) {
         console.warn('Error starting Firestore real-time listeners:', err);
@@ -4130,6 +4654,9 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
         treasuryDebts,
         openAccounts,
         adminTasks,
+        staffAttendance,
+        staffNotifications,
+        users: staffUsers,
         deletedIds: deletedIdsRef.current,
       });
       if (result.success) {
@@ -4175,6 +4702,9 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
           treasuryDebts,
           openAccounts,
           adminTasks,
+          staffAttendance,
+          staffNotifications,
+          users: staffUsers,
           deletedIds: deletedIdsRef.current,
         }),
       }).catch((err) => {
@@ -4187,7 +4717,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
         clearTimeout(saveTimeoutRef.current);
       }
     };
-  }, [settings, products, customers, sales, serviceOrders, onlineOrders, technicians, serviceCommissions, technicianPayouts, suppliers, purchaseOrders, expenses, treasuryAccounts, treasuryCommitments, treasuryMovements, treasuryDebts, openAccounts, adminTasks, deletedIds]);
+  }, [settings, products, customers, sales, serviceOrders, onlineOrders, technicians, serviceCommissions, technicianPayouts, suppliers, purchaseOrders, expenses, treasuryAccounts, treasuryCommitments, treasuryMovements, treasuryDebts, openAccounts, adminTasks, staffAttendance, staffNotifications, staffUsers, deletedIds]);
 
   // Guarantee save before tab/window is closed
   useEffect(() => {
@@ -4212,6 +4742,9 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
           treasuryDebts,
           openAccounts,
           adminTasks,
+          staffAttendance,
+          staffNotifications,
+          users: staffUsers,
           deletedIds: deletedIdsRef.current,
         });
 
@@ -5502,6 +6035,9 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       mercadolibreCommissionUSD: resolvedPaymentType === 'MERCADOLIBRE' ? (saleData.mercadolibreCommissionUSD || 0) : undefined,
       mercadolibreCommissionRate: resolvedPaymentType === 'MERCADOLIBRE' ? saleData.mercadolibreCommissionRate : undefined,
       mercadolibreFeeStatus: resolvedPaymentType === 'MERCADOLIBRE' ? (saleData.mercadolibreFeeStatus || 'PENDIENTE') : undefined,
+      soldByUserId: (saleData as any).soldByUserId || currentUser?.id,
+      soldByUserName: (saleData as any).soldByUserName || currentUser?.name,
+      soldByUserRole: (saleData as any).soldByUserRole || currentUser?.role,
     };
 
     const optimisticList = [newSale, ...salesRef.current];
@@ -12648,6 +13184,21 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     }
   ): AdminTask => {
     const now = new Date().toISOString();
+    // Auto-resolve linked EMPLEADO user ID if not passed explicitly
+    let resolvedAssignedUserId = data.assignedUserId;
+    if (!resolvedAssignedUserId && data.assignedWorkerName) {
+      const targetName = data.assignedWorkerName.trim().toLowerCase();
+      const targetPhone = (data.assignedWorkerPhone || '').replace(/\D/g, '');
+      const matchedStaff = staffUsersRef.current.find((u) => {
+        if (u.role !== 'EMPLEADO' || u.active === false) return false;
+        if (data.assignedWorkerId && u.linkedTechnicianId === data.assignedWorkerId) return true;
+        if (u.name.trim().toLowerCase() === targetName) return true;
+        if (targetPhone.length >= 7 && (u.phone || '').replace(/\D/g, '') === targetPhone) return true;
+        return false;
+      });
+      if (matchedStaff) resolvedAssignedUserId = matchedStaff.id;
+    }
+
     const newTask: AdminTask = {
       id: `tsk-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
       title: data.title.trim(),
@@ -12655,6 +13206,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       category: data.category || 'OTROS',
       priority: data.priority || 'MEDIA',
       assignedWorkerId: data.assignedWorkerId || undefined,
+      assignedUserId: resolvedAssignedUserId || undefined,
       assignedWorkerName: data.assignedWorkerName.trim() || 'Sin asignar',
       assignedWorkerPhone: data.assignedWorkerPhone?.trim() || undefined,
       dueDate: data.dueDate,
@@ -12682,6 +13234,21 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     syncAdminTaskToFirestore(newTask)
       .then(() => pendingSyncAdminTaskIdsRef.current.delete(newTask.id))
       .catch(() => {});
+
+    // Automatically push an in-app notification to the assigned employee account
+    if (resolvedAssignedUserId) {
+      queueMicrotask(() => {
+        sendStaffNotification({
+          recipientUserId: resolvedAssignedUserId!,
+          title: `Nueva tarea asignada: ${newTask.title}`,
+          message: `Programada para ${newTask.dueDate} a las ${newTask.dueTime}.${newTask.description ? ` ${newTask.description}` : ''}`,
+          type: 'TAREA_ASIGNADA',
+          priority: newTask.priority === 'ALTA' ? 'URGENTE' : newTask.priority === 'MEDIA' ? 'IMPORTANTE' : 'INFO',
+          relatedTaskId: newTask.id,
+          relatedView: 'admin_tareas',
+        });
+      });
+    }
 
     return newTask;
   };
@@ -12791,6 +13358,545 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     removeAdminTaskFromFirestore(taskId).catch(() => {});
     return true;
   };
+
+  // =========================================================================
+  // Staff User Accounts, Attendance Tracking & Internal Notifications
+  // =========================================================================
+
+  // Keep logged-in employee's active status & permissions synced live if admin modifies them
+  useEffect(() => {
+    if (!currentUser || currentUser.role !== 'EMPLEADO') return;
+    const latest = staffUsers.find((u) => u.id === currentUser.id);
+    if (!latest) return;
+    if (latest.active === false) {
+      setCurrentUser(null);
+      try {
+        localStorage.removeItem('servimotos_auth_user_v1');
+      } catch {}
+      setIsPublicClientMode(true);
+      _setCurrentView('tienda');
+      return;
+    }
+    const prevMods = (currentUser.allowedModules || []).join(',');
+    const nextMods = (latest.allowedModules || []).join(',');
+    if (
+      prevMods !== nextMods ||
+      currentUser.position !== latest.position ||
+      currentUser.name !== latest.name ||
+      currentUser.scheduledStartTime !== latest.scheduledStartTime
+    ) {
+      const refreshed: AppUser = {
+        ...currentUser,
+        name: latest.name,
+        username: latest.username,
+        position: latest.position,
+        allowedModules: latest.allowedModules,
+        scheduledStartTime: latest.scheduledStartTime,
+        scheduledEndTime: latest.scheduledEndTime,
+        lateToleranceMinutes: latest.lateToleranceMinutes,
+        monthlySalesGoalUSD: latest.monthlySalesGoalUSD,
+        linkedTechnicianId: latest.linkedTechnicianId,
+      };
+      setCurrentUser(refreshed);
+      try {
+        localStorage.setItem('servimotos_auth_user_v1', JSON.stringify(refreshed));
+      } catch {}
+    }
+  }, [staffUsers, currentUser]);
+
+  const createStaffUser = async (data: {
+    name: string;
+    username: string;
+    documentId: string;
+    phone: string;
+    email?: string;
+    position: string;
+    password: string;
+    allowedModules: AdminModuleId[];
+    scheduledStartTime: string;
+    scheduledEndTime?: string;
+    lateToleranceMinutes?: number;
+    monthlySalesGoalUSD?: number;
+    linkedTechnicianId?: string;
+    notes?: string;
+    active?: boolean;
+  }): Promise<{ success: boolean; user?: AppUser; error?: string }> => {
+    if (!isAdmin) {
+      return { success: false, error: 'Solo el administrador puede crear cuentas de trabajadores.' };
+    }
+    const cleanName = data.name.trim();
+    const cleanUsername = data.username.trim().toLowerCase().replace(/\s+/g, '.');
+    const cleanEmail = (data.email || '').trim().toLowerCase();
+    const cleanPhone = data.phone.trim();
+    const cleanDoc = data.documentId.trim().toUpperCase();
+
+    if (!cleanName) return { success: false, error: 'El nombre del trabajador es obligatorio.' };
+    if (!cleanUsername) return { success: false, error: 'Ingresa un nombre de usuario para iniciar sesión.' };
+    if (!data.password || data.password.trim().length < 4) {
+      return { success: false, error: 'La contraseña debe tener al menos 4 caracteres.' };
+    }
+
+    const duplicate = staffUsersRef.current.find((u) => {
+      if (cleanUsername && (u.username || '').trim().toLowerCase() === cleanUsername) return true;
+      if (cleanEmail && (u.email || '').trim().toLowerCase() === cleanEmail) return true;
+      return false;
+    });
+    if (duplicate) {
+      return {
+        success: false,
+        error: 'Ya existe un trabajador con ese usuario o correo electrónico.',
+      };
+    }
+
+    const passwordHash = await hashPasswordClient(data.password);
+    const now = new Date().toISOString();
+    const safeModules = Array.from(
+      new Set((data.allowedModules || []).filter((m) => m !== 'admin_usuarios'))
+    );
+
+    const newUser: AppUser = {
+      id: `usr-emp-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      name: cleanName,
+      username: cleanUsername,
+      documentId: cleanDoc || 'V-00000000',
+      phone: cleanPhone,
+      email: cleanEmail || undefined,
+      role: 'EMPLEADO',
+      position: data.position.trim() || 'Trabajador',
+      active: data.active !== false,
+      allowedModules: safeModules.length > 0 ? safeModules : ['admin_tareas'],
+      scheduledStartTime: data.scheduledStartTime || '08:00',
+      scheduledEndTime: data.scheduledEndTime || '18:00',
+      lateToleranceMinutes: Math.max(0, Number(data.lateToleranceMinutes ?? 10)),
+      monthlySalesGoalUSD: Math.max(0, Number(data.monthlySalesGoalUSD || 0)),
+      linkedTechnicianId: data.linkedTechnicianId || undefined,
+      notes: data.notes?.trim() || undefined,
+      createdAt: now,
+      updatedAt: now,
+      hasCustomPassword: true,
+      passwordUpdatedAt: now,
+      passwordHash,
+    };
+
+    const nextList = [newUser, ...staffUsersRef.current];
+    staffUsersRef.current = nextList;
+    setStaffUsers(nextList);
+
+    pendingSyncStaffUserIdsRef.current.add(newUser.id);
+    syncUserToFirestore(newUser)
+      .then(() => pendingSyncStaffUserIdsRef.current.delete(newUser.id))
+      .catch(() => {});
+
+    return { success: true, user: newUser };
+  };
+
+  const updateStaffUser = async (
+    userId: string,
+    updates: Partial<Omit<AppUser, 'id' | 'role' | 'passwordHash'>>,
+    newPassword?: string
+  ): Promise<{ success: boolean; user?: AppUser; error?: string }> => {
+    if (!isAdmin) {
+      return { success: false, error: 'Solo el administrador puede editar cuentas de trabajadores.' };
+    }
+    const existing = staffUsersRef.current.find((u) => u.id === userId);
+    if (!existing || existing.role === 'ADMIN') {
+      return { success: false, error: 'Trabajador no encontrado.' };
+    }
+
+    const cleanUsername =
+      updates.username !== undefined
+        ? updates.username.trim().toLowerCase().replace(/\s+/g, '.')
+        : existing.username;
+    const cleanEmail =
+      updates.email !== undefined ? updates.email.trim().toLowerCase() || undefined : existing.email;
+
+    const duplicate = staffUsersRef.current.find((u) => {
+      if (u.id === userId) return false;
+      if (cleanUsername && (u.username || '').trim().toLowerCase() === cleanUsername) return true;
+      if (cleanEmail && (u.email || '').trim().toLowerCase() === cleanEmail) return true;
+      return false;
+    });
+    if (duplicate) {
+      return { success: false, error: 'Otro usuario ya utiliza ese nombre de usuario o correo.' };
+    }
+
+    let nextPasswordHash = existing.passwordHash;
+    let nextPasswordUpdatedAt = existing.passwordUpdatedAt;
+    if (newPassword && newPassword.trim().length > 0) {
+      if (newPassword.trim().length < 4) {
+        return { success: false, error: 'La nueva contraseña debe tener al menos 4 caracteres.' };
+      }
+      nextPasswordHash = await hashPasswordClient(newPassword);
+      nextPasswordUpdatedAt = new Date().toISOString();
+    }
+
+    const now = new Date().toISOString();
+    const nextModules =
+      updates.allowedModules !== undefined
+        ? Array.from(new Set(updates.allowedModules.filter((m) => m !== 'admin_usuarios')))
+        : existing.allowedModules;
+
+    const updatedUser: AppUser = {
+      ...existing,
+      ...updates,
+      id: existing.id,
+      role: 'EMPLEADO',
+      name: updates.name !== undefined ? updates.name.trim() : existing.name,
+      username: cleanUsername,
+      email: cleanEmail,
+      documentId: updates.documentId !== undefined ? updates.documentId.trim().toUpperCase() : existing.documentId,
+      phone: updates.phone !== undefined ? updates.phone.trim() : existing.phone,
+      position: updates.position !== undefined ? updates.position.trim() || 'Trabajador' : existing.position,
+      allowedModules: nextModules && nextModules.length > 0 ? nextModules : ['admin_tareas'],
+      lateToleranceMinutes:
+        updates.lateToleranceMinutes !== undefined
+          ? Math.max(0, Number(updates.lateToleranceMinutes))
+          : existing.lateToleranceMinutes,
+      monthlySalesGoalUSD:
+        updates.monthlySalesGoalUSD !== undefined
+          ? Math.max(0, Number(updates.monthlySalesGoalUSD))
+          : existing.monthlySalesGoalUSD,
+      notes: updates.notes !== undefined ? updates.notes.trim() || undefined : existing.notes,
+      passwordHash: nextPasswordHash,
+      passwordUpdatedAt: nextPasswordUpdatedAt,
+      updatedAt: now,
+    };
+
+    const nextList = staffUsersRef.current.map((u) => (u.id === userId ? updatedUser : u));
+    staffUsersRef.current = nextList;
+    setStaffUsers(nextList);
+
+    pendingSyncStaffUserIdsRef.current.add(updatedUser.id);
+    syncUserToFirestore(updatedUser)
+      .then(() => pendingSyncStaffUserIdsRef.current.delete(updatedUser.id))
+      .catch(() => {});
+
+    return { success: true, user: updatedUser };
+  };
+
+  const deleteStaffUser = (userId: string): boolean => {
+    if (!isAdmin) return false;
+    const existing = staffUsersRef.current.find((u) => u.id === userId);
+    if (!existing || existing.role === 'ADMIN' || existing.id === 'usr-admin-1') return false;
+
+    recordDeleted('users', [userId]);
+    const nextList = staffUsersRef.current.filter((u) => u.id !== userId);
+    staffUsersRef.current = nextList;
+    setStaffUsers(nextList);
+    pendingSyncStaffUserIdsRef.current.delete(userId);
+    removeUserFromFirestore(userId).catch(() => {});
+    return true;
+  };
+
+  const recordStaffCheckIn = (
+    targetUser: AppUser,
+    source: 'AUTO_LOGIN' | 'MANUAL_STAFF' | 'ADMIN' = 'MANUAL_STAFF',
+    customTimeHHMM?: string,
+    notes?: string
+  ): StaffAttendanceRecord => {
+    const today = getLocalTodayISO();
+    const existingToday = staffAttendanceRef.current.find(
+      (r) => r.userId === targetUser.id && r.date === today
+    );
+    if (existingToday && source === 'AUTO_LOGIN') {
+      return existingToday;
+    }
+
+    const nowISO = new Date().toISOString();
+    const checkInTime = customTimeHHMM || getLocalTimeHHMM();
+    const scheduledStart = targetUser.scheduledStartTime || '08:00';
+    const tolerance = targetUser.lateToleranceMinutes ?? 10;
+    const { status, minutesLate } = computePunctuality(checkInTime, scheduledStart, tolerance);
+
+    const record: StaffAttendanceRecord = existingToday
+      ? {
+          ...existingToday,
+          checkInAt: existingToday.checkInAt || nowISO,
+          checkInTime,
+          scheduledStartTime: scheduledStart,
+          scheduledEndTime: targetUser.scheduledEndTime || existingToday.scheduledEndTime || '18:00',
+          punctualityStatus: status,
+          minutesLate,
+          workedMinutes: calculateWorkedMinutes(checkInTime, existingToday.checkOutTime),
+          checkInSource: source,
+          notes: notes !== undefined ? notes.trim() || undefined : existingToday.notes,
+          updatedAt: nowISO,
+        }
+      : {
+          id: `att-${targetUser.id}-${today}`,
+          userId: targetUser.id,
+          userName: targetUser.name,
+          userPosition: targetUser.position,
+          date: today,
+          scheduledStartTime: scheduledStart,
+          scheduledEndTime: targetUser.scheduledEndTime || '18:00',
+          checkInAt: nowISO,
+          checkInTime,
+          punctualityStatus: status,
+          minutesLate,
+          checkInSource: source,
+          notes: notes?.trim() || undefined,
+          createdAt: nowISO,
+          updatedAt: nowISO,
+        };
+
+    const nextList = [
+      record,
+      ...staffAttendanceRef.current.filter((r) => r.id !== record.id),
+    ].sort((a, b) => b.date.localeCompare(a.date));
+    staffAttendanceRef.current = nextList;
+    setStaffAttendance(nextList);
+
+    pendingSyncStaffAttendanceIdsRef.current.add(record.id);
+    syncStaffAttendanceToFirestore(record)
+      .then(() => pendingSyncStaffAttendanceIdsRef.current.delete(record.id))
+      .catch(() => {});
+
+    return record;
+  };
+
+  // Wire auto check-in ref so applyAuthenticatedUser triggers first daily check-in for employees
+  autoCheckInOnLoginRef.current = (user: AppUser) => {
+    if (user.role === 'EMPLEADO') {
+      recordStaffCheckIn(user, 'AUTO_LOGIN');
+    }
+  };
+
+  const recordStaffCheckOut = (
+    userIdOrAttendanceId: string,
+    customTimeHHMM?: string
+  ): StaffAttendanceRecord | null => {
+    const today = getLocalTodayISO();
+    const existing =
+      staffAttendanceRef.current.find((r) => r.id === userIdOrAttendanceId) ||
+      staffAttendanceRef.current.find((r) => r.userId === userIdOrAttendanceId && r.date === today);
+    if (!existing) return null;
+
+    const nowISO = new Date().toISOString();
+    const checkOutTime = customTimeHHMM || getLocalTimeHHMM();
+    const workedMinutes = calculateWorkedMinutes(existing.checkInTime, checkOutTime);
+
+    const updated: StaffAttendanceRecord = {
+      ...existing,
+      checkOutAt: nowISO,
+      checkOutTime,
+      workedMinutes,
+      updatedAt: nowISO,
+    };
+
+    const nextList = staffAttendanceRef.current.map((r) => (r.id === existing.id ? updated : r));
+    staffAttendanceRef.current = nextList;
+    setStaffAttendance(nextList);
+
+    pendingSyncStaffAttendanceIdsRef.current.add(updated.id);
+    syncStaffAttendanceToFirestore(updated)
+      .then(() => pendingSyncStaffAttendanceIdsRef.current.delete(updated.id))
+      .catch(() => {});
+
+    return updated;
+  };
+
+  const upsertStaffAttendance = (data: {
+    id?: string;
+    userId: string;
+    date: string;
+    checkInTime?: string;
+    checkOutTime?: string;
+    punctualityStatus?: AttendancePunctualityStatus;
+    notes?: string;
+    checkInSource?: 'AUTO_LOGIN' | 'MANUAL_STAFF' | 'ADMIN';
+  }): StaffAttendanceRecord | null => {
+    const targetUser = staffUsersRef.current.find((u) => u.id === data.userId);
+    if (!targetUser) return null;
+
+    const nowISO = new Date().toISOString();
+    const recordId = data.id || `att-${targetUser.id}-${data.date}`;
+    const existing = staffAttendanceRef.current.find((r) => r.id === recordId);
+
+    const scheduledStart = targetUser.scheduledStartTime || '08:00';
+    const tolerance = targetUser.lateToleranceMinutes ?? 10;
+    const isAbsentOrPerm =
+      data.punctualityStatus === 'AUSENTE' || data.punctualityStatus === 'PERMISO';
+
+    let finalStatus: AttendancePunctualityStatus = data.punctualityStatus || 'PUNTUAL';
+    let minutesLate = 0;
+
+    if (!isAbsentOrPerm && data.checkInTime) {
+      const calc = computePunctuality(data.checkInTime, scheduledStart, tolerance);
+      finalStatus = data.punctualityStatus || calc.status;
+      minutesLate = calc.minutesLate;
+    }
+
+    const record: StaffAttendanceRecord = {
+      id: recordId,
+      userId: targetUser.id,
+      userName: targetUser.name,
+      userPosition: targetUser.position,
+      date: data.date,
+      scheduledStartTime: scheduledStart,
+      scheduledEndTime: targetUser.scheduledEndTime || '18:00',
+      checkInAt: isAbsentOrPerm ? undefined : existing?.checkInAt || nowISO,
+      checkInTime: isAbsentOrPerm ? undefined : data.checkInTime || existing?.checkInTime,
+      checkOutAt: isAbsentOrPerm ? undefined : data.checkOutTime ? existing?.checkOutAt || nowISO : undefined,
+      checkOutTime: isAbsentOrPerm ? undefined : data.checkOutTime || undefined,
+      punctualityStatus: finalStatus,
+      minutesLate,
+      workedMinutes: isAbsentOrPerm
+        ? undefined
+        : calculateWorkedMinutes(data.checkInTime, data.checkOutTime),
+      checkInSource: data.checkInSource || 'ADMIN',
+      notes: data.notes?.trim() || undefined,
+      createdAt: existing?.createdAt || nowISO,
+      updatedAt: nowISO,
+    };
+
+    const nextList = [
+      record,
+      ...staffAttendanceRef.current.filter((r) => r.id !== record.id),
+    ].sort((a, b) => b.date.localeCompare(a.date));
+    staffAttendanceRef.current = nextList;
+    setStaffAttendance(nextList);
+
+    pendingSyncStaffAttendanceIdsRef.current.add(record.id);
+    syncStaffAttendanceToFirestore(record)
+      .then(() => pendingSyncStaffAttendanceIdsRef.current.delete(record.id))
+      .catch(() => {});
+
+    return record;
+  };
+
+  const deleteStaffAttendance = (attendanceId: string): boolean => {
+    if (!isAdmin) return false;
+    const exists = staffAttendanceRef.current.some((r) => r.id === attendanceId);
+    if (!exists) return false;
+
+    recordDeleted('staffAttendance', [attendanceId]);
+    const nextList = staffAttendanceRef.current.filter((r) => r.id !== attendanceId);
+    staffAttendanceRef.current = nextList;
+    setStaffAttendance(nextList);
+    pendingSyncStaffAttendanceIdsRef.current.delete(attendanceId);
+    removeStaffAttendanceFromFirestore(attendanceId).catch(() => {});
+    return true;
+  };
+
+  const sendStaffNotification = (data: {
+    recipientUserId: string;
+    title: string;
+    message: string;
+    type?: StaffNotificationType;
+    priority?: StaffNotificationPriority;
+    relatedTaskId?: string;
+    relatedView?: AdminModuleId;
+  }): StaffNotification[] => {
+    const nowISO = new Date().toISOString();
+    const recipients: AppUser[] =
+      data.recipientUserId === 'ALL_STAFF'
+        ? staffUsersRef.current.filter((u) => u.role === 'EMPLEADO' && u.active !== false)
+        : staffUsersRef.current.filter((u) => u.id === data.recipientUserId);
+
+    if (recipients.length === 0) return [];
+
+    const created: StaffNotification[] = recipients.map((rec, idx) => ({
+      id: `notif-${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 6)}`,
+      recipientUserId: rec.id,
+      recipientUserName: rec.name,
+      senderUserId: currentUser?.id,
+      senderName: currentUser?.name || 'Administrador',
+      title: data.title.trim(),
+      message: data.message.trim(),
+      type: data.type || 'MENSAJE_ADMIN',
+      priority: data.priority || 'INFO',
+      relatedTaskId: data.relatedTaskId,
+      relatedView: data.relatedView,
+      createdAt: nowISO,
+    }));
+
+    const nextList = [...created, ...staffNotificationsRef.current].sort((a, b) =>
+      (b.createdAt || '').localeCompare(a.createdAt || '')
+    );
+    staffNotificationsRef.current = nextList;
+    setStaffNotifications(nextList);
+
+    created.forEach((n) => {
+      pendingSyncStaffNotificationIdsRef.current.add(n.id);
+      syncStaffNotificationToFirestore(n)
+        .then(() => pendingSyncStaffNotificationIdsRef.current.delete(n.id))
+        .catch(() => {});
+    });
+
+    return created;
+  };
+
+  const markStaffNotificationRead = (notificationId: string) => {
+    const existing = staffNotificationsRef.current.find((n) => n.id === notificationId);
+    if (!existing || existing.readAt) return;
+
+    const updated: StaffNotification = { ...existing, readAt: new Date().toISOString() };
+    const nextList = staffNotificationsRef.current.map((n) =>
+      n.id === notificationId ? updated : n
+    );
+    staffNotificationsRef.current = nextList;
+    setStaffNotifications(nextList);
+
+    pendingSyncStaffNotificationIdsRef.current.add(updated.id);
+    syncStaffNotificationToFirestore(updated)
+      .then(() => pendingSyncStaffNotificationIdsRef.current.delete(updated.id))
+      .catch(() => {});
+  };
+
+  const markAllStaffNotificationsRead = (userId: string = currentUser?.id || '') => {
+    if (!userId) return;
+    const nowISO = new Date().toISOString();
+    const touched: StaffNotification[] = [];
+    const nextList = staffNotificationsRef.current.map((n) => {
+      if (n.recipientUserId === userId && !n.readAt) {
+        const u = { ...n, readAt: nowISO };
+        touched.push(u);
+        return u;
+      }
+      return n;
+    });
+    if (touched.length === 0) return;
+
+    staffNotificationsRef.current = nextList;
+    setStaffNotifications(nextList);
+    touched.forEach((n) => {
+      pendingSyncStaffNotificationIdsRef.current.add(n.id);
+      syncStaffNotificationToFirestore(n)
+        .then(() => pendingSyncStaffNotificationIdsRef.current.delete(n.id))
+        .catch(() => {});
+    });
+  };
+
+  const deleteStaffNotification = (notificationId: string): boolean => {
+    const exists = staffNotificationsRef.current.some((n) => n.id === notificationId);
+    if (!exists) return false;
+
+    recordDeleted('staffNotifications', [notificationId]);
+    const nextList = staffNotificationsRef.current.filter((n) => n.id !== notificationId);
+    staffNotificationsRef.current = nextList;
+    setStaffNotifications(nextList);
+    pendingSyncStaffNotificationIdsRef.current.delete(notificationId);
+    removeStaffNotificationFromFirestore(notificationId).catch(() => {});
+    return true;
+  };
+
+  const todayUserAttendance = useMemo(() => {
+    if (!currentUser) return null;
+    const today = getLocalTodayISO();
+    return staffAttendance.find((r) => r.userId === currentUser.id && r.date === today) || null;
+  }, [staffAttendance, currentUser]);
+
+  const myStaffNotifications = useMemo(() => {
+    if (!currentUser) return [];
+    if (isAdmin) return staffNotifications;
+    return staffNotifications.filter((n) => n.recipientUserId === currentUser.id);
+  }, [staffNotifications, currentUser, isAdmin]);
+
+  const unreadStaffNotificationCount = useMemo(() => {
+    if (!currentUser) return 0;
+    return staffNotifications.filter((n) => n.recipientUserId === currentUser.id && !n.readAt).length;
+  }, [staffNotifications, currentUser]);
 
   // Online Store Orders
   const placeOnlineOrder = (
@@ -13163,6 +14269,10 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
         currentUser,
         isAuthenticated,
         isAdmin,
+        isEmployee,
+        isStaff,
+        canAccessView,
+        getDefaultStaffView,
         isAuthModalOpen,
         authModalTab,
         openAuthModal,
@@ -13174,6 +14284,23 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
         isChangePasswordModalOpen,
         setIsChangePasswordModalOpen,
         logout,
+        staffUsers,
+        createStaffUser,
+        updateStaffUser,
+        deleteStaffUser,
+        staffAttendance,
+        todayUserAttendance,
+        recordStaffCheckIn,
+        recordStaffCheckOut,
+        upsertStaffAttendance,
+        deleteStaffAttendance,
+        staffNotifications,
+        myStaffNotifications,
+        unreadStaffNotificationCount,
+        sendStaffNotification,
+        markStaffNotificationRead,
+        markAllStaffNotificationsRead,
+        deleteStaffNotification,
         isFirebaseConnected,
         firebaseSyncStatus,
         syncAllToFirebase,

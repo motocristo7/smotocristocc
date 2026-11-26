@@ -24,9 +24,13 @@ import {
   Landmark,
   Percent,
   BellRing,
+  UserCog,
+  LogIn,
+  LogOut,
 } from 'lucide-react';
 
 import { productHasWholesaleTiers } from '../../utils/wholesalePricing';
+import { formatTime12h } from '../../utils/staffAnalytics';
 
 interface NavItem {
   view: AppView;
@@ -57,6 +61,14 @@ export const AdminSidebar: React.FC = () => {
     adminTasks,
     enterPublicStore,
     onlineStoreBrand,
+    isAdmin,
+    isEmployee,
+    canAccessView,
+    currentUser,
+    todayUserAttendance,
+    recordStaffCheckIn,
+    recordStaffCheckOut,
+    staffUsers,
   } = useApp();
 
   const storeName = onlineStoreBrand || 'Mercado Moto CC';
@@ -85,6 +97,10 @@ export const AdminSidebar: React.FC = () => {
   const activeWholesaleProductsCount = products.filter((p) => productHasWholesaleTiers(p)).length;
 
   const pendingTasksCount = adminTasks.filter((t) => t.status === 'PENDIENTE').length;
+
+  const activeStaffCount = staffUsers.filter(
+    (u) => u.role === 'EMPLEADO' && u.active !== false
+  ).length;
 
   const navItems: NavItem[] = [
     {
@@ -180,12 +196,21 @@ export const AdminSidebar: React.FC = () => {
       icon: Users,
     },
     {
+      view: 'admin_usuarios',
+      label: 'Equipo y Reportes',
+      shortLabel: 'Equipo',
+      icon: UserCog,
+      badge: activeStaffCount > 0 ? activeStaffCount : undefined,
+    },
+    {
       view: 'admin_ajustes',
       label: 'Ajustes & Tasa BCV',
       shortLabel: 'Ajustes',
       icon: Settings,
     },
   ];
+
+  const visibleNavItems = navItems.filter((item) => canAccessView(item.view));
 
   const handleNavClick = (view: AppView) => {
     setCurrentView(view);
@@ -225,10 +250,10 @@ export const AdminSidebar: React.FC = () => {
               </div>
               <div className="min-w-0">
                 <span className="text-xs font-bold text-white block truncate uppercase tracking-wider">
-                  Panel Admin
+                  {isAdmin ? 'Panel Admin' : 'Panel Equipo'}
                 </span>
                 <span className="text-[10px] text-slate-400 block truncate">
-                  {settings.commercialName}
+                  {isAdmin ? settings.commercialName : currentUser?.position || currentUser?.name}
                 </span>
               </div>
             </div>
@@ -275,7 +300,7 @@ export const AdminSidebar: React.FC = () => {
             )}
           </div>
 
-          {navItems.map((item) => {
+          {visibleNavItems.map((item) => {
             const Icon = item.icon;
             const isActive = currentView === item.view;
 
@@ -361,9 +386,105 @@ export const AdminSidebar: React.FC = () => {
           </button>
         </div>
 
-        {/* Sidebar Footer: BCV Rate & 1-Click Collapse Bar */}
+        {/* Sidebar Footer: Attendance (Employee), BCV/USDT Rate & 1-Click Collapse Bar */}
         <div className="p-3 border-t border-slate-800 bg-slate-950/40 space-y-2">
-          {/* BCV, USDT & Brecha Indicator (Solo Admin) */}
+          {/* Employee Daily Attendance Widget */}
+          {isEmployee && currentUser && (
+            !isAdminSidebarCollapsed ? (
+              <div className="bg-slate-800/70 rounded-xl p-2.5 border border-slate-700/60 space-y-2 text-xs">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[10px] uppercase tracking-wider font-bold text-slate-400">
+                    Jornada de Hoy
+                  </span>
+                  {todayUserAttendance ? (
+                    <span
+                      className={`text-[10px] font-bold font-mono ${
+                        todayUserAttendance.punctualityStatus === 'TARDE'
+                          ? 'text-rose-400'
+                          : 'text-emerald-400'
+                      }`}
+                    >
+                      {todayUserAttendance.punctualityStatus === 'TARDE'
+                        ? `Tarde +${todayUserAttendance.minutesLate}m`
+                        : 'Puntual'}
+                    </span>
+                  ) : (
+                    <span className="text-[10px] text-amber-400 font-semibold">Sin llegada</span>
+                  )}
+                </div>
+
+                {todayUserAttendance && (
+                  <div className="flex items-center justify-between text-[11px] font-mono text-slate-200 tabular-nums">
+                    <span>Entrada: {formatTime12h(todayUserAttendance.checkInTime)}</span>
+                    {todayUserAttendance.checkOutTime && (
+                      <span className="text-slate-400">
+                        Sal: {formatTime12h(todayUserAttendance.checkOutTime)}
+                      </span>
+                    )}
+                  </div>
+                )}
+
+                {!todayUserAttendance ? (
+                  <button
+                    type="button"
+                    onClick={() => recordStaffCheckIn(currentUser, 'MANUAL_STAFF')}
+                    className="w-full py-1.5 px-2.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-bold text-[11px] flex items-center justify-center gap-1.5 cursor-pointer transition-colors"
+                  >
+                    <LogIn className="w-3.5 h-3.5" />
+                    <span>Marcar Llegada</span>
+                  </button>
+                ) : !todayUserAttendance.checkOutTime ? (
+                  <button
+                    type="button"
+                    onClick={() => recordStaffCheckOut(currentUser.id)}
+                    className="w-full py-1.5 px-2.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-white font-semibold text-[11px] flex items-center justify-center gap-1.5 cursor-pointer transition-colors"
+                  >
+                    <LogOut className="w-3.5 h-3.5 text-amber-400" />
+                    <span>Marcar Salida</span>
+                  </button>
+                ) : (
+                  <div className="text-[10px] text-emerald-400 text-center font-semibold">
+                    Jornada completada hoy
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="flex justify-center">
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!todayUserAttendance) {
+                      recordStaffCheckIn(currentUser, 'MANUAL_STAFF');
+                    } else if (!todayUserAttendance.checkOutTime) {
+                      recordStaffCheckOut(currentUser.id);
+                    }
+                  }}
+                  className={`w-8 h-8 rounded-lg border flex items-center justify-center cursor-pointer transition-colors ${
+                    !todayUserAttendance
+                      ? 'bg-emerald-500/20 border-emerald-500/40 text-emerald-400 hover:bg-emerald-500/30'
+                      : !todayUserAttendance.checkOutTime
+                      ? 'bg-amber-500/15 border-amber-500/30 text-amber-400 hover:bg-amber-500/25'
+                      : 'bg-slate-800 border-slate-700 text-emerald-400'
+                  }`}
+                  title={
+                    !todayUserAttendance
+                      ? 'Marcar Llegada'
+                      : !todayUserAttendance.checkOutTime
+                      ? `Llegada: ${formatTime12h(todayUserAttendance.checkInTime)} · Clic para Marcar Salida`
+                      : `Jornada completada (${formatTime12h(todayUserAttendance.checkInTime)} - ${formatTime12h(todayUserAttendance.checkOutTime)})`
+                  }
+                >
+                  {!todayUserAttendance ? (
+                    <LogIn className="w-3.5 h-3.5" />
+                  ) : (
+                    <LogOut className="w-3.5 h-3.5" />
+                  )}
+                </button>
+              </div>
+            )
+          )}
+
+          {/* BCV, USDT & Brecha Indicator (USDT/Brecha Solo Admin) */}
           {!isAdminSidebarCollapsed ? (
             <div className="bg-slate-800/60 rounded-xl p-2.5 border border-slate-700/50 space-y-1.5 text-xs">
               <div className="flex items-center justify-between">
@@ -371,30 +492,38 @@ export const AdminSidebar: React.FC = () => {
                   <TrendingUp className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
                   <span className="text-[11px] text-slate-400">BCV:</span>
                 </div>
-                <span className="font-mono font-bold text-emerald-400 text-xs">
+                <span className="font-mono font-bold text-emerald-400 text-xs tabular-nums">
                   Bs. {settings.bcvRate.toFixed(2)}
                 </span>
               </div>
-              <div className="flex items-center justify-between">
-                <span className="text-[11px] text-slate-400 pl-5">USDT:</span>
-                <span className="font-mono font-bold text-amber-400 text-xs">
-                  Bs. {exchangeGap.usdtRate.toFixed(2)}
-                </span>
-              </div>
-              <div className="flex items-center justify-between pt-1 border-t border-slate-700/60">
-                <span className="text-[10px] uppercase tracking-wider font-semibold text-slate-400">
-                  Brecha
-                </span>
-                <span className="font-mono font-bold text-amber-300 text-[11px]">
-                  {exchangeGap.gapPct >= 0 ? '+' : ''}
-                  {exchangeGap.gapPct.toFixed(2)}% · ×{exchangeGap.gapFactor.toFixed(2)}
-                </span>
-              </div>
+              {isAdmin && (
+                <>
+                  <div className="flex items-center justify-between">
+                    <span className="text-[11px] text-slate-400 pl-5">USDT:</span>
+                    <span className="font-mono font-bold text-amber-400 text-xs tabular-nums">
+                      Bs. {exchangeGap.usdtRate.toFixed(2)}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between pt-1 border-t border-slate-700/60">
+                    <span className="text-[10px] uppercase tracking-wider font-semibold text-slate-400">
+                      Brecha
+                    </span>
+                    <span className="font-mono font-bold text-amber-300 text-[11px] tabular-nums">
+                      {exchangeGap.gapPct >= 0 ? '+' : ''}
+                      {exchangeGap.gapPct.toFixed(2)}% · ×{exchangeGap.gapFactor.toFixed(2)}
+                    </span>
+                  </div>
+                </>
+              )}
             </div>
           ) : (
             <div
               className="flex justify-center p-1"
-              title={`BCV: Bs. ${settings.bcvRate.toFixed(2)} · USDT: Bs. ${exchangeGap.usdtRate.toFixed(2)} · Brecha: ${exchangeGap.gapPct.toFixed(2)}%`}
+              title={
+                isAdmin
+                  ? `BCV: Bs. ${settings.bcvRate.toFixed(2)} · USDT: Bs. ${exchangeGap.usdtRate.toFixed(2)} · Brecha: ${exchangeGap.gapPct.toFixed(2)}%`
+                  : `BCV: Bs. ${settings.bcvRate.toFixed(2)}`
+              }
             >
               <div className="w-8 h-8 rounded-lg bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400">
                 <TrendingUp className="w-3.5 h-3.5" />

@@ -71,6 +71,7 @@ export const SalesDatabaseView: React.FC = () => {
     reactivateSale,
     setSelectedInvoice,
     setWhatsappModalData,
+    staffUsers,
   } = useApp();
 
   const rate = settings.bcvRate;
@@ -80,6 +81,7 @@ export const SalesDatabaseView: React.FC = () => {
   const [conditionFilter, setConditionFilter] = useState<'ALL' | SalePaymentType>('ALL');
   const [creditStatusFilter, setCreditStatusFilter] = useState<'ALL' | SaleCreditStatus | 'OVERDUE'>('ALL');
   const [dateFilter, setDateFilter] = useState<'ALL' | 'TODAY' | 'WEEK' | 'MONTH'>('ALL');
+  const [sellerFilter, setSellerFilter] = useState<string>('ALL');
   const [selectedSaleDetail, setSelectedSaleDetail] = useState<Sale | null>(null);
 
   // Modal para registrar abono (en Bolívares o Divisas)
@@ -170,6 +172,24 @@ export const SalesDatabaseView: React.FC = () => {
     }
   };
 
+  // Unique seller options (employees + historical sellers on sales)
+  const sellerOptions = useMemo(() => {
+    const map = new Map<string, string>();
+    staffUsers
+      .filter((u) => u.role === 'EMPLEADO' || u.role === 'ADMIN')
+      .forEach((u) => {
+        map.set(u.id, u.name);
+      });
+    sales.forEach((s) => {
+      if (s.soldByUserId && s.soldByUserName) {
+        if (!map.has(s.soldByUserId)) map.set(s.soldByUserId, s.soldByUserName);
+      } else if (s.soldByUserName) {
+        map.set(`name:${s.soldByUserName}`, s.soldByUserName);
+      }
+    });
+    return Array.from(map.entries()).map(([id, name]) => ({ id, name }));
+  }, [staffUsers, sales]);
+
   // Filtered sales
   const filteredSales = useMemo(() => {
     const today = new Date();
@@ -188,6 +208,16 @@ export const SalesDatabaseView: React.FC = () => {
       if (conditionFilter !== 'ALL') {
         const type = sale.paymentType || 'CONTADO';
         if (type !== conditionFilter) return false;
+      }
+
+      // Seller filter
+      if (sellerFilter !== 'ALL') {
+        if (sellerFilter.startsWith('name:')) {
+          const targetName = sellerFilter.slice(5);
+          if ((sale.soldByUserName || '') !== targetName) return false;
+        } else if (sale.soldByUserId !== sellerFilter) {
+          return false;
+        }
       }
 
       // Credit / Apartado / Mixto-con-Crédito status filter
@@ -219,15 +249,16 @@ export const SalesDatabaseView: React.FC = () => {
         const matchesCustomer = sale.customerName.toLowerCase().includes(q);
         const matchesPhone = sale.customerPhone.toLowerCase().includes(q);
         const matchesDoc = (sale.customerDocument || '').toLowerCase().includes(q);
+        const matchesSeller = (sale.soldByUserName || '').toLowerCase().includes(q);
         const matchesItem = sale.items.some((i) => i.name.toLowerCase().includes(q) || (i.sku || '').toLowerCase().includes(q));
-        if (!matchesInvoice && !matchesCustomer && !matchesPhone && !matchesDoc && !matchesItem) {
+        if (!matchesInvoice && !matchesCustomer && !matchesPhone && !matchesDoc && !matchesSeller && !matchesItem) {
           return false;
         }
       }
 
       return true;
     });
-  }, [sales, conditionFilter, creditStatusFilter, dateFilter, searchTerm]);
+  }, [sales, conditionFilter, sellerFilter, creditStatusFilter, dateFilter, searchTerm]);
 
   // Overall statistics
   const stats = useMemo(() => {
@@ -1260,6 +1291,24 @@ export const SalesDatabaseView: React.FC = () => {
             ))}
           </div>
 
+          {sellerOptions.length > 0 && (
+            <div className="flex items-center gap-1.5">
+              <span className="text-[11px] font-semibold text-slate-500">Vendedor:</span>
+              <select
+                value={sellerFilter}
+                onChange={(e) => setSellerFilter(e.target.value)}
+                className="px-2.5 py-1 rounded-lg text-[11px] font-semibold bg-slate-100 text-slate-800 border border-slate-200 focus:outline-hidden focus:ring-2 focus:ring-amber-400 cursor-pointer"
+              >
+                <option value="ALL">Todos</option>
+                {sellerOptions.map((opt) => (
+                  <option key={opt.id} value={opt.id}>
+                    {opt.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
           {(conditionFilter === 'CREDITO' || conditionFilter === 'APARTADO') && (
             <div className="flex items-center gap-1.5 flex-wrap">
               <span className={`text-[11px] font-semibold ${conditionFilter === 'APARTADO' ? 'text-indigo-900' : 'text-amber-900'}`}>
@@ -1366,6 +1415,12 @@ export const SalesDatabaseView: React.FC = () => {
                             year: 'numeric',
                           })} · {new Date(sale.createdAt).toLocaleTimeString('es-VE', { hour: '2-digit', minute: '2-digit' })}
                         </span>
+                        {sale.soldByUserName && (
+                          <span className="text-[10px] text-slate-600 font-semibold mt-0.5 flex items-center gap-1">
+                            <User className="w-2.5 h-2.5 text-amber-600 shrink-0" />
+                            <span className="truncate max-w-[130px]">{sale.soldByUserName}</span>
+                          </span>
+                        )}
                       </td>
 
                       {/* Cliente */}
@@ -1748,6 +1803,11 @@ export const SalesDatabaseView: React.FC = () => {
                             : ''
                         }`}
                   </span>
+                  {selectedSaleDetail.soldByUserName && (
+                    <span className="text-slate-700 font-semibold block mt-1">
+                      Atendido por: {selectedSaleDetail.soldByUserName}
+                    </span>
+                  )}
                 </div>
               </div>
 

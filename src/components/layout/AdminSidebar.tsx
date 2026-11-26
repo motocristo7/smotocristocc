@@ -23,6 +23,7 @@ import {
   Receipt,
   Landmark,
   Percent,
+  BellRing,
 } from 'lucide-react';
 
 import { productHasWholesaleTiers } from '../../utils/wholesalePricing';
@@ -53,6 +54,7 @@ export const AdminSidebar: React.FC = () => {
     purchaseOrders,
     pendingReceptionOrdersCount,
     treasuryCommitments,
+    adminTasks,
     enterPublicStore,
     onlineStoreBrand,
   } = useApp();
@@ -82,12 +84,21 @@ export const AdminSidebar: React.FC = () => {
 
   const activeWholesaleProductsCount = products.filter((p) => productHasWholesaleTiers(p)).length;
 
+  const pendingTasksCount = adminTasks.filter((t) => t.status === 'PENDIENTE').length;
+
   const navItems: NavItem[] = [
     {
       view: 'admin_dashboard',
       label: 'Resumen General',
       shortLabel: 'Resumen',
       icon: LayoutDashboard,
+    },
+    {
+      view: 'admin_tareas',
+      label: 'Tareas Pendientes',
+      shortLabel: 'Tareas',
+      icon: BellRing,
+      badge: pendingTasksCount > 0 ? pendingTasksCount : undefined,
     },
     {
       view: 'admin_pos',

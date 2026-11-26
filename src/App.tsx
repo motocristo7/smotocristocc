@@ -5,6 +5,8 @@ import { Storefront } from './components/store/Storefront';
 import { CartDrawer } from './components/store/CartDrawer';
 import { CustomerPortal } from './components/portal/CustomerPortal';
 import { AdminDashboard } from './components/admin/AdminDashboard';
+import { TasksView } from './components/admin/TasksView';
+import { TaskReminderNotifier } from './components/admin/TaskReminderNotifier';
 import { PosView } from './components/admin/PosView';
 import { SalesDatabaseView } from './components/admin/SalesDatabaseView';
 import { AccountsReceivableView } from './components/admin/AccountsReceivableView';
@@ -84,6 +86,7 @@ const AppContent: React.FC = () => {
           {isCurrentViewAdmin && (
             <main className="max-w-[1440px] w-full mx-auto px-3 sm:px-5 lg:px-7 py-6 sm:py-7 flex-1">
               {currentView === 'admin_dashboard' && <AdminDashboard />}
+              {currentView === 'admin_tareas' && <TasksView />}
               {currentView === 'admin_pos' && <PosView />}
               {currentView === 'admin_ventas' && <SalesDatabaseView />}
               {currentView === 'admin_cuentas_cobrar' && <AccountsReceivableView />}
@@ -116,6 +119,7 @@ const AppContent: React.FC = () => {
         defaultTab={authModalTab}
       />
       <ChangeAdminPasswordModal />
+      {isAdmin && <TaskReminderNotifier />}
 
       {/* Clean Domain Footer */}
       <footer className="bg-slate-950 text-slate-400 text-xs border-t border-slate-800 mt-auto no-print">

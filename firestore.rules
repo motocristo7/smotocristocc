@@ -128,5 +128,11 @@ service cloud.firestore {
       allow list: if true;
       allow get, create, update, delete: if isValidId(accountId);
     }
+
+    // Panel Administrativo: Tareas Pendientes y Recordatorios de Trabajadores
+    match /adminTasks/{taskId} {
+      allow list: if true;
+      allow get, create, update, delete: if isValidId(taskId);
+    }
   }
 }

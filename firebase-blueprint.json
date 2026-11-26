@@ -221,7 +221,8 @@
         "treasuryCommitments": { "type": "array", "description": "IDs de compromisos de pago eliminados" },
         "treasuryMovements": { "type": "array", "description": "IDs de movimientos de tesorería eliminados" },
         "treasuryDebts": { "type": "array", "description": "IDs de deudas de tesorería eliminadas" },
-        "openAccounts": { "type": "array", "description": "IDs de cuentas abiertas del día eliminadas o anuladas" }
+        "openAccounts": { "type": "array", "description": "IDs de cuentas abiertas del día eliminadas o anuladas" },
+        "adminTasks": { "type": "array", "description": "IDs de tareas pendientes administrativas eliminadas" }
       }
     },
     "Technician": {
@@ -473,6 +474,32 @@
         "settledInvoiceNumber": { "type": "string", "description": "Número de factura emitida al cerrar" }
       },
       "required": ["id", "accountNumber", "customerName", "items", "subtotal", "status", "openedAt", "updatedAt"]
+    },
+    "AdminTask": {
+      "title": "AdminTask",
+      "description": "Tarea pendiente del panel administrativo asignada a un trabajador con fecha, hora y recordatorio",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "ID único de la tarea" },
+        "title": { "type": "string", "description": "Título de la tarea (envío, compra de materiales, etc.)" },
+        "description": { "type": "string", "description": "Detalles o instrucciones de la tarea" },
+        "category": { "type": "string", "description": "Categoría de la tarea" },
+        "priority": { "type": "string", "enum": ["ALTA", "MEDIA", "BAJA"], "description": "Prioridad de la tarea" },
+        "assignedWorkerId": { "type": "string", "description": "ID del trabajador asignado (opcional)" },
+        "assignedWorkerName": { "type": "string", "description": "Nombre del trabajador responsable" },
+        "assignedWorkerPhone": { "type": "string", "description": "Teléfono WhatsApp del trabajador para notificaciones" },
+        "dueDate": { "type": "string", "description": "Fecha programada YYYY-MM-DD" },
+        "dueTime": { "type": "string", "description": "Hora programada HH:mm" },
+        "status": { "type": "string", "enum": ["PENDIENTE", "REALIZADA"], "description": "Estado actual de la tarea" },
+        "reminderMinutesBefore": { "type": "number", "description": "Minutos antes para recordatorio (por defecto 5)" },
+        "assignedNotifiedAt": { "type": "string", "description": "ISO cuando se notificó la asignación" },
+        "preReminderSentAt": { "type": "string", "description": "ISO cuando se envió el recordatorio previo" },
+        "completedAt": { "type": "string", "description": "ISO cuando se marcó como realizada" },
+        "completedBy": { "type": "string", "description": "Quién marcó la tarea como realizada" },
+        "createdAt": { "type": "string", "description": "Fecha de creación ISO" },
+        "updatedAt": { "type": "string", "description": "Última actualización ISO" }
+      },
+      "required": ["id", "title", "category", "priority", "assignedWorkerName", "dueDate", "dueTime", "status", "reminderMinutesBefore", "createdAt"]
     }
   },
   "firestore": {
@@ -551,6 +578,10 @@
     "/openAccounts/{accountId}": {
       "schema": { "$ref": "#/entities/OpenAccount" },
       "description": "Cuentas abiertas del día en Punto de Venta para clientes en talleres vecinos"
+    },
+    "/adminTasks/{taskId}": {
+      "schema": { "$ref": "#/entities/AdminTask" },
+      "description": "Tareas pendientes del panel administrativo asignadas a trabajadores con recordatorios"
     }
   }
 }

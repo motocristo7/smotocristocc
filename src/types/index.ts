@@ -946,3 +946,48 @@ export interface OpenAccount {
   settledSaleId?: string;
   settledInvoiceNumber?: string;
 }
+
+export type AdminTaskCategory =
+  | 'ENVIOS'
+  | 'COMPRAR_MATERIALES'
+  | 'REPUESTOS'
+  | 'TALLER'
+  | 'COBRANZAS'
+  | 'ADMINISTRATIVO'
+  | 'OTROS'
+  | (string & {});
+
+export const DEFAULT_ADMIN_TASK_CATEGORIES: Array<{ id: AdminTaskCategory; label: string }> = [
+  { id: 'ENVIOS', label: 'Envíos / Encomiendas' },
+  { id: 'COMPRAR_MATERIALES', label: 'Comprar Materiales' },
+  { id: 'REPUESTOS', label: 'Repuestos / Entregas' },
+  { id: 'TALLER', label: 'Taller / Tapicería' },
+  { id: 'COBRANZAS', label: 'Cobranzas / Pagos' },
+  { id: 'ADMINISTRATIVO', label: 'Administrativo' },
+  { id: 'OTROS', label: 'Otros' },
+];
+
+export type AdminTaskPriority = 'ALTA' | 'MEDIA' | 'BAJA';
+export type AdminTaskStatus = 'PENDIENTE' | 'REALIZADA';
+
+export interface AdminTask {
+  id: string;
+  title: string;
+  description?: string;
+  category: AdminTaskCategory;
+  priority: AdminTaskPriority;
+  assignedWorkerId?: string;
+  assignedWorkerName: string;
+  assignedWorkerPhone?: string;
+  dueDate: string; // YYYY-MM-DD
+  dueTime: string; // HH:mm (24h)
+  status: AdminTaskStatus;
+  reminderMinutesBefore: number; // Por defecto 5 minutos antes
+  assignedNotifiedAt?: string; // ISO cuando se notificó al trabajador
+  preReminderSentAt?: string; // ISO cuando se envió/disparó recordatorio 5 min antes
+  completedAt?: string; // ISO cuando se marcó como realizada
+  completedBy?: string;
+  createdAt: string;
+  updatedAt?: string;
+}
+

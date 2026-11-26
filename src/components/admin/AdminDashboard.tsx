@@ -33,6 +33,7 @@ import {
   ExternalLink,
   Receipt,
   Percent,
+  BellRing,
 } from 'lucide-react';
 import QRCode from 'qrcode';
 
@@ -58,6 +59,7 @@ export const AdminDashboard: React.FC = () => {
     publicStoreUrl,
     onlineStoreBrand,
     currentMonthExpensesUSD,
+    adminTasks,
   } = useApp();
 
   const [showMlDetails, setShowMlDetails] = useState(false);
@@ -246,6 +248,20 @@ Ingresa directamente desde tu teléfono aquí:
             <Percent className="w-4 h-4 text-emerald-700" />
             <span>
               Precios al Mayor ({products.filter((p) => productHasWholesaleTiers(p)).length})
+            </span>
+          </button>
+          <button
+            onClick={() => setCurrentView('admin_tareas')}
+            className={`px-4 py-2.5 font-bold text-xs rounded-xl shadow-xs transition-colors flex items-center gap-1.5 cursor-pointer border ${
+              adminTasks.some((t) => t.status === 'PENDIENTE')
+                ? 'bg-amber-50 hover:bg-amber-100 text-amber-950 border-amber-300'
+                : 'bg-white hover:bg-slate-50 text-slate-800 border-slate-300'
+            }`}
+            title="Gestionar tareas pendientes y recordatorios del equipo"
+          >
+            <BellRing className="w-4 h-4 text-amber-600" />
+            <span>
+              Tareas ({adminTasks.filter((t) => t.status === 'PENDIENTE').length})
             </span>
           </button>
           <button

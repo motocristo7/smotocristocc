@@ -29,6 +29,7 @@ import {
   TreasuryMovement,
   TreasuryDebt,
   OpenAccount,
+  AdminTask,
 } from '../types';
 
 export interface SnapshotSyncMeta {
@@ -53,6 +54,7 @@ export interface DeletedIdsMap {
   treasuryMovements: string[];
   treasuryDebts: string[];
   openAccounts: string[];
+  adminTasks: string[];
 }
 
 export const EMPTY_DELETED_IDS: DeletedIdsMap = {
@@ -72,6 +74,7 @@ export const EMPTY_DELETED_IDS: DeletedIdsMap = {
   treasuryMovements: [],
   treasuryDebts: [],
   openAccounts: [],
+  adminTasks: [],
 };
 
 // Recursively remove undefined values because Firestore throws on undefined fields
@@ -554,6 +557,32 @@ export function subscribeToOpenAccounts(callback: (accounts: OpenAccount[], meta
   }
 }
 
+// Real-time listener for admin pending tasks & reminders
+export function subscribeToAdminTasks(callback: (tasks: AdminTask[], meta: SnapshotSyncMeta) => void) {
+  try {
+    const colRef = collection(db, 'adminTasks');
+    return onSnapshot(
+      colRef,
+      (snapshot) => {
+        const list: AdminTask[] = [];
+        snapshot.forEach((docSnap) => {
+          list.push({ ...(docSnap.data() as AdminTask), id: docSnap.id });
+        });
+        callback(list, {
+          hasPendingWrites: snapshot.metadata.hasPendingWrites,
+          fromCache: snapshot.metadata.fromCache,
+        });
+      },
+      (error) => {
+        logFirestoreError(error, OperationType.GET, 'adminTasks');
+      }
+    );
+  } catch (error) {
+    console.warn('Error starting adminTasks listener:', error);
+    return () => {};
+  }
+}
+
 // One-shot fetch for deleted IDs tombstones before starting collection listeners
 export async function fetchDeletedIdsFromFirestore(): Promise<DeletedIdsMap | null> {
   try {
@@ -578,6 +607,7 @@ export async function fetchDeletedIdsFromFirestore(): Promise<DeletedIdsMap | nu
       treasuryMovements: Array.isArray(data.treasuryMovements) ? data.treasuryMovements : [],
       treasuryDebts: Array.isArray(data.treasuryDebts) ? data.treasuryDebts : [],
       openAccounts: Array.isArray(data.openAccounts) ? data.openAccounts : [],
+      adminTasks: Array.isArray(data.adminTasks) ? data.adminTasks : [],
     };
   } catch (error) {
     console.warn('Error fetching deletedIds registry:', error);
@@ -611,6 +641,7 @@ export function subscribeToDeletedIds(callback: (deletedIds: DeletedIdsMap) => v
             treasuryMovements: Array.isArray(data.treasuryMovements) ? data.treasuryMovements : [],
             treasuryDebts: Array.isArray(data.treasuryDebts) ? data.treasuryDebts : [],
             openAccounts: Array.isArray(data.openAccounts) ? data.openAccounts : [],
+            adminTasks: Array.isArray(data.adminTasks) ? data.adminTasks : [],
           });
         }
       },
@@ -940,6 +971,22 @@ export async function removeOpenAccountFromFirestore(accountId: string): Promise
   }
 }
 
+export async function syncAdminTaskToFirestore(task: AdminTask): Promise<void> {
+  try {
+    await setDoc(doc(db, 'adminTasks', task.id), stripUndefined(task));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, `adminTasks/${task.id}`);
+  }
+}
+
+export async function removeAdminTaskFromFirestore(taskId: string): Promise<void> {
+  try {
+    await deleteDoc(doc(db, 'adminTasks', taskId));
+  } catch (error) {
+    handleFirestoreError(error, OperationType.DELETE, `adminTasks/${taskId}`);
+  }
+}
+
 export async function recordDeletedIdsInFirestore(
   category: keyof DeletedIdsMap,
   ids: string[]
@@ -983,6 +1030,7 @@ export async function uploadAllToFirestore(data: {
   treasuryMovements?: TreasuryMovement[];
   treasuryDebts?: TreasuryDebt[];
   openAccounts?: OpenAccount[];
+  adminTasks?: AdminTask[];
   users?: AppUser[];
   deletedIds?: DeletedIdsMap;
 }): Promise<{ success: boolean; count: number }> {
@@ -1045,6 +1093,9 @@ export async function uploadAllToFirestore(data: {
       }
       for (const id of data.deletedIds.openAccounts || []) {
         await deleteDoc(doc(db, 'openAccounts', id)).catch(() => {});
+      }
+      for (const id of data.deletedIds.adminTasks || []) {
+        await deleteDoc(doc(db, 'adminTasks', id)).catch(() => {});
       }
     }
 
@@ -1165,6 +1216,13 @@ export async function uploadAllToFirestore(data: {
     if (Array.isArray(data.openAccounts) && data.openAccounts.length > 0) {
       for (const acc of data.openAccounts) {
         await setDoc(doc(db, 'openAccounts', acc.id), stripUndefined(acc));
+        totalCount++;
+      }
+    }
+
+    if (Array.isArray(data.adminTasks) && data.adminTasks.length > 0) {
+      for (const task of data.adminTasks) {
+        await setDoc(doc(db, 'adminTasks', task.id), stripUndefined(task));
         totalCount++;
       }
     }

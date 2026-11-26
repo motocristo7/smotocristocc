@@ -62,6 +62,8 @@ import {
   TreasuryDebt,
   OpenAccount,
   OpenAccountItem,
+  AdminTask,
+  AdminTaskStatus,
 } from '../types';
 import {
   INITIAL_SETTINGS,
@@ -102,6 +104,7 @@ import {
   subscribeToTreasuryMovements,
   subscribeToTreasuryDebts,
   subscribeToOpenAccounts,
+  subscribeToAdminTasks,
   subscribeToDeletedIds,
   fetchDeletedIdsFromFirestore,
   syncProductToFirestore,
@@ -137,6 +140,8 @@ import {
   removeTreasuryDebtFromFirestore,
   syncOpenAccountToFirestore,
   removeOpenAccountFromFirestore,
+  syncAdminTaskToFirestore,
+  removeAdminTaskFromFirestore,
   recordDeletedIdsInFirestore,
   clearDeletedIdsInFirestore,
   uploadAllToFirestore,
@@ -214,6 +219,7 @@ function mergeDeletedMaps(a?: Partial<DeletedIdsMap>, b?: Partial<DeletedIdsMap>
     treasuryMovements: Array.from(new Set([...(a?.treasuryMovements || []), ...(b?.treasuryMovements || [])])),
     treasuryDebts: Array.from(new Set([...(a?.treasuryDebts || []), ...(b?.treasuryDebts || [])])),
     openAccounts: Array.from(new Set([...(a?.openAccounts || []), ...(b?.openAccounts || [])])),
+    adminTasks: Array.from(new Set([...(a?.adminTasks || []), ...(b?.adminTasks || [])])),
   };
 }
 
@@ -221,6 +227,7 @@ export type AppView =
   | 'tienda'
   | 'consulta_cliente'
   | 'admin_dashboard'
+  | 'admin_tareas'
   | 'admin_pos'
   | 'admin_ventas'
   | 'admin_cuentas_cobrar'
@@ -799,6 +806,18 @@ interface AppContextType {
     }
   ) => Sale | null;
 
+  // Admin Pending Tasks & Scheduled Reminders (Tareas Pendientes)
+  adminTasks: AdminTask[];
+  addAdminTask: (
+    data: Omit<AdminTask, 'id' | 'status' | 'createdAt' | 'updatedAt'> & {
+      status?: AdminTaskStatus;
+    }
+  ) => AdminTask;
+  updateAdminTask: (taskId: string, updates: Partial<AdminTask>) => AdminTask | null;
+  toggleAdminTaskStatus: (taskId: string, completedBy?: string) => AdminTask | null;
+  markAdminTaskNotified: (taskId: string, kind: 'assigned' | 'preReminder') => void;
+  deleteAdminTask: (taskId: string) => boolean;
+
   // Modals & UI triggers
   selectedInvoice: Sale | null;
   setSelectedInvoice: (sale: Sale | null) => void;
@@ -910,6 +929,7 @@ const STORAGE_KEYS = {
   TREASURY_MOVEMENTS: 'servimotos_treasury_movements_ve_v1',
   TREASURY_DEBTS: 'servimotos_treasury_debts_ve_v1',
   OPEN_ACCOUNTS: 'servimotos_open_accounts_ve_v1',
+  ADMIN_TASKS: 'servimotos_admin_tasks_ve_v1',
   DEBT_CATEGORIES: 'servimotos_debt_categories_ve_v1',
   CART: 'servimotos_cart_ve_v2',
   ML_ENTRIES: 'servimotos_ml_entries_ve_v2',
@@ -1914,6 +1934,18 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     return [];
   });
 
+  const [adminTasks, setAdminTasks] = useState<AdminTask[]>(() => {
+    try {
+      const delSet = new Set(deletedIdsRef.current.adminTasks);
+      const stored = localStorage.getItem(STORAGE_KEYS.ADMIN_TASKS);
+      if (stored) {
+        const parsed: AdminTask[] = JSON.parse(stored);
+        return Array.isArray(parsed) ? parsed.filter((t) => !delSet.has(t.id)) : [];
+      }
+    } catch {}
+    return [];
+  });
+
   const [customDebtCategories, setCustomDebtCategories] = useState<string[]>(() => {
     try {
       const stored = localStorage.getItem(STORAGE_KEYS.DEBT_CATEGORIES);
@@ -1986,6 +2018,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
   const pendingSyncTreasuryMovementIdsRef = useRef<Set<string>>(new Set());
   const pendingSyncTreasuryDebtIdsRef = useRef<Set<string>>(new Set());
   const pendingSyncOpenAccountIdsRef = useRef<Set<string>>(new Set());
+  const pendingSyncAdminTaskIdsRef = useRef<Set<string>>(new Set());
 
   // Live refs so concurrent callbacks never read stale closures
   const salesRef = useRef<Sale[]>(sales);
@@ -2004,6 +2037,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
   const treasuryMovementsRef = useRef<TreasuryMovement[]>(treasuryMovements);
   const treasuryDebtsRef = useRef<TreasuryDebt[]>(treasuryDebts);
   const openAccountsRef = useRef<OpenAccount[]>(openAccounts);
+  const adminTasksRef = useRef<AdminTask[]>(adminTasks);
   const settingsRef = useRef<BusinessSettings>(settings);
 
   // Sync to LocalStorage and live refs immediately on any state change
@@ -2091,6 +2125,11 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     openAccountsRef.current = openAccounts;
     localStorage.setItem(STORAGE_KEYS.OPEN_ACCOUNTS, JSON.stringify(openAccounts));
   }, [openAccounts]);
+
+  useEffect(() => {
+    adminTasksRef.current = adminTasks;
+    localStorage.setItem(STORAGE_KEYS.ADMIN_TASKS, JSON.stringify(adminTasks));
+  }, [adminTasks]);
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEYS.DEBT_CATEGORIES, JSON.stringify(customDebtCategories));
@@ -2202,6 +2241,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
           const deletedTreasuryMovementSet = new Set(mergedDeleted.treasuryMovements);
           const deletedTreasuryDebtSet = new Set(mergedDeleted.treasuryDebts);
           const deletedOpenAccountSet = new Set(mergedDeleted.openAccounts);
+          const deletedAdminTaskSet = new Set(mergedDeleted.adminTasks);
 
           // Merge products (excluding demo & deleted products)
           if (Array.isArray(serverDb.products)) {
@@ -2692,6 +2732,43 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
               return mergedList;
             });
           }
+
+          // Admin Pending Tasks (excluding deleted)
+          if (Array.isArray(serverDb.adminTasks)) {
+            const validServerTasks = serverDb.adminTasks.filter(
+              (t: AdminTask) => !deletedAdminTaskSet.has(t.id)
+            );
+            setAdminTasks((current) => {
+              const serverById = new Map<string, AdminTask>(
+                validServerTasks.map((t: AdminTask) => [t.id, t])
+              );
+              const mergedList: AdminTask[] = [];
+              const seenIds = new Set<string>();
+              for (const localTask of current) {
+                if (deletedAdminTaskSet.has(localTask.id)) continue;
+                seenIds.add(localTask.id);
+                const serverTask = serverById.get(localTask.id);
+                if (!serverTask || pendingSyncAdminTaskIdsRef.current.has(localTask.id)) {
+                  mergedList.push(localTask);
+                } else {
+                  const localTs = localTask.updatedAt || localTask.createdAt || '';
+                  const serverTs = serverTask.updatedAt || serverTask.createdAt || '';
+                  mergedList.push(localTs > serverTs ? localTask : serverTask);
+                }
+              }
+              for (const serverTask of validServerTasks) {
+                if (!seenIds.has(serverTask.id) && !deletedAdminTaskSet.has(serverTask.id)) {
+                  mergedList.push(serverTask);
+                }
+              }
+              mergedList.sort((a, b) =>
+                `${a.dueDate}T${a.dueTime}`.localeCompare(`${b.dueDate}T${b.dueTime}`)
+              );
+              adminTasksRef.current = mergedList;
+              localStorage.setItem(STORAGE_KEYS.ADMIN_TASKS, JSON.stringify(mergedList));
+              return mergedList;
+            });
+          }
         }
       } catch (err) {
         console.warn('Servidor de datos no respondió, usando datos locales:', err);
@@ -2721,6 +2798,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
                 treasuryMovements: treasuryMovementsRef.current,
                 treasuryDebts: treasuryDebtsRef.current,
                 openAccounts: openAccountsRef.current,
+                adminTasks: adminTasksRef.current,
                 deletedIds: deletedIdsRef.current,
               }),
             }).catch(() => {});
@@ -2756,6 +2834,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     treasuryMovements: false,
     treasuryDebts: false,
     openAccounts: false,
+    adminTasks: false,
   });
   const seenFirestoreIdsRef = useRef<{
     products: Set<string>;
@@ -2774,6 +2853,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     treasuryMovements: Set<string>;
     treasuryDebts: Set<string>;
     openAccounts: Set<string>;
+    adminTasks: Set<string>;
   }>({
     products: new Set(),
     customers: new Set(),
@@ -2791,6 +2871,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     treasuryMovements: new Set(),
     treasuryDebts: new Set(),
     openAccounts: new Set(),
+    adminTasks: new Set(),
   });
 
   useEffect(() => {
@@ -2814,6 +2895,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       const delTreasuryMovements = new Set(merged.treasuryMovements);
       const delTreasuryDebts = new Set(merged.treasuryDebts);
       const delOpenAccounts = new Set(merged.openAccounts);
+      const delAdminTasks = new Set(merged.adminTasks);
 
       setSales((prev) => prev.filter((s) => !delSales.has(s.id)));
       setProducts((prev) => prev.filter((p) => !delProds.has(p.id)));
@@ -2831,6 +2913,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       setTreasuryMovements((prev) => prev.filter((mv) => !delTreasuryMovements.has(mv.id)));
       setTreasuryDebts((prev) => prev.filter((d) => !delTreasuryDebts.has(d.id)));
       setOpenAccounts((prev) => prev.filter((a) => !delOpenAccounts.has(a.id)));
+      setAdminTasks((prev) => prev.filter((t) => !delAdminTasks.has(t.id)));
     };
 
     async function initFirestore() {
@@ -3914,6 +3997,79 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
           setFirebaseSyncStatus('synced');
         });
 
+        // 18. Real-time Admin Pending Tasks listener
+        const unsubAdminTasks = subscribeToAdminTasks((firestoreTasks, meta) => {
+          if (!Array.isArray(firestoreTasks)) return;
+          const delSet = new Set(deletedIdsRef.current.adminTasks);
+          firestoreTasks.forEach((t) => {
+            if (delSet.has(t.id)) {
+              removeAdminTaskFromFirestore(t.id).catch(() => {});
+            }
+          });
+          const cleanTasks = firestoreTasks.filter((t) => !delSet.has(t.id));
+          const remoteById = new Map(cleanTasks.map((t) => [t.id, t]));
+          const remoteIdSet = new Set(cleanTasks.map((t) => t.id));
+          const prevSeen = seenFirestoreIdsRef.current.adminTasks;
+          const isServerConfirmed = !meta?.fromCache && !meta?.hasPendingWrites;
+
+          if (isServerConfirmed) {
+            remoteIdSet.forEach((id) => pendingSyncAdminTaskIdsRef.current.delete(id));
+          }
+
+          setAdminTasks((prev) => {
+            const toUpload: AdminTask[] = [];
+            const mergedMap = new Map<string, AdminTask>();
+
+            for (const rt of cleanTasks) {
+              mergedMap.set(rt.id, rt);
+            }
+
+            for (const lt of prev) {
+              if (delSet.has(lt.id)) continue;
+              const rt = remoteById.get(lt.id);
+              const isPendingLocal = pendingSyncAdminTaskIdsRef.current.has(lt.id);
+              const isNewerLocal =
+                rt &&
+                (lt.updatedAt || lt.createdAt) &&
+                (!(rt.updatedAt || rt.createdAt) ||
+                  (lt.updatedAt || lt.createdAt) > (rt.updatedAt || rt.createdAt));
+
+              if (!rt) {
+                if (isPendingLocal || !isServerConfirmed || !prevSeen.has(lt.id)) {
+                  mergedMap.set(lt.id, lt);
+                  toUpload.push(lt);
+                }
+              } else if (isPendingLocal || isNewerLocal) {
+                mergedMap.set(lt.id, lt);
+                toUpload.push(lt);
+              }
+            }
+
+            if (toUpload.length > 0 && isServerConfirmed) {
+              queueMicrotask(() => {
+                toUpload.forEach((t) => {
+                  pendingSyncAdminTaskIdsRef.current.add(t.id);
+                  syncAdminTaskToFirestore(t)
+                    .then(() => pendingSyncAdminTaskIdsRef.current.delete(t.id))
+                    .catch(() => {});
+                });
+              });
+            }
+
+            const merged = Array.from(mergedMap.values()).sort((a, b) =>
+              `${a.dueDate}T${a.dueTime}`.localeCompare(`${b.dueDate}T${b.dueTime}`)
+            );
+            adminTasksRef.current = merged;
+            return merged;
+          });
+
+          if (isServerConfirmed) {
+            seenFirestoreIdsRef.current.adminTasks = remoteIdSet;
+            firestoreSyncedFlags.current.adminTasks = true;
+          }
+          setFirebaseSyncStatus('synced');
+        });
+
         unsubs = [
           unsubDeleted,
           unsubProducts,
@@ -3933,6 +4089,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
           unsubTreasuryMovements,
           unsubTreasuryDebts,
           unsubOpenAccounts,
+          unsubAdminTasks,
         ];
       } catch (err) {
         console.warn('Error starting Firestore real-time listeners:', err);
@@ -3972,6 +4129,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
         treasuryMovements,
         treasuryDebts,
         openAccounts,
+        adminTasks,
         deletedIds: deletedIdsRef.current,
       });
       if (result.success) {
@@ -4016,6 +4174,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
           treasuryMovements,
           treasuryDebts,
           openAccounts,
+          adminTasks,
           deletedIds: deletedIdsRef.current,
         }),
       }).catch((err) => {
@@ -4028,7 +4187,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
         clearTimeout(saveTimeoutRef.current);
       }
     };
-  }, [settings, products, customers, sales, serviceOrders, onlineOrders, technicians, serviceCommissions, technicianPayouts, suppliers, purchaseOrders, expenses, treasuryAccounts, treasuryCommitments, treasuryMovements, treasuryDebts, openAccounts, deletedIds]);
+  }, [settings, products, customers, sales, serviceOrders, onlineOrders, technicians, serviceCommissions, technicianPayouts, suppliers, purchaseOrders, expenses, treasuryAccounts, treasuryCommitments, treasuryMovements, treasuryDebts, openAccounts, adminTasks, deletedIds]);
 
   // Guarantee save before tab/window is closed
   useEffect(() => {
@@ -4052,6 +4211,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
           treasuryMovements,
           treasuryDebts,
           openAccounts,
+          adminTasks,
           deletedIds: deletedIdsRef.current,
         });
 
@@ -4073,7 +4233,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     return () => {
       window.removeEventListener('beforeunload', handleBeforeUnload);
     };
-  }, [settings, products, customers, sales, serviceOrders, onlineOrders, technicians, serviceCommissions, technicianPayouts, suppliers, purchaseOrders, expenses, treasuryAccounts, treasuryCommitments, treasuryMovements, treasuryDebts, openAccounts, deletedIds]);
+  }, [settings, products, customers, sales, serviceOrders, onlineOrders, technicians, serviceCommissions, technicianPayouts, suppliers, purchaseOrders, expenses, treasuryAccounts, treasuryCommitments, treasuryMovements, treasuryDebts, openAccounts, adminTasks, deletedIds]);
 
   // Online products: show items with stock > 0 OR made-to-order (tracksInventory === false), sanitize internal pricing fields, and sort A-Z
   const onlineProducts = useMemo(() => {
@@ -12479,6 +12639,159 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     return newSale;
   };
 
+  // =========================================================================
+  // Admin Pending Tasks & Scheduled Reminders (Tareas Pendientes)
+  // =========================================================================
+  const addAdminTask = (
+    data: Omit<AdminTask, 'id' | 'status' | 'createdAt' | 'updatedAt'> & {
+      status?: AdminTaskStatus;
+    }
+  ): AdminTask => {
+    const now = new Date().toISOString();
+    const newTask: AdminTask = {
+      id: `tsk-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      title: data.title.trim(),
+      description: data.description?.trim() || undefined,
+      category: data.category || 'OTROS',
+      priority: data.priority || 'MEDIA',
+      assignedWorkerId: data.assignedWorkerId || undefined,
+      assignedWorkerName: data.assignedWorkerName.trim() || 'Sin asignar',
+      assignedWorkerPhone: data.assignedWorkerPhone?.trim() || undefined,
+      dueDate: data.dueDate,
+      dueTime: data.dueTime || '09:00',
+      status: data.status || 'PENDIENTE',
+      reminderMinutesBefore: Math.max(1, Number(data.reminderMinutesBefore) || 5),
+      assignedNotifiedAt: data.assignedNotifiedAt,
+      preReminderSentAt: data.preReminderSentAt,
+      completedAt: data.completedAt,
+      completedBy: data.completedBy,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    const nextList = [...adminTasksRef.current, newTask].sort((a, b) =>
+      `${a.dueDate}T${a.dueTime}`.localeCompare(`${b.dueDate}T${b.dueTime}`)
+    );
+    adminTasksRef.current = nextList;
+    setAdminTasks(nextList);
+    try {
+      localStorage.setItem(STORAGE_KEYS.ADMIN_TASKS, JSON.stringify(nextList));
+    } catch {}
+
+    pendingSyncAdminTaskIdsRef.current.add(newTask.id);
+    syncAdminTaskToFirestore(newTask)
+      .then(() => pendingSyncAdminTaskIdsRef.current.delete(newTask.id))
+      .catch(() => {});
+
+    return newTask;
+  };
+
+  const updateAdminTask = (taskId: string, updates: Partial<AdminTask>): AdminTask | null => {
+    const existing = adminTasksRef.current.find((t) => t.id === taskId);
+    if (!existing) return null;
+
+    const now = new Date().toISOString();
+    const scheduleChanged =
+      (updates.dueDate !== undefined && updates.dueDate !== existing.dueDate) ||
+      (updates.dueTime !== undefined && updates.dueTime !== existing.dueTime);
+
+    const updatedTask: AdminTask = {
+      ...existing,
+      ...updates,
+      id: existing.id,
+      title: updates.title !== undefined ? updates.title.trim() : existing.title,
+      description:
+        updates.description !== undefined
+          ? updates.description.trim() || undefined
+          : existing.description,
+      assignedWorkerName:
+        updates.assignedWorkerName !== undefined
+          ? updates.assignedWorkerName.trim() || 'Sin asignar'
+          : existing.assignedWorkerName,
+      assignedWorkerPhone:
+        updates.assignedWorkerPhone !== undefined
+          ? updates.assignedWorkerPhone.trim() || undefined
+          : existing.assignedWorkerPhone,
+      reminderMinutesBefore:
+        updates.reminderMinutesBefore !== undefined
+          ? Math.max(1, Number(updates.reminderMinutesBefore) || 5)
+          : existing.reminderMinutesBefore,
+      preReminderSentAt: scheduleChanged ? undefined : updates.preReminderSentAt ?? existing.preReminderSentAt,
+      updatedAt: now,
+    };
+
+    const nextList = adminTasksRef.current
+      .map((t) => (t.id === taskId ? updatedTask : t))
+      .sort((a, b) => `${a.dueDate}T${a.dueTime}`.localeCompare(`${b.dueDate}T${b.dueTime}`));
+    adminTasksRef.current = nextList;
+    setAdminTasks(nextList);
+    try {
+      localStorage.setItem(STORAGE_KEYS.ADMIN_TASKS, JSON.stringify(nextList));
+    } catch {}
+
+    pendingSyncAdminTaskIdsRef.current.add(updatedTask.id);
+    syncAdminTaskToFirestore(updatedTask)
+      .then(() => pendingSyncAdminTaskIdsRef.current.delete(updatedTask.id))
+      .catch(() => {});
+
+    return updatedTask;
+  };
+
+  const toggleAdminTaskStatus = (taskId: string, completedBy?: string): AdminTask | null => {
+    const existing = adminTasksRef.current.find((t) => t.id === taskId);
+    if (!existing) return null;
+
+    const now = new Date().toISOString();
+    const markDone = existing.status !== 'REALIZADA';
+    const updatedTask: AdminTask = {
+      ...existing,
+      status: markDone ? 'REALIZADA' : 'PENDIENTE',
+      completedAt: markDone ? now : undefined,
+      completedBy: markDone ? completedBy || currentUser?.name || 'Administrador' : undefined,
+      updatedAt: now,
+    };
+
+    const nextList = adminTasksRef.current.map((t) => (t.id === taskId ? updatedTask : t));
+    adminTasksRef.current = nextList;
+    setAdminTasks(nextList);
+    try {
+      localStorage.setItem(STORAGE_KEYS.ADMIN_TASKS, JSON.stringify(nextList));
+    } catch {}
+
+    pendingSyncAdminTaskIdsRef.current.add(updatedTask.id);
+    syncAdminTaskToFirestore(updatedTask)
+      .then(() => pendingSyncAdminTaskIdsRef.current.delete(updatedTask.id))
+      .catch(() => {});
+
+    return updatedTask;
+  };
+
+  const markAdminTaskNotified = (taskId: string, kind: 'assigned' | 'preReminder') => {
+    const now = new Date().toISOString();
+    if (kind === 'assigned') {
+      updateAdminTask(taskId, { assignedNotifiedAt: now });
+    } else {
+      updateAdminTask(taskId, { preReminderSentAt: now });
+    }
+  };
+
+  const deleteAdminTask = (taskId: string): boolean => {
+    const existing = adminTasksRef.current.find((t) => t.id === taskId);
+    if (!existing) return false;
+
+    recordDeleted('adminTasks', [taskId]);
+    const nextList = adminTasksRef.current.filter((t) => t.id !== taskId);
+    adminTasksRef.current = nextList;
+    setAdminTasks(nextList);
+    try {
+      localStorage.setItem(STORAGE_KEYS.ADMIN_TASKS, JSON.stringify(nextList));
+    } catch {}
+
+    pendingSyncAdminTaskIdsRef.current.delete(taskId);
+    removeAdminTaskFromFirestore(taskId).catch(() => {});
+    return true;
+  };
+
   // Online Store Orders
   const placeOnlineOrder = (
     orderData: Omit<OnlineOrder, 'id' | 'orderCode' | 'createdAt' | 'status' | 'bcvRate' | 'totalBs'>
@@ -12648,6 +12961,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     setTreasuryMovements([]);
     setTreasuryDebts([]);
     setOpenAccounts([]);
+    setAdminTasks([]);
     setCart([]);
     localStorage.clear();
   };
@@ -12817,6 +13131,12 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
         updateOpenAccountMeta,
         cancelOpenAccount,
         settleOpenAccount,
+        adminTasks,
+        addAdminTask,
+        updateAdminTask,
+        toggleAdminTaskStatus,
+        markAdminTaskNotified,
+        deleteAdminTask,
         onlineOrders,
         placeOnlineOrder,
         updateOrderStatus,

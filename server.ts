@@ -97,6 +97,7 @@ interface DeletedIdsMap {
   treasuryMovements: string[];
   treasuryDebts: string[];
   openAccounts: string[];
+  adminTasks: string[];
 }
 
 const EMPTY_DELETED_IDS: DeletedIdsMap = {
@@ -116,6 +117,7 @@ const EMPTY_DELETED_IDS: DeletedIdsMap = {
   treasuryMovements: [],
   treasuryDebts: [],
   openAccounts: [],
+  adminTasks: [],
 };
 
 function mergeDeletedIds(a?: Partial<DeletedIdsMap>, b?: Partial<DeletedIdsMap>): DeletedIdsMap {
@@ -136,6 +138,7 @@ function mergeDeletedIds(a?: Partial<DeletedIdsMap>, b?: Partial<DeletedIdsMap>)
     treasuryMovements: Array.from(new Set([...(a?.treasuryMovements || []), ...(b?.treasuryMovements || [])])),
     treasuryDebts: Array.from(new Set([...(a?.treasuryDebts || []), ...(b?.treasuryDebts || [])])),
     openAccounts: Array.from(new Set([...(a?.openAccounts || []), ...(b?.openAccounts || [])])),
+    adminTasks: Array.from(new Set([...(a?.adminTasks || []), ...(b?.adminTasks || [])])),
   };
 }
 
@@ -157,6 +160,7 @@ interface AppDatabase {
   treasuryMovements: any[];
   treasuryDebts: any[];
   openAccounts: any[];
+  adminTasks: any[];
   users: any[];
   deletedIds: DeletedIdsMap;
   updatedAt: string;
@@ -181,6 +185,7 @@ function getInitialDatabase(): AppDatabase {
     treasuryMovements: [],
     treasuryDebts: [],
     openAccounts: [],
+    adminTasks: [],
     users: [DEFAULT_ADMIN_USER],
     deletedIds: { ...EMPTY_DELETED_IDS, sales: ['sale-102', 'sale-103'] },
     updatedAt: new Date().toISOString(),
@@ -222,6 +227,7 @@ function readDatabase(): AppDatabase {
       const deletedTreasuryMovementSet = new Set(deletedIds.treasuryMovements);
       const deletedTreasuryDebtSet = new Set(deletedIds.treasuryDebts);
       const deletedOpenAccountSet = new Set(deletedIds.openAccounts);
+      const deletedAdminTaskSet = new Set(deletedIds.adminTasks);
 
       return {
         settings: parsed.settings || INITIAL_SETTINGS,
@@ -241,6 +247,7 @@ function readDatabase(): AppDatabase {
         treasuryMovements: (Array.isArray(parsed.treasuryMovements) ? parsed.treasuryMovements : []).filter((mv: any) => !deletedTreasuryMovementSet.has(mv.id)),
         treasuryDebts: (Array.isArray(parsed.treasuryDebts) ? parsed.treasuryDebts : []).filter((d: any) => !deletedTreasuryDebtSet.has(d.id)),
         openAccounts: (Array.isArray(parsed.openAccounts) ? parsed.openAccounts : []).filter((a: any) => !deletedOpenAccountSet.has(a.id)),
+        adminTasks: (Array.isArray(parsed.adminTasks) ? parsed.adminTasks : []).filter((t: any) => !deletedAdminTaskSet.has(t.id)),
         users: guaranteedUsers,
         deletedIds,
         updatedAt: parsed.updatedAt || new Date().toISOString(),
@@ -324,6 +331,7 @@ function writeDatabase(
     const deletedTreasuryMovementSet = new Set(mergedDeletedIds.treasuryMovements);
     const deletedTreasuryDebtSet = new Set(mergedDeletedIds.treasuryDebts);
     const deletedOpenAccountSet = new Set(mergedDeletedIds.openAccounts);
+    const deletedAdminTaskSet = new Set(mergedDeletedIds.adminTasks);
 
     const rawProducts = Array.isArray(data.products)
       ? mergeCollections
@@ -405,6 +413,11 @@ function writeDatabase(
         ? mergeCollectionById(current.openAccounts || [], data.openAccounts, deletedOpenAccountSet)
         : data.openAccounts
       : current.openAccounts || [];
+    const rawAdminTasks = Array.isArray(data.adminTasks)
+      ? mergeCollections
+        ? mergeCollectionById(current.adminTasks || [], data.adminTasks, deletedAdminTaskSet)
+        : data.adminTasks
+      : current.adminTasks || [];
 
     // Protect fresher official BCV rate from being overwritten by stale client POST /api/data payloads
     let mergedSettings = data.settings !== undefined ? data.settings : current.settings;
@@ -448,6 +461,7 @@ function writeDatabase(
       treasuryMovements: Array.isArray(rawTreasuryMovements) ? rawTreasuryMovements.filter((mv: any) => !deletedTreasuryMovementSet.has(mv.id)) : [],
       treasuryDebts: Array.isArray(rawTreasuryDebts) ? rawTreasuryDebts.filter((d: any) => !deletedTreasuryDebtSet.has(d.id)) : [],
       openAccounts: Array.isArray(rawOpenAccounts) ? rawOpenAccounts.filter((a: any) => !deletedOpenAccountSet.has(a.id)) : [],
+      adminTasks: Array.isArray(rawAdminTasks) ? rawAdminTasks.filter((t: any) => !deletedAdminTaskSet.has(t.id)) : [],
       deletedIds: mergedDeletedIds,
       updatedAt: new Date().toISOString(),
     };

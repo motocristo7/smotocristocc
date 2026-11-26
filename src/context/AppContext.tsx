@@ -943,14 +943,18 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       return false;
     }
 
-    // Direct store routes or parameters explicitly requested
+    // Direct store routes or product deep links explicitly requested
     if (
       path.includes('mercadomotocc') ||
       path.includes('/tienda') ||
       path.includes('/catalogo') ||
       path.includes('/repuestos') ||
+      path.includes('/repuesto/') ||
+      path.includes('/producto/') ||
       search.includes('mercadomotocc') ||
       search.includes('tienda=mercadomotocc') ||
+      search.includes('repuesto=') ||
+      search.includes('producto=') ||
       hash.includes('mercadomotocc')
     ) {
       return true;
@@ -1365,13 +1369,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const search = window.location.search.toLowerCase();
       const hash = window.location.hash.toLowerCase();
 
-      // Explicit store routes
+      // Explicit store routes or direct product links
       if (
         path.includes('mercadomotocc') ||
         path.includes('/tienda') ||
         path.includes('/catalogo') ||
+        path.includes('/repuesto/') ||
+        path.includes('/producto/') ||
         search.includes('mercadomotocc') ||
         search.includes('tienda=mercadomotocc') ||
+        search.includes('repuesto=') ||
+        search.includes('producto=') ||
         hash.includes('mercadomotocc')
       ) {
         return 'tienda';
@@ -1439,7 +1447,11 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       const isClientPath =
         path.includes('mercadomotocc') ||
         path.includes('/tienda') ||
+        path.includes('/repuesto/') ||
+        path.includes('/producto/') ||
         search.includes('mercadomotocc') ||
+        search.includes('repuesto=') ||
+        search.includes('producto=') ||
         hash.includes('mercadomotocc');
       const isAdminPath =
         path.includes('admin') ||

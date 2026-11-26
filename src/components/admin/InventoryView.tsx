@@ -69,6 +69,7 @@ import {
   productHasWholesaleTiers,
   SUGGESTED_WHOLESALE_TIERS,
 } from '../../utils/wholesalePricing';
+import { buildProductShareUrl, copyTextToClipboard } from '../../utils/productLinks';
 
 export const InventoryView: React.FC = () => {
   const {
@@ -89,6 +90,7 @@ export const InventoryView: React.FC = () => {
     settings,
     exchangeGap,
     setCurrentView,
+    publicStoreUrl,
   } = useApp();
 
   const [searchTerm, setSearchTerm] = useState('');
@@ -105,6 +107,7 @@ export const InventoryView: React.FC = () => {
   const [selectedProductIds, setSelectedProductIds] = useState<string[]>([]);
   const [isBatchDeleteModalOpen, setIsBatchDeleteModalOpen] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [copiedLinkProductId, setCopiedLinkProductId] = useState<string | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
 
   const [isManageModelsModalOpen, setIsManageModelsModalOpen] = useState(false);
@@ -121,6 +124,16 @@ export const InventoryView: React.FC = () => {
   const handleBulkImportConfirmed = (parsedRows: ParsedProductRow[]) => {
     const result = bulkImportProducts(parsedRows);
     showToast(`✓ Carga completada: ${result.added} repuestos nuevos creados, ${result.updated} actualizados.`);
+  };
+
+  const handleCopyProductLink = async (product: Product) => {
+    const url = buildProductShareUrl(product, publicStoreUrl);
+    await copyTextToClipboard(url);
+    setCopiedLinkProductId(product.id);
+    showToast(`✓ Link copiado para "${product.name}"`);
+    setTimeout(() => {
+      setCopiedLinkProductId((prev) => (prev === product.id ? null : prev));
+    }, 2200);
   };
 
   // Form State (un solo costo en Divisas + dos precios de venta: $ BCV Tienda y $ Ref. Divisas Solo Admin)
@@ -1680,8 +1693,30 @@ export const InventoryView: React.FC = () => {
                         )}
                       </div>
 
-                      {/* Editar y Eliminar siempre visibles a simple vista */}
+                      {/* Copiar Link, Editar y Eliminar siempre visibles a simple vista */}
                       <div className="flex items-center gap-1.5 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => void handleCopyProductLink(product)}
+                          className={`inline-flex items-center gap-1 px-2 py-1.5 text-xs font-semibold border rounded-lg transition-colors cursor-pointer whitespace-nowrap ${
+                            copiedLinkProductId === product.id
+                              ? 'text-emerald-800 bg-emerald-50 border-emerald-300'
+                              : 'text-slate-700 bg-white hover:bg-amber-50 hover:text-amber-900 border-slate-200 hover:border-amber-300'
+                          }`}
+                          title="Copiar link directo de este repuesto en la tienda online"
+                        >
+                          {copiedLinkProductId === product.id ? (
+                            <>
+                              <Check className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                              <span className="hidden sm:inline lg:hidden xl:inline">Copiado</span>
+                            </>
+                          ) : (
+                            <>
+                              <Link2 className="w-3.5 h-3.5 shrink-0" />
+                              <span className="hidden sm:inline lg:hidden xl:inline">Link</span>
+                            </>
+                          )}
+                        </button>
                         <button
                           type="button"
                           onClick={() => handleStartEdit(product)}
@@ -1822,19 +1857,45 @@ export const InventoryView: React.FC = () => {
                   </span>
                 )}
               </div>
-              <button
-                type="button"
-                onClick={() => {
-                  setIsAddModalOpen(false);
-                  setEditingProduct(null);
-                  setIsAddingCategory(false);
-                  setNewCategoryName('');
-                }}
-                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-slate-300 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer text-xs font-semibold shrink-0"
-              >
-                <X className="w-4 h-4" />
-                <span className="hidden sm:inline">Cerrar</span>
-              </button>
+              <div className="flex items-center gap-2 shrink-0">
+                {editingProduct && (
+                  <button
+                    type="button"
+                    onClick={() => void handleCopyProductLink(editingProduct)}
+                    className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap ${
+                      copiedLinkProductId === editingProduct.id
+                        ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                        : 'bg-slate-800 hover:bg-slate-700 text-amber-300 border border-slate-700'
+                    }`}
+                    title="Copiar link directo de este repuesto para enviarlo a un cliente"
+                  >
+                    {copiedLinkProductId === editingProduct.id ? (
+                      <>
+                        <Check className="w-3.5 h-3.5 shrink-0" />
+                        <span>¡Link copiado!</span>
+                      </>
+                    ) : (
+                      <>
+                        <Link2 className="w-3.5 h-3.5 shrink-0" />
+                        <span>Copiar link</span>
+                      </>
+                    )}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsAddModalOpen(false);
+                    setEditingProduct(null);
+                    setIsAddingCategory(false);
+                    setNewCategoryName('');
+                  }}
+                  className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-slate-300 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer text-xs font-semibold shrink-0"
+                >
+                  <X className="w-4 h-4" />
+                  <span className="hidden sm:inline">Cerrar</span>
+                </button>
+              </div>
             </div>
 
             <form

@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { useApp } from '../../context/AppContext';
 import {
   Product,
@@ -35,6 +35,7 @@ import {
   Clock,
   Percent,
   Layers,
+  Link2,
 } from 'lucide-react';
 import {
   PRESET_PRODUCT_IMAGES,
@@ -49,6 +50,15 @@ import {
   getProductWholesaleDisplayTiers,
   productHasWholesaleTiers,
 } from '../../utils/wholesalePricing';
+import { sanitizeProductForPublic } from '../../utils/pricing';
+import {
+  buildProductShareUrl,
+  buildProductUrlParam,
+  buildProductWhatsAppShareUrl,
+  copyTextToClipboard,
+  extractProductRefFromLocation,
+  findProductByUrlRef,
+} from '../../utils/productLinks';
 import { CustomerPendingAccountsModal } from '../modals/CustomerPendingAccountsModal';
 
 interface StorefrontProps {
@@ -57,6 +67,7 @@ interface StorefrontProps {
 
 export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
   const {
+    products: allCatalogProducts,
     onlineProducts,
     categories: allCategories,
     modelCategories,
@@ -78,18 +89,122 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
   const [cardImageIndices, setCardImageIndices] = useState<Record<string, number>>({});
   const [copiedBank, setCopiedBank] = useState<string | null>(null);
   const [copiedStoreLink, setCopiedStoreLink] = useState(false);
+  const [copiedProductLinkId, setCopiedProductLinkId] = useState<string | null>(null);
+  const [linkCopiedToast, setLinkCopiedToast] = useState<{
+    productName: string;
+    url: string;
+  } | null>(null);
   const [recentlyAddedId, setRecentlyAddedId] = useState<string | null>(null);
   const [cartToast, setCartToast] = useState<{ productName: string; qty?: number } | null>(null);
   const [isPendingAccountsOpen, setIsPendingAccountsOpen] = useState(false);
   const [modalOrderQty, setModalOrderQty] = useState<number>(1);
   const [shoppingMode, setShoppingMode] = useState<'retail' | 'wholesale'>('retail');
   const [onlyWholesaleProducts, setOnlyWholesaleProducts] = useState<boolean>(false);
+  const [pendingUrlProductRef, setPendingUrlProductRef] = useState<string | null>(() =>
+    extractProductRefFromLocation()
+  );
+  const defaultTitleRef = useRef<string>(
+    typeof document !== 'undefined' ? document.title : ''
+  );
 
-  const openProductDetailModal = (product: Product, startIndex = 0, initialQty = 1) => {
+  const syncProductParamInUrl = (product: Product | null, mode: 'push' | 'replace' = 'push') => {
+    if (typeof window === 'undefined') return;
+    try {
+      const url = new URL(window.location.href);
+      ['repuesto', 'producto', 'item', 'sku', 'p'].forEach((k) => url.searchParams.delete(k));
+      if (/^\/(?:repuesto|producto)\//i.test(url.pathname)) {
+        url.pathname = '/';
+      }
+      if (product) {
+        url.searchParams.set('repuesto', buildProductUrlParam(product));
+      }
+      const nextUrl = `${url.pathname}${url.search}${url.hash}`;
+      if (mode === 'push') {
+        window.history.pushState({ productId: product?.id || null }, '', nextUrl);
+      } else {
+        window.history.replaceState({ productId: product?.id || null }, '', nextUrl);
+      }
+    } catch {
+      // Ignore history API restrictions in sandboxed environments
+    }
+  };
+
+  const openProductDetailModal = (
+    product: Product,
+    startIndex = 0,
+    initialQty = 1,
+    syncUrl = true
+  ) => {
     setSelectedProduct(product);
     setModalImageIndex(startIndex);
     setModalOrderQty(Math.max(1, initialQty));
+    if (syncUrl) {
+      syncProductParamInUrl(product, 'push');
+    }
   };
+
+  const closeProductDetailModal = (syncUrl = true) => {
+    setSelectedProduct(null);
+    setPendingUrlProductRef(null);
+    if (syncUrl) {
+      syncProductParamInUrl(null, 'replace');
+    }
+  };
+
+  const handleCopyProductLink = async (product: Product) => {
+    const url = buildProductShareUrl(product, publicStoreUrl);
+    await copyTextToClipboard(url);
+    setCopiedProductLinkId(product.id);
+    setLinkCopiedToast({ productName: product.name, url });
+    setTimeout(() => {
+      setCopiedProductLinkId((prev) => (prev === product.id ? null : prev));
+    }, 2200);
+    setTimeout(() => {
+      setLinkCopiedToast((prev) => (prev?.url === url ? null : prev));
+    }, 3800);
+  };
+
+  // Auto-open product modal when visitor arrives via a direct product link (?repuesto=...)
+  useEffect(() => {
+    if (!pendingUrlProductRef) return;
+    const fromOnline = findProductByUrlRef(onlineProducts, pendingUrlProductRef);
+    const fromAll =
+      fromOnline ||
+      (() => {
+        const raw = findProductByUrlRef(allCatalogProducts, pendingUrlProductRef);
+        return raw ? sanitizeProductForPublic(raw) : null;
+      })();
+
+    if (fromAll) {
+      openProductDetailModal(fromAll, 0, 1, false);
+      setPendingUrlProductRef(null);
+    }
+  }, [pendingUrlProductRef, onlineProducts, allCatalogProducts]);
+
+  // Keep product modal in sync with browser Back / Forward navigation
+  useEffect(() => {
+    const handlePopState = () => {
+      const ref = extractProductRefFromLocation();
+      if (!ref) {
+        setSelectedProduct(null);
+        return;
+      }
+      const match =
+        findProductByUrlRef(onlineProducts, ref) ||
+        (() => {
+          const raw = findProductByUrlRef(allCatalogProducts, ref);
+          return raw ? sanitizeProductForPublic(raw) : null;
+        })();
+      if (match) {
+        setSelectedProduct(match);
+        setModalImageIndex(0);
+        setModalOrderQty(1);
+      }
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, [onlineProducts, allCatalogProducts]);
 
   const handleQuickAddModelFromStore = () => {
     const trimmed = newStoreModelName.trim();
@@ -103,6 +218,20 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
   };
 
   const storeName = onlineStoreBrand || 'Mercado Moto CC';
+
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    if (selectedProduct) {
+      document.title = `${selectedProduct.name} | ${storeName}`;
+    } else if (defaultTitleRef.current) {
+      document.title = defaultTitleRef.current;
+    }
+    return () => {
+      if (defaultTitleRef.current) {
+        document.title = defaultTitleRef.current;
+      }
+    };
+  }, [selectedProduct, storeName]);
 
   const handleCopyStoreLink = async () => {
     try {
@@ -237,7 +366,8 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
 
   const handleConsultWhatsApp = (product: Product) => {
     const bsPrice = formatBs(product.salePrice * settings.bcvRate);
-    const text = `Hola *${settings.commercialName}*, estoy interesado en el repuesto *${product.name}* (Ref: ${product.sku}) por valor de ${formatUSD(product.salePrice)} (${bsPrice} a tasa BCV). ¿Tienen disponibilidad inmediata para mi moto?`;
+    const productLink = buildProductShareUrl(product, publicStoreUrl);
+    const text = `Hola *${settings.commercialName}*, estoy interesado en el repuesto *${product.name}* (Ref: ${product.sku}) por valor de ${formatUSD(product.salePrice)} (${bsPrice} a tasa BCV).\nLink del repuesto: ${productLink}\n¿Tienen disponibilidad inmediata para mi moto?`;
     const url = `https://api.whatsapp.com/send?phone=${sanitizePhone(settings.whatsapp)}&text=${encodeURIComponent(text)}`;
     window.open(url, '_blank', 'noopener,noreferrer');
   };
@@ -953,16 +1083,43 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
                           )}
                         </div>
 
-                        <button
-                          type="button"
-                          onClick={() => openProductDetailModal(product, activeIdx)}
-                          className="inline-flex items-center justify-center gap-1 text-[11px] font-medium text-slate-500 hover:text-slate-900 hover:bg-slate-100 p-1 sm:px-1.5 sm:py-1 rounded-md transition-colors cursor-pointer shrink-0 whitespace-nowrap"
-                          title="Ver descripción y detalles completos"
-                          aria-label={`Ver detalles de ${product.name}`}
-                        >
-                          <Eye className="w-3.5 h-3.5 shrink-0" />
-                          <span className="hidden sm:inline">Detalles</span>
-                        </button>
+                        <div className="flex items-center gap-0.5 shrink-0">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              void handleCopyProductLink(product);
+                            }}
+                            className={`inline-flex items-center justify-center p-1 rounded-md transition-colors cursor-pointer shrink-0 ${
+                              copiedProductLinkId === product.id
+                                ? 'text-emerald-700 bg-emerald-50'
+                                : 'text-slate-400 hover:text-amber-600 hover:bg-amber-50'
+                            }`}
+                            title={
+                              copiedProductLinkId === product.id
+                                ? '¡Link copiado!'
+                                : 'Copiar link directo de este repuesto'
+                            }
+                            aria-label={`Copiar link de ${product.name}`}
+                          >
+                            {copiedProductLinkId === product.id ? (
+                              <Check className="w-3.5 h-3.5 shrink-0" />
+                            ) : (
+                              <Link2 className="w-3.5 h-3.5 shrink-0" />
+                            )}
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => openProductDetailModal(product, activeIdx)}
+                            className="inline-flex items-center justify-center gap-1 text-[11px] font-medium text-slate-500 hover:text-slate-900 hover:bg-slate-100 p-1 sm:px-1.5 sm:py-1 rounded-md transition-colors cursor-pointer shrink-0 whitespace-nowrap"
+                            title="Ver descripción y detalles completos"
+                            aria-label={`Ver detalles de ${product.name}`}
+                          >
+                            <Eye className="w-3.5 h-3.5 shrink-0" />
+                            <span className="hidden sm:inline">Detalles</span>
+                          </button>
+                        </div>
                       </div>
 
                       {wholesaleDisplay.hasWholesale && firstWholesaleTier && (
@@ -1259,7 +1416,7 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
       {/* Product Detail Modal */}
       {selectedProduct && (
         <div
-          onClick={() => setSelectedProduct(null)}
+          onClick={() => closeProductDetailModal()}
           className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-xs"
         >
           <div
@@ -1267,8 +1424,8 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
             className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-2xl overflow-hidden flex flex-col max-h-[90vh] animate-in fade-in zoom-in-95 duration-150"
           >
             <div className="p-4 sm:p-6 overflow-y-auto flex-1">
-              <div className="flex items-start justify-between gap-4">
-                <div>
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
                   <div className="flex flex-wrap items-center gap-1.5 text-xs font-semibold text-amber-600 uppercase">
                     <span>{selectedProduct.brand}</span>
                     <span>·</span>
@@ -1280,14 +1437,38 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
                     {selectedProduct.name}
                   </h3>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => setSelectedProduct(null)}
-                  className="p-1.5 text-slate-400 hover:text-slate-700 rounded-lg hover:bg-slate-100 cursor-pointer"
-                  aria-label="Cerrar detalles"
-                >
-                  <X className="w-4 h-4" />
-                </button>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => void handleCopyProductLink(selectedProduct)}
+                    className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-xs font-semibold transition-colors cursor-pointer whitespace-nowrap ${
+                      copiedProductLinkId === selectedProduct.id
+                        ? 'bg-emerald-50 border-emerald-300 text-emerald-800'
+                        : 'bg-slate-50 hover:bg-amber-50 border-slate-200 hover:border-amber-300 text-slate-700 hover:text-amber-900'
+                    }`}
+                    title="Copiar enlace directo de este repuesto"
+                  >
+                    {copiedProductLinkId === selectedProduct.id ? (
+                      <>
+                        <Check className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                        <span>¡Copiado!</span>
+                      </>
+                    ) : (
+                      <>
+                        <Link2 className="w-3.5 h-3.5 shrink-0" />
+                        <span>Copiar link</span>
+                      </>
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => closeProductDetailModal()}
+                    className="p-1.5 text-slate-400 hover:text-slate-700 rounded-lg hover:bg-slate-100 cursor-pointer"
+                    aria-label="Cerrar detalles"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                </div>
               </div>
 
               <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-6">
@@ -1492,10 +1673,16 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
                               : 'Fabricación Propia bajo Pedido'}
                           </span>
                           {productTracksInventory(selectedProduct) ? (
-                            <div className="flex items-center gap-1.5 text-emerald-600 font-semibold text-xs mt-0.5">
-                              <CheckCircle2 className="w-4 h-4" />
-                              <span>{selectedProduct.stock} unidades en stock</span>
-                            </div>
+                            selectedProduct.stock > 0 ? (
+                              <div className="flex items-center gap-1.5 text-emerald-600 font-semibold text-xs mt-0.5">
+                                <CheckCircle2 className="w-4 h-4" />
+                                <span>{selectedProduct.stock} unidades en stock</span>
+                              </div>
+                            ) : (
+                              <div className="mt-1 rounded-lg bg-rose-50 border border-rose-200 px-2.5 py-2 text-xs font-semibold text-rose-800">
+                                Agotado temporalmente en almacén. Consúltanos por WhatsApp para fecha de reposición.
+                              </div>
+                            )
                           ) : (
                             <div className="mt-1.5 rounded-lg bg-amber-50 border border-amber-200 p-2.5 space-y-1">
                               <div className="flex items-center gap-1.5 text-amber-950 font-bold text-xs">
@@ -1528,7 +1715,7 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
                                     type="button"
                                     onClick={() => {
                                       setSelectedModelCategory(mc);
-                                      setSelectedProduct(null);
+                                      closeProductDetailModal();
                                     }}
                                     className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-amber-50 border border-amber-200 text-[11px] font-semibold text-amber-900 hover:bg-amber-100 cursor-pointer"
                                   >
@@ -1550,98 +1737,121 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
                       </div>
 
                       <div className="mt-5 pt-4 border-t border-slate-200 flex flex-col gap-2.5">
-                        {/* Quantity Selector */}
-                        <div className="flex flex-wrap items-center justify-between gap-2 bg-slate-50 rounded-xl border border-slate-200 px-3 py-2">
-                          <div className="flex items-center gap-2">
-                            <span className="text-[11px] font-bold text-slate-700">Cantidad:</span>
-                            <div className="flex items-center border border-slate-300 rounded-lg bg-white overflow-hidden">
+                        {(!productTracksInventory(selectedProduct) || selectedProduct.stock > 0) && (
+                          <>
+                            {/* Quantity Selector */}
+                            <div className="flex flex-wrap items-center justify-between gap-2 bg-slate-50 rounded-xl border border-slate-200 px-3 py-2">
+                              <div className="flex items-center gap-2">
+                                <span className="text-[11px] font-bold text-slate-700">Cantidad:</span>
+                                <div className="flex items-center border border-slate-300 rounded-lg bg-white overflow-hidden">
+                                  <button
+                                    type="button"
+                                    onClick={() => setModalOrderQty((q) => Math.max(1, q - 1))}
+                                    className="p-1.5 text-slate-600 hover:bg-slate-100 cursor-pointer"
+                                    aria-label="Disminuir cantidad"
+                                  >
+                                    <Minus className="w-3.5 h-3.5" />
+                                  </button>
+                                  <input
+                                    type="number"
+                                    min={1}
+                                    max={maxAllowedStock}
+                                    value={safeQty}
+                                    onChange={(e) => {
+                                      const val = parseInt(e.target.value, 10);
+                                      if (!Number.isNaN(val)) {
+                                        setModalOrderQty(Math.min(maxAllowedStock, Math.max(1, val)));
+                                      }
+                                    }}
+                                    className="w-12 text-center text-xs font-mono font-bold text-slate-900 focus:outline-hidden tabular-nums"
+                                  />
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setModalOrderQty((q) => Math.min(maxAllowedStock, q + 1))
+                                    }
+                                    disabled={safeQty >= maxAllowedStock}
+                                    className="p-1.5 text-slate-600 hover:bg-slate-100 disabled:opacity-30 cursor-pointer"
+                                    aria-label="Aumentar cantidad"
+                                  >
+                                    <Plus className="w-3.5 h-3.5" />
+                                  </button>
+                                </div>
+                              </div>
+
+                              <div className="text-right font-mono tabular-nums">
+                                <span className="text-xs font-extrabold text-slate-950 block">
+                                  Total: {formatUSD(effectiveModalLineUSD)}
+                                </span>
+                                <span className="text-[10px] font-semibold text-emerald-700 block">
+                                  {formatBs(effectiveModalLineUSD * settings.bcvRate)}
+                                </span>
+                              </div>
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-2">
                               <button
-                                type="button"
-                                onClick={() => setModalOrderQty((q) => Math.max(1, q - 1))}
-                                className="p-1.5 text-slate-600 hover:bg-slate-100 cursor-pointer"
-                                aria-label="Disminuir cantidad"
-                              >
-                                <Minus className="w-3.5 h-3.5" />
-                              </button>
-                              <input
-                                type="number"
-                                min={1}
-                                max={maxAllowedStock}
-                                value={safeQty}
-                                onChange={(e) => {
-                                  const val = parseInt(e.target.value, 10);
-                                  if (!Number.isNaN(val)) {
-                                    setModalOrderQty(Math.min(maxAllowedStock, Math.max(1, val)));
-                                  }
+                                onClick={() => {
+                                  handleBuyNow(selectedProduct, safeQty);
+                                  closeProductDetailModal();
                                 }}
-                                className="w-12 text-center text-xs font-mono font-bold text-slate-900 focus:outline-hidden tabular-nums"
-                              />
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  setModalOrderQty((q) => Math.min(maxAllowedStock, q + 1))
-                                }
-                                disabled={safeQty >= maxAllowedStock}
-                                className="p-1.5 text-slate-600 hover:bg-slate-100 disabled:opacity-30 cursor-pointer"
-                                aria-label="Aumentar cantidad"
+                                className="py-2.5 px-3 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs rounded-xl transition-all flex items-center justify-center gap-1.5 cursor-pointer shadow-xs font-display"
+                                title="Comprar y gestionar el pago directamente"
                               >
-                                <Plus className="w-3.5 h-3.5" />
+                                <CreditCard className="w-4 h-4 text-slate-950" />
+                                <span>Comprar ({safeQty})</span>
+                              </button>
+
+                              <button
+                                onClick={() => handleAddToCart(selectedProduct, safeQty)}
+                                className={`py-2.5 px-3 border rounded-xl font-semibold text-xs transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
+                                  recentlyAddedId === selectedProduct.id
+                                    ? 'bg-emerald-50 border-emerald-400 text-emerald-800 font-bold'
+                                    : 'bg-slate-900 hover:bg-slate-800 text-white border-transparent'
+                                }`}
+                              >
+                                {recentlyAddedId === selectedProduct.id ? (
+                                  <>
+                                    <Check className="w-4 h-4 text-emerald-600" />
+                                    <span>¡Agregado!</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <ShoppingCart className="w-4 h-4 text-slate-200" />
+                                    <span>Al Carrito ({safeQty})</span>
+                                  </>
+                                )}
                               </button>
                             </div>
-                          </div>
-
-                          <div className="text-right font-mono tabular-nums">
-                            <span className="text-xs font-extrabold text-slate-950 block">
-                              Total: {formatUSD(effectiveModalLineUSD)}
-                            </span>
-                            <span className="text-[10px] font-semibold text-emerald-700 block">
-                              {formatBs(effectiveModalLineUSD * settings.bcvRate)}
-                            </span>
-                          </div>
-                        </div>
+                          </>
+                        )}
 
                         <div className="grid grid-cols-2 gap-2">
                           <button
-                            onClick={() => {
-                              handleBuyNow(selectedProduct, safeQty);
-                              setSelectedProduct(null);
-                            }}
-                            className="py-2.5 px-3 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold text-xs rounded-xl transition-all flex items-center justify-center gap-1.5 cursor-pointer shadow-xs font-display"
-                            title="Comprar y gestionar el pago directamente"
+                            type="button"
+                            onClick={() => handleConsultWhatsApp(selectedProduct)}
+                            className="py-2 px-2.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 font-semibold text-xs rounded-xl transition-colors flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
                           >
-                            <CreditCard className="w-4 h-4 text-slate-950" />
-                            <span>Comprar ({safeQty})</span>
+                            <Phone className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                            <span>Consultar</span>
                           </button>
 
-                          <button
-                            onClick={() => handleAddToCart(selectedProduct, safeQty)}
-                            className={`py-2.5 px-3 border rounded-xl font-semibold text-xs transition-all flex items-center justify-center gap-1.5 cursor-pointer ${
-                              recentlyAddedId === selectedProduct.id
-                                ? 'bg-emerald-50 border-emerald-400 text-emerald-800 font-bold'
-                                : 'bg-slate-900 hover:bg-slate-800 text-white border-transparent'
-                            }`}
-                          >
-                            {recentlyAddedId === selectedProduct.id ? (
-                              <>
-                                <Check className="w-4 h-4 text-emerald-600" />
-                                <span>¡Agregado!</span>
-                              </>
-                            ) : (
-                              <>
-                                <ShoppingCart className="w-4 h-4 text-slate-200" />
-                                <span>Al Carrito ({safeQty})</span>
-                              </>
+                          <a
+                            href={buildProductWhatsAppShareUrl(
+                              selectedProduct,
+                              settings.bcvRate,
+                              settings.commercialName || storeName,
+                              publicStoreUrl
                             )}
-                          </button>
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="py-2 px-2.5 bg-slate-50 hover:bg-slate-100 text-slate-800 border border-slate-200 font-semibold text-xs rounded-xl transition-colors flex items-center justify-center gap-1.5 cursor-pointer whitespace-nowrap"
+                            title="Compartir enlace de este repuesto por WhatsApp"
+                          >
+                            <Share2 className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                            <span>Enviar Link</span>
+                          </a>
                         </div>
-
-                        <button
-                          onClick={() => handleConsultWhatsApp(selectedProduct)}
-                          className="w-full py-2 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 font-semibold text-xs rounded-xl transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
-                        >
-                          <Phone className="w-3.5 h-3.5 text-emerald-600" />
-                          <span>Consultar disponibilidad por WhatsApp</span>
-                        </button>
                       </div>
                     </div>
                   );
@@ -1678,6 +1888,29 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
           <button
             onClick={() => setCartToast(null)}
             className="text-slate-400 hover:text-white p-1 cursor-pointer"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
+
+      {/* Floating Toast Notification for Copied Product Link */}
+      {linkCopiedToast && !cartToast && (
+        <div className="fixed bottom-6 right-6 z-50 bg-slate-900 text-white px-4 py-3 rounded-2xl shadow-2xl flex items-center gap-3 border border-slate-700 text-xs animate-in fade-in slide-in-from-bottom-2">
+          <div className="w-7 h-7 rounded-full bg-amber-500/20 text-amber-400 flex items-center justify-center shrink-0">
+            <Link2 className="w-4 h-4" />
+          </div>
+          <div className="min-w-0 pr-1">
+            <p className="font-bold text-white">¡Link del repuesto copiado!</p>
+            <p className="text-[11px] text-slate-300 truncate max-w-xs">
+              {linkCopiedToast.productName}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setLinkCopiedToast(null)}
+            className="text-slate-400 hover:text-white p-1 cursor-pointer"
+            aria-label="Cerrar aviso"
           >
             <X className="w-3.5 h-3.5" />
           </button>

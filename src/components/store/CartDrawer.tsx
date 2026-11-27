@@ -8,6 +8,7 @@ import {
   productTracksInventory,
   DEFAULT_PRODUCTION_TIME_LABEL,
   DEFAULT_PRODUCTION_TIME_NOTE,
+  getProductUnitInfo,
 } from '../../types';
 import { VENEZUELA_LOCATIONS } from '../../data/venezuela';
 import {
@@ -156,11 +157,13 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({ isOpen, onClose, initial
     const orderItems = cartWholesaleSummary.items.map((line) => {
       const madeToOrder = !productTracksInventory(line.product);
       const hasDiscount = line.discountPct > 0;
+      const unitInfo = getProductUnitInfo(line.product);
       return {
         productId: line.product.id,
         sku: line.product.sku,
         name: line.product.name,
         category: line.product.category,
+        ...(line.product.unitOfMeasure ? { unitOfMeasure: line.product.unitOfMeasure } : {}),
         quantity: line.quantity,
         unitPrice: line.effectiveUnitPriceUSD,
         total: line.finalSubtotalUSD,
@@ -169,7 +172,7 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({ isOpen, onClose, initial
               originalUnitPrice: line.regularUnitPriceUSD,
               wholesaleDiscountPct: line.discountPct,
               wholesaleRuleLabel: line.appliedTierMinQty
-                ? `Mayor ${line.appliedTierMinQty}+ uds`
+                ? `Mayor ${line.appliedTierMinQty}+ ${unitInfo.pluralShort}`
                 : 'Precio al mayor',
             }
           : {}),
@@ -301,6 +304,7 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({ isOpen, onClose, initial
                     const item = line;
                     const itemTotalBs = line.finalSubtotalUSD * settings.bcvRate;
                     const hasWholesale = line.discountPct > 0;
+                    const unitInfo = getProductUnitInfo(item.product);
 
                     return (
                       <div
@@ -335,9 +339,9 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({ isOpen, onClose, initial
                               </button>
                             </div>
                             <span className="text-[10px] text-slate-500 font-mono">
-                              {item.product.sku} ·{' '}
+                              {item.product.sku} · {formatUSD(line.effectiveUnitPriceUSD)} {unitInfo.priceSuffix} ·{' '}
                               {productTracksInventory(item.product)
-                                ? `Stock: ${item.product.stock}`
+                                ? `Stock: ${item.product.stock} ${unitInfo.pluralShort}`
                                 : `Bajo pedido (${item.product.productionTimeLabel || DEFAULT_PRODUCTION_TIME_LABEL})`}
                             </span>
 
@@ -347,14 +351,14 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({ isOpen, onClose, initial
                                   -{line.discountPct}% al mayor
                                 </span>
                                 <span className="font-mono text-slate-600 tabular-nums">
-                                  {formatUSD(line.effectiveUnitPriceUSD)} c/u
+                                  {formatUSD(line.effectiveUnitPriceUSD)} {unitInfo.priceSuffix}
                                 </span>
                               </div>
                             )}
 
                             {line.nextTierHint && (
                               <p className="mt-1 text-[10px] text-amber-800 bg-amber-50 border border-amber-200/80 rounded px-1.5 py-0.5 leading-snug">
-                                Agrega <strong className="font-mono">{line.nextTierHint.missingQty}</strong> más de este repuesto para{' '}
+                                Agrega <strong className="font-mono">{line.nextTierHint.missingQty} {unitInfo.pluralShort}</strong> más de este artículo para{' '}
                                 <strong className="font-mono">-{line.nextTierHint.nextDiscountPct}%</strong> al mayor
                               </p>
                             )}
@@ -370,6 +374,11 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({ isOpen, onClose, initial
                               </button>
                               <span className="px-2.5 text-xs font-mono font-semibold text-slate-900 tabular-nums">
                                 {item.quantity}
+                                {!unitInfo.isDefaultUnit && (
+                                  <span className="text-[10px] text-slate-500 ml-0.5">
+                                    {unitInfo.pluralShort}
+                                  </span>
+                                )}
                               </span>
                               <button
                                 onClick={() => updateCartQuantity(item.product.id, item.quantity + 1)}

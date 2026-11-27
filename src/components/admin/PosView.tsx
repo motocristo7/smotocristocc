@@ -4,6 +4,7 @@ import {
   Product,
   productTracksInventory,
   DEFAULT_PRODUCTION_TIME_LABEL,
+  getProductUnitInfo,
   PaymentMethod,
   PagoMovilAccountOption,
   SaleItem,
@@ -2028,9 +2029,14 @@ export const PosView: React.FC = () => {
 
                   <div className="mt-3 pt-2 border-t border-slate-100 flex items-center justify-between">
                     <div>
-                      <span className="text-sm font-bold font-mono text-slate-950 tabular-nums block">
-                        {formatUSD(product.salePrice)}
-                      </span>
+                      <div className="flex items-baseline gap-1 flex-wrap">
+                        <span className="text-sm font-bold font-mono text-slate-950 tabular-nums">
+                          {formatUSD(product.salePrice)}
+                        </span>
+                        <span className="text-[10px] font-semibold text-slate-500">
+                          {getProductUnitInfo(product).priceSuffix}
+                        </span>
+                      </div>
                       <span className="text-[10px] font-semibold text-emerald-700 font-mono tabular-nums block">
                         {formatBs(priceBs)}
                       </span>

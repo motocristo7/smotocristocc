@@ -7,6 +7,9 @@ import {
   productTracksInventory,
   DEFAULT_PRODUCTION_TIME_LABEL,
   DEFAULT_PRODUCTION_TIME_NOTE,
+  PRODUCT_UNIT_OF_MEASURE_OPTIONS,
+  getProductUnitInfo,
+  isPresetUnitOfMeasure,
 } from '../../types';
 import { formatUSD, formatBs } from '../../utils/whatsapp';
 import {
@@ -48,6 +51,7 @@ import {
   ChevronRight,
   Clock,
   Percent,
+  Ruler,
 } from 'lucide-react';
 import {
   normalizeImageUrl,
@@ -147,6 +151,8 @@ export const InventoryView: React.FC = () => {
     salePrice: 0, // Precio de Venta en Dólares a Tasa BCV (visible en Tienda Online y Facturas)
     salePriceRefUSD: 0, // SOLO ADMIN: Precio de Venta de Referencia en Divisas
     targetProfitPct: 30,
+    unitOfMeasure: 'UNIDAD',
+    customUnitOfMeasure: '',
     stock: 10,
     minStock: 2,
     tracksInventory: true,
@@ -382,6 +388,8 @@ export const InventoryView: React.FC = () => {
     setSyncBsWithGap(false);
     setTargetProfitInput(String(product.targetProfitPct ?? 30));
     const existingImages = getProductImages(product, false);
+    const rawUnit = (product.unitOfMeasure || '').trim();
+    const isPresetUnit = isPresetUnitOfMeasure(rawUnit);
     setFormData({
       sku: product.sku,
       barcode: product.barcode || '',
@@ -392,6 +400,8 @@ export const InventoryView: React.FC = () => {
       salePrice: product.salePrice,
       salePriceRefUSD: pricing.salePriceRefUSD,
       targetProfitPct: product.targetProfitPct ?? 30,
+      unitOfMeasure: isPresetUnit ? (rawUnit.toUpperCase() || 'UNIDAD') : 'CUSTOM',
+      customUnitOfMeasure: isPresetUnit ? '' : rawUnit,
       stock: product.stock,
       minStock: product.minStock,
       tracksInventory: productTracksInventory(product),
@@ -821,6 +831,11 @@ export const InventoryView: React.FC = () => {
         ? round2(finalSalePriceBsBcv / usdtRate)
         : round2(finalSalePriceUsdBcv);
 
+    const resolvedUnitOfMeasure =
+      formData.unitOfMeasure === 'CUSTOM'
+        ? formData.customUnitOfMeasure.trim() || 'UNIDAD'
+        : formData.unitOfMeasure || 'UNIDAD';
+
     const payloadToSave: Omit<Product, 'id'> = {
       sku: trimmedSku,
       barcode: sanitizedBarcode,
@@ -835,6 +850,7 @@ export const InventoryView: React.FC = () => {
       salePriceRefUSD: finalSalePriceRefUSD,
       salePriceBsBcv: finalSalePriceBsBcv,
       targetProfitPct: parseFloat(targetProfitInput) || formData.targetProfitPct,
+      unitOfMeasure: resolvedUnitOfMeasure,
       tracksInventory: formData.tracksInventory,
       productionTimeLabel: !formData.tracksInventory
         ? (formData.productionTimeLabel || '').trim() || DEFAULT_PRODUCTION_TIME_LABEL
@@ -1369,6 +1385,7 @@ export const InventoryView: React.FC = () => {
           <div className="divide-y divide-slate-200">
             {paginatedProducts.map((product) => {
               const tracksInv = productTracksInventory(product);
+              const unitInfo = getProductUnitInfo(product);
               const isOutOfStock = tracksInv && product.stock === 0;
               const isLowStock = tracksInv && product.stock > 0 && product.stock <= product.minStock;
               const pricing = calculateProductPricing(product, rate, usdtRate);
@@ -1462,6 +1479,11 @@ export const InventoryView: React.FC = () => {
                           </span>
                           <span aria-hidden="true" className="text-slate-300">·</span>
                           <span className="font-semibold text-slate-700">{product.category}</span>
+                          <span aria-hidden="true" className="text-slate-300">·</span>
+                          <span className="font-semibold text-slate-700 inline-flex items-center gap-0.5">
+                            <Ruler className="w-3 h-3 text-slate-400 shrink-0" />
+                            <span>{unitInfo.label}</span>
+                          </span>
                           {product.brand && (
                             <>
                               <span aria-hidden="true" className="text-slate-300">·</span>
@@ -1565,6 +1587,9 @@ export const InventoryView: React.FC = () => {
                           <span className="font-mono font-black text-emerald-800 text-sm leading-none tabular-nums">
                             {formatUSD(pricing.salePriceUsdBcv)}
                           </span>
+                          <span className="text-[10px] font-bold text-slate-600">
+                            {unitInfo.priceSuffix}
+                          </span>
                           <span className="text-[9px] font-extrabold uppercase text-emerald-800">
                             BCV
                           </span>
@@ -1622,7 +1647,7 @@ export const InventoryView: React.FC = () => {
                               }`}
                             >
                               {pricing.realProfitAmountUSD >= 0 ? '+' : ''}
-                              {formatUSD(pricing.realProfitAmountUSD)}/u
+                              {formatUSD(pricing.realProfitAmountUSD)}/{unitInfo.shortLabel}
                             </span>
                           </div>
                         ) : (
@@ -1646,15 +1671,21 @@ export const InventoryView: React.FC = () => {
                               -
                             </button>
                             <span
-                              className={`px-2.5 py-1 font-mono font-bold text-xs tabular-nums ${
+                              className={`px-2 py-1 font-mono font-bold text-xs tabular-nums ${
                                 isOutOfStock
                                   ? 'text-rose-600 bg-rose-50'
                                   : isLowStock
                                   ? 'text-amber-700 bg-amber-50'
                                   : 'text-slate-900'
                               }`}
+                              title={`Existencia en ${unitInfo.label.toLowerCase()}`}
                             >
                               {product.stock}
+                              {!unitInfo.isDefaultUnit && (
+                                <span className="text-[10px] font-semibold text-slate-500 ml-0.5">
+                                  {unitInfo.pluralShort}
+                                </span>
+                              )}
                             </span>
                             <button
                               type="button"
@@ -2192,13 +2223,137 @@ export const InventoryView: React.FC = () => {
                 </div>
               </div>
 
+              {/* UNIDAD DE MEDIDA DE VENTA */}
+              {(() => {
+                const activeUnitInfo = getProductUnitInfo(
+                  formData.unitOfMeasure === 'CUSTOM'
+                    ? formData.customUnitOfMeasure || 'UNIDAD'
+                    : formData.unitOfMeasure
+                );
+                return (
+                  <div className="rounded-xl border border-slate-200 bg-white p-4 space-y-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        <Ruler className="w-4 h-4 text-amber-600 shrink-0" />
+                        <div>
+                          <label className="block font-bold text-slate-900 text-xs">
+                            Unidad de Medida de Venta *
+                          </label>
+                          <p className="text-[11px] text-slate-500">
+                            Indica cómo se vende este artículo (por unidad, metros, centímetros, gramos, litros, etc.) para mostrarlo claramente junto al precio en la tienda.
+                          </p>
+                        </div>
+                      </div>
+                      <span className="text-[11px] font-mono font-semibold text-slate-700">
+                        Vista tienda: {formatUSD(formPricing.analysis.salePriceUsdBcv)} {activeUnitInfo.priceSuffix}
+                      </span>
+                    </div>
+
+                    {/* Accesos rápidos de unidades más usadas */}
+                    <div className="flex flex-wrap gap-1.5">
+                      {PRODUCT_UNIT_OF_MEASURE_OPTIONS.filter((opt) => opt.quickPreset).map((opt) => {
+                        const isSelectedUnit = formData.unitOfMeasure === opt.id;
+                        return (
+                          <button
+                            key={opt.id}
+                            type="button"
+                            onClick={() =>
+                              setFormData((prev) => ({
+                                ...prev,
+                                unitOfMeasure: opt.id,
+                                customUnitOfMeasure: '',
+                              }))
+                            }
+                            className={`px-2.5 py-1.5 rounded-lg text-[11px] font-semibold border transition-colors cursor-pointer whitespace-nowrap ${
+                              isSelectedUnit
+                                ? 'bg-slate-900 text-white border-slate-900'
+                                : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
+                            }`}
+                          >
+                            {opt.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    {/* Selector completo + opción personalizada */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-[11px] font-semibold text-slate-600 mb-1">
+                          Todas las unidades disponibles
+                        </label>
+                        <select
+                          value={formData.unitOfMeasure}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            setFormData((prev) => ({
+                              ...prev,
+                              unitOfMeasure: val,
+                              ...(val !== 'CUSTOM' ? { customUnitOfMeasure: '' } : {}),
+                            }));
+                          }}
+                          className="w-full p-2.5 rounded-lg border border-slate-300 bg-slate-50 focus:bg-white text-xs font-semibold text-slate-900 cursor-pointer"
+                        >
+                          {PRODUCT_UNIT_OF_MEASURE_OPTIONS.map((opt) => (
+                            <option key={opt.id} value={opt.id}>
+                              {opt.label} ({opt.priceSuffix})
+                            </option>
+                          ))}
+                          <option value="CUSTOM">Otra unidad personalizada...</option>
+                        </select>
+                      </div>
+
+                      {formData.unitOfMeasure === 'CUSTOM' ? (
+                        <div>
+                          <label className="block text-[11px] font-semibold text-slate-600 mb-1">
+                            Escribe la unidad personalizada *
+                          </label>
+                          <input
+                            type="text"
+                            maxLength={32}
+                            required
+                            value={formData.customUnitOfMeasure}
+                            onChange={(e) =>
+                              setFormData((prev) => ({
+                                ...prev,
+                                customUnitOfMeasure: e.target.value,
+                              }))
+                            }
+                            placeholder="Ej: 50 cm, 100 g, Docena, Cuarto de galón"
+                            className="w-full p-2.5 rounded-lg border border-amber-400 bg-white text-xs font-semibold text-slate-900 focus:outline-hidden focus:ring-2 focus:ring-amber-400"
+                          />
+                        </div>
+                      ) : (
+                        <div className="flex items-end">
+                          <p className="text-[11px] text-slate-600 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2.5 w-full">
+                            El cliente verá en la tienda:{' '}
+                            <strong className="text-slate-900">{activeUnitInfo.customerLabel}</strong>{' '}
+                            <span className="font-mono text-emerald-700 font-bold">
+                              ({formatUSD(formPricing.analysis.salePriceUsdBcv)} {activeUnitInfo.priceSuffix})
+                            </span>
+                          </p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })()}
+
               {/* BLOQUE FINANCIERO SIMPLIFICADO: 1 COSTO EN DIVISAS + 2 PRECIOS DE VENTA ($ BCV TIENDA Y REF. DIVISAS ADMIN) */}
               <div className="rounded-xl border border-slate-200 bg-slate-50/80 p-4 space-y-4">
                 <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-slate-200">
                   <div className="flex items-center gap-2">
                     <Calculator className="w-4 h-4 text-amber-600" />
                     <span className="font-bold text-slate-900 text-xs">
-                      Costo en Divisas y Precios de Venta
+                      Costo en Divisas y Precios de Venta (
+                      {
+                        getProductUnitInfo(
+                          formData.unitOfMeasure === 'CUSTOM'
+                            ? formData.customUnitOfMeasure || 'UNIDAD'
+                            : formData.unitOfMeasure
+                        ).customerLabel
+                      }
+                      )
                     </span>
                   </div>
                   <span className="font-mono text-[10px] font-bold bg-slate-900 text-amber-300 px-2.5 py-1 rounded">
@@ -2213,7 +2368,15 @@ export const InventoryView: React.FC = () => {
                   {/* Costo Único en Divisas */}
                   <div className="bg-white border border-slate-300 rounded-xl p-3 flex flex-col justify-between">
                     <label className="flex items-center justify-between font-bold text-slate-700 mb-1.5">
-                      <span>Costo en Divisas ($) *</span>
+                      <span>
+                        Costo Divisas ($ {
+                          getProductUnitInfo(
+                            formData.unitOfMeasure === 'CUSTOM'
+                              ? formData.customUnitOfMeasure || 'UNIDAD'
+                              : formData.unitOfMeasure
+                          ).priceSuffix
+                        }) *
+                      </span>
                       <span className="text-[9px] uppercase bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded font-bold">
                         Único
                       </span>
@@ -2240,7 +2403,15 @@ export const InventoryView: React.FC = () => {
                   {/* Precio de Venta 1 (PRINCIPAL): Dólar a Tasa BCV (Tienda Online) */}
                   <div className="bg-emerald-50 border-2 border-emerald-400 rounded-xl p-3 shadow-2xs flex flex-col justify-between">
                     <label className="flex items-center justify-between font-extrabold text-emerald-950 mb-1.5">
-                      <span>Precio Venta BCV ($) *</span>
+                      <span>
+                        Venta BCV ($ {
+                          getProductUnitInfo(
+                            formData.unitOfMeasure === 'CUSTOM'
+                              ? formData.customUnitOfMeasure || 'UNIDAD'
+                              : formData.unitOfMeasure
+                          ).priceSuffix
+                        }) *
+                      </span>
                       <span className="text-[9px] uppercase bg-emerald-600 text-white px-1.5 py-0.5 rounded font-extrabold">
                         Tienda Online
                       </span>
@@ -2473,10 +2644,19 @@ export const InventoryView: React.FC = () => {
                 {formData.tracksInventory ? (
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3.5 pt-1">
                     <div>
-                      <label className="block font-semibold text-slate-700 mb-1">Stock Actual *</label>
+                      <label className="block font-semibold text-slate-700 mb-1">
+                        Stock Actual ({
+                          getProductUnitInfo(
+                            formData.unitOfMeasure === 'CUSTOM'
+                              ? formData.customUnitOfMeasure || 'UNIDAD'
+                              : formData.unitOfMeasure
+                          ).pluralShort
+                        }) *
+                      </label>
                       <input
                         type="number"
                         min={0}
+                        step="any"
                         required
                         value={formData.stock}
                         onChange={(e) => setFormData({ ...formData, stock: Number(e.target.value) })}
@@ -2485,10 +2665,19 @@ export const InventoryView: React.FC = () => {
                     </div>
 
                     <div>
-                      <label className="block font-semibold text-slate-700 mb-1">Stock Mínimo</label>
+                      <label className="block font-semibold text-slate-700 mb-1">
+                        Stock Mínimo ({
+                          getProductUnitInfo(
+                            formData.unitOfMeasure === 'CUSTOM'
+                              ? formData.customUnitOfMeasure || 'UNIDAD'
+                              : formData.unitOfMeasure
+                          ).pluralShort
+                        })
+                      </label>
                       <input
                         type="number"
                         min={0}
+                        step="any"
                         value={formData.minStock}
                         onChange={(e) => setFormData({ ...formData, minStock: Number(e.target.value) })}
                         className="w-full p-2.5 rounded-lg border border-slate-200 bg-slate-50 focus:bg-white font-mono"
@@ -3114,21 +3303,34 @@ export const InventoryView: React.FC = () => {
               {/* Pinned Bottom Action Bar (siempre visible sin necesidad de bajar) */}
               <div className="shrink-0 px-4 sm:px-6 py-3.5 bg-white border-t border-slate-200 flex flex-wrap items-center justify-between gap-3">
                 <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600 tabular-nums">
-                  <span className="font-semibold text-slate-900">
-                    Venta BCV: {formatUSD(formPricing.analysis.salePriceUsdBcv)}
-                  </span>
-                  <span aria-hidden="true" className="text-slate-300">·</span>
-                  <span className="font-mono text-emerald-700 font-semibold">
-                    {formatBs(formPricing.saleBsBcv)}
-                  </span>
-                  <span aria-hidden="true" className="text-slate-300">·</span>
-                  {formData.tracksInventory ? (
-                    <span>Stock: <strong>{formData.stock}</strong></span>
-                  ) : (
-                    <span className="text-indigo-800 font-semibold">
-                      Sin inventario · Fabricación: {formData.productionTimeLabel || DEFAULT_PRODUCTION_TIME_LABEL}
-                    </span>
-                  )}
+                  {(() => {
+                    const summaryUnit = getProductUnitInfo(
+                      formData.unitOfMeasure === 'CUSTOM'
+                        ? formData.customUnitOfMeasure || 'UNIDAD'
+                        : formData.unitOfMeasure
+                    );
+                    return (
+                      <>
+                        <span className="font-semibold text-slate-900">
+                          Venta BCV: {formatUSD(formPricing.analysis.salePriceUsdBcv)} {summaryUnit.priceSuffix}
+                        </span>
+                        <span aria-hidden="true" className="text-slate-300">·</span>
+                        <span className="font-mono text-emerald-700 font-semibold">
+                          {formatBs(formPricing.saleBsBcv)}
+                        </span>
+                        <span aria-hidden="true" className="text-slate-300">·</span>
+                        {formData.tracksInventory ? (
+                          <span>
+                            Stock: <strong>{formData.stock} {summaryUnit.pluralShort}</strong>
+                          </span>
+                        ) : (
+                          <span className="text-indigo-800 font-semibold">
+                            Sin inventario · Fabricación: {formData.productionTimeLabel || DEFAULT_PRODUCTION_TIME_LABEL}
+                          </span>
+                        )}
+                      </>
+                    );
+                  })()}
                   <span aria-hidden="true" className="text-slate-300">·</span>
                   <span>
                     Fotos:{' '}

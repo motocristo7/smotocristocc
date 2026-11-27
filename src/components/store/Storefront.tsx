@@ -7,6 +7,7 @@ import {
   productTracksInventory,
   DEFAULT_PRODUCTION_TIME_LABEL,
   DEFAULT_PRODUCTION_TIME_NOTE,
+  getProductUnitInfo,
 } from '../../types';
 import { formatUSD, formatBs, sanitizePhone } from '../../utils/whatsapp';
 import {
@@ -365,9 +366,10 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
   };
 
   const handleConsultWhatsApp = (product: Product) => {
+    const unitInfo = getProductUnitInfo(product);
     const bsPrice = formatBs(product.salePrice * settings.bcvRate);
     const productLink = buildProductShareUrl(product, publicStoreUrl);
-    const text = `Hola *${settings.commercialName}*, estoy interesado en el repuesto *${product.name}* (Ref: ${product.sku}) por valor de ${formatUSD(product.salePrice)} (${bsPrice} a tasa BCV).\nLink del repuesto: ${productLink}\n¿Tienen disponibilidad inmediata para mi moto?`;
+    const text = `Hola *${settings.commercialName}*, estoy interesado en el repuesto *${product.name}* (Ref: ${product.sku}) por valor de ${formatUSD(product.salePrice)} ${unitInfo.priceSuffix} (${bsPrice} ${unitInfo.priceSuffix} a tasa BCV).\nLink del repuesto: ${productLink}\n¿Tienen disponibilidad inmediata para mi moto?`;
     const url = `https://api.whatsapp.com/send?phone=${sanitizePhone(settings.whatsapp)}&text=${encodeURIComponent(text)}`;
     window.open(url, '_blank', 'noopener,noreferrer');
   };
@@ -926,6 +928,7 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-2.5 sm:gap-3.5">
             {filteredProducts.map((product) => {
               const priceBs = product.salePrice * settings.bcvRate;
+              const unitInfo = getProductUnitInfo(product);
               const productImages = getProductImages(product, true);
               const rawIdx = cardImageIndices[product.id] ?? 0;
               const activeIdx = rawIdx >= 0 && rawIdx < productImages.length ? rawIdx : 0;
@@ -1020,7 +1023,9 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
                       </>
                     )}
                     <span className="absolute top-2 right-2 bg-slate-950/80 backdrop-blur-xs text-white text-[10px] font-semibold px-1.5 py-0.5 rounded tabular-nums">
-                      {productTracksInventory(product) ? `${product.stock} disp.` : 'Bajo pedido'}
+                      {productTracksInventory(product)
+                        ? `${product.stock} ${unitInfo.isDefaultUnit ? '' : `${unitInfo.pluralShort} `}disp.`
+                        : 'Bajo pedido'}
                     </span>
                     <span className="absolute bottom-2 right-2 bg-slate-950/75 backdrop-blur-xs text-white text-[10px] font-semibold px-1.5 py-0.5 rounded inline-flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none">
                       <Eye className="w-2.5 h-2.5 text-amber-400" />
@@ -1055,9 +1060,12 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
                         <div className="min-w-0">
                           {shoppingMode === 'wholesale' && wholesaleDisplay.hasWholesale && firstWholesaleTier ? (
                             <>
-                              <div className="flex items-baseline gap-1.5">
+                              <div className="flex items-baseline gap-1 flex-wrap">
                                 <span className="text-sm sm:text-base font-extrabold text-emerald-800 font-mono tabular-nums leading-none">
                                   {formatUSD(firstWholesaleTier.unitPriceUSD)}
+                                </span>
+                                <span className="text-[10px] sm:text-[11px] font-semibold text-slate-600 leading-none">
+                                  {unitInfo.priceSuffix}
                                 </span>
                                 <span className="text-[10px] font-mono text-slate-400 line-through tabular-nums leading-none">
                                   {formatUSD(product.salePrice)}
@@ -1066,18 +1074,25 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
                               <span className="text-[10px] sm:text-[11px] font-bold text-emerald-700 font-mono tabular-nums block leading-tight mt-0.5 truncate">
                                 {formatBs(firstWholesaleTier.unitPriceUSD * settings.bcvRate)}{' '}
                                 <span className="font-normal text-slate-500 text-[9px]">
-                                  ({firstWholesaleTier.minQty}+ u)
+                                  ({firstWholesaleTier.minQty}+ {unitInfo.pluralShort})
                                 </span>
                               </span>
                             </>
                           ) : (
                             <>
-                              <span className="text-sm sm:text-base font-extrabold text-slate-950 font-mono tabular-nums block leading-none">
-                                {formatUSD(product.salePrice)}
-                              </span>
+                              <div className="flex items-baseline gap-1 flex-wrap">
+                                <span className="text-sm sm:text-base font-extrabold text-slate-950 font-mono tabular-nums leading-none">
+                                  {formatUSD(product.salePrice)}
+                                </span>
+                                <span className="text-[10px] sm:text-[11px] font-semibold text-slate-600 leading-none">
+                                  {unitInfo.priceSuffix}
+                                </span>
+                              </div>
                               <span className="text-[10px] sm:text-[11px] font-bold text-emerald-700 font-mono tabular-nums block leading-tight mt-0.5 truncate">
                                 {formatBs(priceBs)}{' '}
-                                <span className="font-normal text-slate-400 text-[9px]">BCV</span>
+                                <span className="font-normal text-slate-500 text-[9px]">
+                                  {unitInfo.priceSuffix} · BCV
+                                </span>
                               </span>
                             </>
                           )}
@@ -1157,13 +1172,13 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
                                   title={
                                     isWholesaleMode
                                       ? hasStockForTier
-                                        ? `Agregar ${tier.minQty} uds al carrito a ${formatUSD(tier.unitPriceUSD)} c/u (-${tier.discountPct}%)`
-                                        : `Stock actual (${product.stock}) menor a ${tier.minQty} uds`
-                                      : `Ver ${tier.minQty}+ uds a ${formatUSD(tier.unitPriceUSD)} c/u (-${tier.discountPct}%)`
+                                        ? `Agregar ${tier.minQty} ${unitInfo.pluralShort} al carrito a ${formatUSD(tier.unitPriceUSD)} ${unitInfo.priceSuffix} (-${tier.discountPct}%)`
+                                        : `Stock actual (${product.stock}) menor a ${tier.minQty} ${unitInfo.pluralShort}`
+                                      : `Ver ${tier.minQty}+ ${unitInfo.pluralShort} a ${formatUSD(tier.unitPriceUSD)} ${unitInfo.priceSuffix} (-${tier.discountPct}%)`
                                   }
                                 >
                                   <span className="font-semibold tabular-nums whitespace-nowrap">
-                                    {isWholesaleMode ? `+${tier.minQty}` : `${tier.minQty}+`} uds
+                                    {isWholesaleMode ? `+${tier.minQty}` : `${tier.minQty}+`} {unitInfo.pluralShort}
                                   </span>
                                   <span
                                     className={`font-mono font-extrabold tabular-nums whitespace-nowrap ${
@@ -1557,6 +1572,7 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
 
                 {(() => {
                   const modalWholesale = getProductWholesaleDisplayTiers(selectedProduct);
+                  const selectedUnitInfo = getProductUnitInfo(selectedProduct);
                   const maxAllowedStock = productTracksInventory(selectedProduct)
                     ? Math.max(1, selectedProduct.stock)
                     : 9999;
@@ -1578,22 +1594,27 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
                         <div>
                           <span className="text-xs font-semibold text-slate-500 uppercase block">
                             {activeModalTier
-                              ? `Precio al Mayor (-${activeModalTier.discountPct}%)`
-                              : 'Precio Oficial'}
+                              ? `Precio al Mayor (-${activeModalTier.discountPct}%) · ${selectedUnitInfo.customerLabel}`
+                              : `Precio Oficial · ${selectedUnitInfo.customerLabel}`}
                           </span>
                           <div className="flex items-baseline gap-2 flex-wrap">
                             <span className="text-2xl font-extrabold text-slate-950 font-mono tabular-nums">
                               {formatUSD(effectiveModalUnitUSD)}
+                            </span>
+                            <span className="text-sm font-bold text-slate-700">
+                              {selectedUnitInfo.priceSuffix}
                             </span>
                             {activeModalTier && (
                               <span className="text-sm font-mono tabular-nums text-slate-400 line-through">
                                 {formatUSD(selectedProduct.salePrice)}
                               </span>
                             )}
-                            <span className="text-[11px] text-slate-500">c/u</span>
                           </div>
                           <span className="text-sm font-bold text-emerald-700 font-mono tabular-nums">
                             {formatBs(effectiveModalUnitUSD * settings.bcvRate)}{' '}
+                            <span className="text-[11px] font-semibold text-slate-600">
+                              {selectedUnitInfo.priceSuffix}
+                            </span>{' '}
                             <span className="text-[10px] font-normal text-slate-500">
                               (Tasa BCV: {settings.bcvRate.toFixed(2)})
                             </span>
@@ -1608,7 +1629,7 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
                                 <span>Tabla de Precios al Mayor</span>
                               </span>
                               <span className="text-[10px] font-medium text-emerald-800">
-                                Por cantidad de este repuesto
+                                {selectedUnitInfo.customerLabel}
                               </span>
                             </div>
 
@@ -1618,7 +1639,9 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
                                   <tr>
                                     <th className="py-1.5 px-2 text-left font-bold">Cantidad</th>
                                     <th className="py-1.5 px-2 text-right font-bold">Desc.</th>
-                                    <th className="py-1.5 px-2 text-right font-bold">Unit. $</th>
+                                    <th className="py-1.5 px-2 text-right font-bold">
+                                      $ {selectedUnitInfo.priceSuffix}
+                                    </th>
                                     <th className="py-1.5 px-2 text-right font-bold">Bs. BCV</th>
                                   </tr>
                                 </thead>
@@ -1641,12 +1664,12 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
                                         } ${canSelectTier ? 'cursor-pointer' : 'opacity-60'}`}
                                         title={
                                           canSelectTier
-                                            ? `Seleccionar ${tier.minQty} unidades`
+                                            ? `Seleccionar ${tier.minQty} ${selectedUnitInfo.pluralShort}`
                                             : 'Stock disponible menor a esta escala'
                                         }
                                       >
                                         <td className="py-1.5 px-2 font-sans font-semibold">
-                                          {tier.minQty}+ uds
+                                          {tier.minQty}+ {selectedUnitInfo.pluralShort}
                                         </td>
                                         <td className="py-1.5 px-2 text-right font-bold text-emerald-700">
                                           -{tier.discountPct}%
@@ -1676,7 +1699,13 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
                             selectedProduct.stock > 0 ? (
                               <div className="flex items-center gap-1.5 text-emerald-600 font-semibold text-xs mt-0.5">
                                 <CheckCircle2 className="w-4 h-4" />
-                                <span>{selectedProduct.stock} unidades en stock</span>
+                                <span>
+                                  {selectedProduct.stock}{' '}
+                                  {selectedUnitInfo.isDefaultUnit
+                                    ? 'unidades'
+                                    : selectedUnitInfo.pluralShort}{' '}
+                                  en stock
+                                </span>
                               </div>
                             ) : (
                               <div className="mt-1 rounded-lg bg-rose-50 border border-rose-200 px-2.5 py-2 text-xs font-semibold text-rose-800">
@@ -1742,7 +1771,9 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
                             {/* Quantity Selector */}
                             <div className="flex flex-wrap items-center justify-between gap-2 bg-slate-50 rounded-xl border border-slate-200 px-3 py-2">
                               <div className="flex items-center gap-2">
-                                <span className="text-[11px] font-bold text-slate-700">Cantidad:</span>
+                                <span className="text-[11px] font-bold text-slate-700">
+                                  Cantidad ({selectedUnitInfo.pluralShort}):
+                                </span>
                                 <div className="flex items-center border border-slate-300 rounded-lg bg-white overflow-hidden">
                                   <button
                                     type="button"
@@ -1799,7 +1830,10 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
                                 title="Comprar y gestionar el pago directamente"
                               >
                                 <CreditCard className="w-4 h-4 text-slate-950" />
-                                <span>Comprar ({safeQty})</span>
+                                <span>
+                                  Comprar ({safeQty}
+                                  {selectedUnitInfo.isDefaultUnit ? '' : ` ${selectedUnitInfo.pluralShort}`})
+                                </span>
                               </button>
 
                               <button

@@ -18,6 +18,7 @@
         "salePriceRefUSD": { "type": "number", "description": "Precio de venta de referencia en divisas (Solo Admin)" },
         "salePriceBsBcv": { "type": "number", "description": "Precio de venta en Bs a tasa BCV" },
         "targetProfitPct": { "type": "number", "description": "Porcentaje de utilidad objetivo interno (Solo Admin)" },
+        "unitOfMeasure": { "type": "string", "description": "Unidad de medida de venta del artículo (UNIDAD, CENTIMETRO, METRO, GRAMO, KILOGRAMO, LITRO, PAR, JUEGO, etc. o personalizada)" },
         "tracksInventory": { "type": "boolean", "description": "Indica si el artículo controla stock físico (true) o se fabrica bajo pedido sin inventario (false)" },
         "productionTimeLabel": { "type": "string", "description": "Tiempo estimado de fabricación para artículos bajo pedido (ej. 12 a 24 horas)" },
         "productionTimeNote": { "type": "string", "description": "Nota visible al cliente sobre el tiempo de fabricación y posibles retrasos por cortes eléctricos" },

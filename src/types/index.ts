@@ -162,6 +162,84 @@ export const DEFAULT_PRODUCTION_TIME_LABEL = '12 a 24 horas';
 export const DEFAULT_PRODUCTION_TIME_NOTE =
   'Fabricación bajo pedido: tiempo estimado de 12 a 24 horas (sujeto a posibles retrasos por cortes de energía eléctrica).';
 
+export interface ProductUnitOfMeasureOption {
+  id: string;
+  label: string;
+  shortLabel: string;
+  pluralShort: string;
+  priceSuffix: string;
+  customerLabel: string;
+  quickPreset?: boolean;
+}
+
+export const PRODUCT_UNIT_OF_MEASURE_OPTIONS: ProductUnitOfMeasureOption[] = [
+  { id: 'UNIDAD', label: 'Unidad', shortLabel: 'und', pluralShort: 'uds', priceSuffix: '/ und', customerLabel: 'Por unidad', quickPreset: true },
+  { id: 'PAR', label: 'Par', shortLabel: 'par', pluralShort: 'pares', priceSuffix: '/ par', customerLabel: 'Por par', quickPreset: true },
+  { id: 'JUEGO', label: 'Juego / Kit', shortLabel: 'jgo', pluralShort: 'jgos', priceSuffix: '/ juego', customerLabel: 'Por juego / kit', quickPreset: true },
+  { id: 'CENTIMETRO', label: 'Centímetro (cm)', shortLabel: 'cm', pluralShort: 'cm', priceSuffix: '/ cm', customerLabel: 'Por centímetro (cm)', quickPreset: true },
+  { id: 'METRO', label: 'Metro (m)', shortLabel: 'm', pluralShort: 'm', priceSuffix: '/ metro', customerLabel: 'Por metro (m)', quickPreset: true },
+  { id: 'GRAMO', label: 'Gramo (g)', shortLabel: 'g', pluralShort: 'g', priceSuffix: '/ gramo', customerLabel: 'Por gramo (g)', quickPreset: true },
+  { id: 'KILOGRAMO', label: 'Kilogramo (kg)', shortLabel: 'kg', pluralShort: 'kg', priceSuffix: '/ kg', customerLabel: 'Por kilogramo (kg)', quickPreset: true },
+  { id: 'LITRO', label: 'Litro (L)', shortLabel: 'L', pluralShort: 'L', priceSuffix: '/ litro', customerLabel: 'Por litro (L)', quickPreset: true },
+  { id: 'MILILITRO', label: 'Mililitro (ml)', shortLabel: 'ml', pluralShort: 'ml', priceSuffix: '/ ml', customerLabel: 'Por mililitro (ml)' },
+  { id: 'GALON', label: 'Galón (gal)', shortLabel: 'gal', pluralShort: 'gal', priceSuffix: '/ galón', customerLabel: 'Por galón' },
+  { id: 'ROLLO', label: 'Rollo', shortLabel: 'rollo', pluralShort: 'rollos', priceSuffix: '/ rollo', customerLabel: 'Por rollo' },
+  { id: 'CAJA', label: 'Caja', shortLabel: 'caja', pluralShort: 'cajas', priceSuffix: '/ caja', customerLabel: 'Por caja' },
+  { id: 'PAQUETE', label: 'Paquete', shortLabel: 'paq', pluralShort: 'paqs', priceSuffix: '/ paquete', customerLabel: 'Por paquete' },
+  { id: 'LAMINA', label: 'Lámina / Pliego', shortLabel: 'lám', pluralShort: 'láms', priceSuffix: '/ lámina', customerLabel: 'Por lámina / pliego' },
+];
+
+export interface ProductUnitInfo {
+  id: string;
+  label: string;
+  shortLabel: string;
+  pluralShort: string;
+  priceSuffix: string;
+  customerLabel: string;
+  isDefaultUnit: boolean;
+}
+
+export function isPresetUnitOfMeasure(unit?: string | null): boolean {
+  const normalized = (unit || '').trim().toUpperCase();
+  if (!normalized) return true;
+  return PRODUCT_UNIT_OF_MEASURE_OPTIONS.some((opt) => opt.id === normalized);
+}
+
+export function getProductUnitInfo(
+  productOrUnit?: Pick<Product, 'unitOfMeasure'> | string | null
+): ProductUnitInfo {
+  const raw =
+    typeof productOrUnit === 'string'
+      ? productOrUnit
+      : productOrUnit?.unitOfMeasure;
+  const trimmed = (raw || '').trim();
+  if (!trimmed) {
+    const def = PRODUCT_UNIT_OF_MEASURE_OPTIONS[0];
+    return { ...def, isDefaultUnit: true };
+  }
+  const upper = trimmed.toUpperCase();
+  const preset = PRODUCT_UNIT_OF_MEASURE_OPTIONS.find(
+    (opt) => opt.id === upper || opt.label.toUpperCase() === upper
+  );
+  if (preset) {
+    return {
+      ...preset,
+      isDefaultUnit: preset.id === 'UNIDAD',
+    };
+  }
+  const cleanCustom = trimmed.slice(0, 32);
+  const lowerCustom = cleanCustom.toLowerCase();
+  return {
+    id: cleanCustom,
+    label: cleanCustom,
+    shortLabel: cleanCustom,
+    pluralShort: cleanCustom,
+    priceSuffix: `/ ${lowerCustom}`,
+    customerLabel: `Por ${lowerCustom}`,
+    isDefaultUnit: false,
+  };
+}
+
 export interface Product {
   id: string;
   sku: string;
@@ -176,6 +254,7 @@ export interface Product {
   salePriceRefUSD?: number; // SOLO ADMIN: Precio de venta de referencia en divisas (nunca visible en tienda ni facturas)
   salePriceBsBcv?: number; // Precio de venta comercial en Bs a tasa BCV (sincronizado con tasa_bcv)
   targetProfitPct?: number; // SOLO ADMIN: % de utilidad objetivo guardado para referencia interna
+  unitOfMeasure?: string; // Unidad de medida de venta (UNIDAD, METRO, CENTIMETRO, GRAMO, KILOGRAMO, LITRO, PAR, JUEGO, o personalizada)
   tracksInventory?: boolean; // true/undefined = usa control de stock físico; false = sin inventario (fabricación bajo pedido)
   productionTimeLabel?: string; // Ej. "12 a 24 horas" (visible en tienda cuando tracksInventory === false)
   productionTimeNote?: string; // Aviso al cliente sobre tiempo de fabricación y posibles retrasos por cortes de luz
@@ -225,6 +304,7 @@ export interface SaleItem {
   sku?: string;
   name: string;
   category?: string;
+  unitOfMeasure?: string;
   quantity: number;
   unitPrice: number; // In USD ($) — precio unitario efectivo aplicado (incluye descuento al mayor si aplica)
   originalUnitPrice?: number; // Precio unitario regular antes del descuento al mayor

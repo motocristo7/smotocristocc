@@ -666,11 +666,11 @@ export const InventoryView: React.FC = () => {
       });
       showToast(
         uploaded.length === 1
-          ? `✓ Foto subida a Firebase Storage para "${product.name}" (${nextImages.length} foto${nextImages.length > 1 ? 's' : ''}).`
-          : `✓ ${uploaded.length} fotos subidas a Firebase Storage para "${product.name}" (${nextImages.length} en total).`
+          ? `✓ Foto subida correctamente para "${product.name}" (${nextImages.length} foto${nextImages.length > 1 ? 's' : ''}).`
+          : `✓ ${uploaded.length} fotos subidas correctamente para "${product.name}" (${nextImages.length} en total).`
       );
     } catch (err: any) {
-      showToast(`⚠️ ${err?.message || 'No se pudo subir la imagen a Firebase Storage.'}`);
+      showToast(`⚠️ ${err?.message || 'No se pudo subir la imagen.'}`);
     } finally {
       setQuickUploadingId((prev) => (prev === product.id ? null : prev));
     }
@@ -3116,10 +3116,10 @@ export const InventoryView: React.FC = () => {
                           )}
                           <span>
                             {isCompressingUpload
-                              ? 'Subiendo a Firebase Storage...'
+                              ? 'Subiendo imagen...'
                               : modalPhotos.length > 0
-                              ? 'Subir más fotos a la nube'
-                              : 'Subir fotos a la nube (varias a la vez)'}
+                              ? 'Subir más fotos'
+                              : 'Subir fotos (varias a la vez)'}
                           </span>
                           <input
                             type="file"

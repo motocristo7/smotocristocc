@@ -32,6 +32,8 @@ const app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
 export const auth = getAuth(app);
 export const storage = getStorage(app);
+storage.maxUploadRetryTime = 8000;
+storage.maxOperationRetryTime = 8000;
 
 export function logFirestoreError(error: unknown, operationType: OperationType, path: string | null): FirestoreErrorInfo {
   const errInfo: FirestoreErrorInfo = {

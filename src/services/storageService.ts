@@ -21,6 +21,118 @@ export function isFirebaseStorageUrl(url?: unknown): boolean {
   );
 }
 
+export function isServerUploadedImageUrl(url?: unknown): boolean {
+  if (typeof url !== 'string') return false;
+  const trimmed = url.trim();
+  return trimmed.startsWith('/uploads/') || trimmed.toLowerCase().includes('/uploads/');
+}
+
+// Circuit breaker: if Firebase Storage bucket is not activated yet (404/CORS),
+// avoid waiting 5.5s on every subsequent image upload during the session.
+const FIREBASE_STORAGE_UPLOAD_TIMEOUT_MS = 5500;
+const FIREBASE_STORAGE_COOLDOWN_MS = 10 * 60 * 1000;
+let firebaseStorageUnavailableUntil = 0;
+
+function withTimeout<T>(promise: Promise<T>, ms: number, timeoutMessage: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = window.setTimeout(() => {
+      reject(new Error(timeoutMessage));
+    }, ms);
+    promise.then(
+      (value) => {
+        window.clearTimeout(timer);
+        resolve(value);
+      },
+      (err) => {
+        window.clearTimeout(timer);
+        reject(err);
+      }
+    );
+  });
+}
+
+async function uploadBlobToServerStorage(
+  blob: Blob,
+  folder: StorageImageFolder,
+  safePrefix: string
+): Promise<string> {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), 20000);
+  try {
+    const params = new URLSearchParams({
+      folder,
+      prefix: safePrefix,
+    });
+    const response = await fetch(`/api/uploads/image?${params.toString()}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': blob.type || 'image/jpeg',
+      },
+      body: blob,
+      signal: controller.signal,
+    });
+
+    const data = await response.json().catch(() => null);
+    if (!response.ok || !data?.success || typeof data?.url !== 'string' || !data.url) {
+      throw new Error(data?.error || `Error HTTP ${response.status} al guardar la imagen.`);
+    }
+    if (isBase64ImageUrl(data.url)) {
+      throw new Error('El servidor devolvió una URL inválida.');
+    }
+    return data.url;
+  } finally {
+    window.clearTimeout(timer);
+  }
+}
+
+async function uploadBlobWithCloudAndFallback(
+  blob: Blob,
+  folder: StorageImageFolder,
+  safePrefix: string,
+  ext: string,
+  contentType: string
+): Promise<string> {
+  const randomSuffix = Math.random().toString(36).slice(2, 8);
+  const storagePath = `${folder}/${safePrefix}_${Date.now()}_${randomSuffix}.${ext}`;
+  const storageRef = ref(storage, storagePath);
+
+  let firebaseError: unknown = null;
+
+  if (Date.now() >= firebaseStorageUnavailableUntil) {
+    try {
+      await withTimeout(
+        uploadBytes(storageRef, blob, {
+          contentType,
+          cacheControl: 'public, max-age=31536000',
+        }),
+        FIREBASE_STORAGE_UPLOAD_TIMEOUT_MS,
+        'Firebase Storage no respondió a tiempo (bucket no activado o bloqueado por CORS).'
+      );
+      const downloadUrl = await withTimeout(
+        getDownloadURL(storageRef),
+        FIREBASE_STORAGE_UPLOAD_TIMEOUT_MS,
+        'Firebase Storage tardó demasiado en devolver la URL.'
+      );
+      if (downloadUrl && !isBase64ImageUrl(downloadUrl)) {
+        return downloadUrl;
+      }
+    } catch (err) {
+      firebaseError = err;
+      firebaseStorageUnavailableUntil = Date.now() + FIREBASE_STORAGE_COOLDOWN_MS;
+      console.warn(
+        'Firebase Storage no disponible aún; usando servidor de imágenes de la aplicación (/uploads):',
+        err instanceof Error ? err.message : err
+      );
+    }
+  }
+
+  try {
+    return await uploadBlobToServerStorage(blob, folder, safePrefix);
+  } catch (serverErr) {
+    throw buildFriendlyStorageError(firebaseError || serverErr);
+  }
+}
+
 function sanitizeStoragePrefix(raw?: string): string {
   const cleaned = (raw || 'img')
     .normalize('NFD')
@@ -129,18 +241,19 @@ function buildFriendlyStorageError(error: unknown): Error {
     return new Error('Se alcanzó el límite de cuota de Firebase Storage.');
   }
   if (code === 'storage/retry-limit-exceeded' || rawMessage.includes('network')) {
-    return new Error('Error de conexión al subir la imagen a Firebase Storage. Verifica tu internet e intenta nuevamente.');
+    return new Error('Error de conexión al subir la imagen. Verifica tu internet e intenta nuevamente.');
   }
   return new Error(
     rawMessage
-      ? `No se pudo subir la imagen a Firebase Storage: ${rawMessage}`
-      : 'No se pudo subir la imagen a Firebase Storage.'
+      ? `No se pudo subir la imagen: ${rawMessage}`
+      : 'No se pudo subir la imagen.'
   );
 }
 
 /**
- * Compresses an image File to a JPEG Blob, uploads it to Firebase Storage,
- * and returns its permanent HTTPS download URL. Never returns base64.
+ * Compresses an image File to a JPEG Blob, uploads it to Firebase Storage
+ * (or automatically to the app's /uploads image server if Firebase Storage is not activated),
+ * and returns a clean URL. Never returns base64.
  */
 export async function uploadImageToFirebaseStorage(
   file: File,
@@ -151,28 +264,12 @@ export async function uploadImageToFirebaseStorage(
 ): Promise<string> {
   const blob = await compressImageFileToBlob(file, maxDimension, quality);
   const safePrefix = sanitizeStoragePrefix(filenamePrefix);
-  const randomSuffix = Math.random().toString(36).slice(2, 8);
-  const storagePath = `${folder}/${safePrefix}_${Date.now()}_${randomSuffix}.jpg`;
-  const storageRef = ref(storage, storagePath);
-
-  try {
-    await uploadBytes(storageRef, blob, {
-      contentType: 'image/jpeg',
-      cacheControl: 'public, max-age=31536000',
-    });
-    const downloadUrl = await getDownloadURL(storageRef);
-    if (!downloadUrl || isBase64ImageUrl(downloadUrl)) {
-      throw new Error('Firebase Storage no devolvió una URL válida.');
-    }
-    return downloadUrl;
-  } catch (error) {
-    throw buildFriendlyStorageError(error);
-  }
+  return uploadBlobWithCloudAndFallback(blob, folder, safePrefix, 'jpg', 'image/jpeg');
 }
 
 /**
- * Converts a legacy base64 Data URL into a Blob and uploads it to Firebase Storage,
- * returning its HTTPS download URL. Used to migrate legacy inline photos automatically.
+ * Converts a legacy base64 Data URL into a Blob and uploads it,
+ * returning a permanent URL. Used to migrate legacy inline photos automatically.
  */
 export async function uploadDataUrlToFirebaseStorage(
   dataUrl: string,
@@ -198,19 +295,7 @@ export async function uploadDataUrlToFirebaseStorage(
   const blob = new Blob([bytes], { type: mimeType });
 
   const safePrefix = sanitizeStoragePrefix(filenamePrefix);
-  const randomSuffix = Math.random().toString(36).slice(2, 8);
-  const storagePath = `${folder}/${safePrefix}_${Date.now()}_${randomSuffix}.${ext}`;
-  const storageRef = ref(storage, storagePath);
-
-  try {
-    await uploadBytes(storageRef, blob, {
-      contentType: mimeType,
-      cacheControl: 'public, max-age=31536000',
-    });
-    return await getDownloadURL(storageRef);
-  } catch (error) {
-    throw buildFriendlyStorageError(error);
-  }
+  return uploadBlobWithCloudAndFallback(blob, folder, safePrefix, ext, mimeType);
 }
 
 /**

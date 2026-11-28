@@ -168,15 +168,18 @@ export function isEmbeddedImageUrl(url?: string): boolean {
 }
 
 /**
- * Returns true if the URL is hosted on Firebase Storage.
+ * Returns true if the URL is hosted on Firebase Storage or the app's /uploads image server.
  */
 export function isFirebaseStorageImageUrl(url?: string): boolean {
   if (!url) return false;
-  const lower = url.trim().toLowerCase();
+  const trimmed = url.trim();
+  const lower = trimmed.toLowerCase();
   return (
     lower.includes('firebasestorage.googleapis.com') ||
     lower.includes('firebasestorage.app') ||
-    lower.includes('storage.googleapis.com')
+    lower.includes('storage.googleapis.com') ||
+    trimmed.startsWith('/uploads/') ||
+    lower.includes('/uploads/')
   );
 }
 
@@ -190,7 +193,7 @@ export function isPresetFallbackImageUrl(url?: string): boolean {
 }
 
 /**
- * Returns true if the URL is a real uploaded photo hosted on Firebase Storage (or legacy embedded photo).
+ * Returns true if the URL is a real uploaded photo hosted on Firebase Storage / server uploads (or legacy embedded photo).
  */
 export function isUploadedImageUrl(url?: string): boolean {
   if (!url) return false;

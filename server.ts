@@ -37,7 +37,22 @@ app.use(express.json({ limit: '20mb' }));
 app.use(express.text({ type: ['text/plain', 'application/json'], limit: '20mb' }));
 
 const DATA_DIR = path.resolve(__dirname, 'data');
+const UPLOADS_DIR = path.join(DATA_DIR, 'uploads');
 const DB_FILE = path.join(DATA_DIR, 'database.json');
+
+try {
+  fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+} catch {}
+
+// Serve uploaded images directly with long-term caching (never stored as base64 in DB)
+app.use(
+  '/uploads',
+  express.static(UPLOADS_DIR, {
+    maxAge: '365d',
+    immutable: true,
+    fallthrough: true,
+  })
+);
 
 const DEFAULT_ADMIN_USER = {
   id: 'usr-admin-1',
@@ -2041,6 +2056,101 @@ app.post('/api/utils/check-images', async (req, res) => {
     return res.status(500).json({ success: false, error: err.message });
   }
 });
+
+const ALLOWED_UPLOAD_FOLDERS = new Set([
+  'products',
+  'service-orders',
+  'purchase-orders',
+  'settings',
+]);
+
+function detectImageExtension(buf: Buffer, contentType: string): string | null {
+  if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) {
+    return 'jpg';
+  }
+  if (
+    buf.length >= 8 &&
+    buf[0] === 0x89 &&
+    buf[1] === 0x50 &&
+    buf[2] === 0x4e &&
+    buf[3] === 0x47
+  ) {
+    return 'png';
+  }
+  if (
+    buf.length >= 12 &&
+    buf.toString('ascii', 0, 4) === 'RIFF' &&
+    buf.toString('ascii', 8, 12) === 'WEBP'
+  ) {
+    return 'webp';
+  }
+  if (buf.length >= 6 && buf.toString('ascii', 0, 4) === 'GIF8') {
+    return 'gif';
+  }
+  const lowerCt = (contentType || '').toLowerCase();
+  if (lowerCt.includes('jpeg') || lowerCt.includes('jpg')) return 'jpg';
+  if (lowerCt.includes('png')) return 'png';
+  if (lowerCt.includes('webp')) return 'webp';
+  return null;
+}
+
+// Binary image upload endpoint (used automatically when Firebase Storage bucket is unavailable/not activated)
+app.post(
+  '/api/uploads/image',
+  express.raw({
+    type: ['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/gif', 'application/octet-stream'],
+    limit: '10mb',
+  }),
+  (req, res) => {
+    try {
+      const buf = Buffer.isBuffer(req.body) ? req.body : null;
+      if (!buf || buf.length === 0) {
+        return res.status(400).json({ success: false, error: 'Imagen vacía o formato inválido.' });
+      }
+
+      const rawFolder = typeof req.query.folder === 'string' ? req.query.folder.trim() : 'products';
+      const safeFolder = ALLOWED_UPLOAD_FOLDERS.has(rawFolder) ? rawFolder : 'products';
+
+      const rawPrefix = typeof req.query.prefix === 'string' ? req.query.prefix : 'img';
+      const safePrefix =
+        rawPrefix
+          .normalize('NFD')
+          .replace(/[\u0300-\u036f]/g, '')
+          .replace(/[^a-zA-Z0-9_-]+/g, '_')
+          .replace(/^_+|_+$/g, '')
+          .slice(0, 40) || 'img';
+
+      const contentType = String(req.headers['content-type'] || '');
+      const ext = detectImageExtension(buf, contentType);
+      if (!ext) {
+        return res.status(400).json({
+          success: false,
+          error: 'Solo se permiten archivos de imagen válidos (JPG, PNG o WebP).',
+        });
+      }
+
+      const folderDir = path.join(UPLOADS_DIR, safeFolder);
+      fs.mkdirSync(folderDir, { recursive: true });
+
+      const uniqueSuffix = crypto.randomBytes(6).toString('hex');
+      const filename = `${safePrefix}_${Date.now()}_${uniqueSuffix}.${ext}`;
+      const fullPath = path.join(folderDir, filename);
+
+      fs.writeFileSync(fullPath, buf);
+
+      return res.json({
+        success: true,
+        url: `/uploads/${safeFolder}/${filename}`,
+        size: buf.length,
+      });
+    } catch (err: any) {
+      return res.status(500).json({
+        success: false,
+        error: err?.message || 'Error guardando la imagen en el servidor.',
+      });
+    }
+  }
+);
 
 async function startServer() {
   // Ensure database exists on disk immediately

@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect, useRef } from 'react';
+import React, { useState, useMemo, useEffect, useRef, lazy, Suspense } from 'react';
 import { useApp } from '../../context/AppContext';
 import {
   Product,
@@ -60,7 +60,11 @@ import {
   extractProductRefFromLocation,
   findProductByUrlRef,
 } from '../../utils/productLinks';
-import { CustomerPendingAccountsModal } from '../modals/CustomerPendingAccountsModal';
+const CustomerPendingAccountsModal = lazy(() =>
+  import('../modals/CustomerPendingAccountsModal').then((m) => ({
+    default: m.CustomerPendingAccountsModal,
+  }))
+);
 
 interface StorefrontProps {
   onOpenCart: (step?: 'cart' | 'checkout') => void;
@@ -101,9 +105,14 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
   const [modalOrderQty, setModalOrderQty] = useState<number>(1);
   const [shoppingMode, setShoppingMode] = useState<'retail' | 'wholesale'>('retail');
   const [onlyWholesaleProducts, setOnlyWholesaleProducts] = useState<boolean>(false);
+  const [visibleCount, setVisibleCount] = useState<number>(24);
   const [pendingUrlProductRef, setPendingUrlProductRef] = useState<string | null>(() =>
     extractProductRefFromLocation()
   );
+
+  useEffect(() => {
+    setVisibleCount(24);
+  }, [searchTerm, selectedCategory, selectedModelCategory, shoppingMode, onlyWholesaleProducts]);
   const defaultTitleRef = useRef<string>(
     typeof document !== 'undefined' ? document.title : ''
   );
@@ -925,8 +934,9 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
             </button>
           </div>
         ) : (
+          <>
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-2.5 sm:gap-3.5">
-            {filteredProducts.map((product) => {
+            {filteredProducts.slice(0, visibleCount).map((product) => {
               const priceBs = product.salePrice * settings.bcvRate;
               const unitInfo = getProductUnitInfo(product);
               const productImages = getProductImages(product, true);
@@ -961,6 +971,8 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
                       key={`${product.id}-${activeIdx}`}
                       src={activeSrc}
                       alt={product.name}
+                      loading="lazy"
+                      decoding="async"
                       className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                       referrerPolicy="no-referrer"
                       onError={(e) => handleProductImageError(e, product)}
@@ -1266,6 +1278,26 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
               );
             })}
           </div>
+
+          {visibleCount < filteredProducts.length && (
+            <div className="mt-6 flex flex-col sm:flex-row items-center justify-center gap-2.5">
+              <button
+                type="button"
+                onClick={() => setVisibleCount((prev) => prev + 24)}
+                className="px-5 py-2.5 bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold rounded-xl shadow-xs transition-colors cursor-pointer"
+              >
+                Mostrar más repuestos ({filteredProducts.length - visibleCount} restantes)
+              </button>
+              <button
+                type="button"
+                onClick={() => setVisibleCount(filteredProducts.length)}
+                className="px-4 py-2.5 bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 text-xs font-semibold rounded-xl transition-colors cursor-pointer"
+              >
+                Ver todos ({filteredProducts.length})
+              </button>
+            </div>
+          )}
+          </>
         )}
 
         {/* Business Payment Information Section (Venezuela: Pago Móvil, Bancos, Zelle) */}
@@ -1311,6 +1343,8 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
                     <img
                       src={settings.bankDetails.pagoMovilQrUrl || '/assets/pagomovil_qr.jpeg'}
                       alt="QR Pago Móvil"
+                      loading="lazy"
+                      decoding="async"
                       className="w-16 h-auto object-contain rounded border border-slate-200 shadow-2xs group-hover:scale-105 transition-transform"
                     />
                     <span className="block text-[8px] text-center text-slate-400 font-semibold mt-0.5">Ver QR</span>
@@ -1420,6 +1454,8 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
               <img
                 src={PRESET_PRODUCT_IMAGES.upholsterySeat}
                 alt="Tapicería de motos y asientos custom"
+                loading="lazy"
+                decoding="async"
                 className="w-full h-full object-cover"
               />
               <div className="absolute inset-0 bg-gradient-to-t from-slate-900/80 via-transparent to-transparent lg:hidden" />
@@ -1952,10 +1988,14 @@ export const Storefront: React.FC<StorefrontProps> = ({ onOpenCart }) => {
       )}
 
       {/* Pending Accounts Lookup Modal by Cédula */}
-      <CustomerPendingAccountsModal
-        isOpen={isPendingAccountsOpen}
-        onClose={() => setIsPendingAccountsOpen(false)}
-      />
+      {isPendingAccountsOpen && (
+        <Suspense fallback={null}>
+          <CustomerPendingAccountsModal
+            isOpen={isPendingAccountsOpen}
+            onClose={() => setIsPendingAccountsOpen(false)}
+          />
+        </Suspense>
+      )}
     </div>
   );
 };

@@ -8,8 +8,16 @@ import {
   deleteDoc,
   onSnapshot,
   arrayUnion,
+  query,
+  orderBy,
+  limit,
 } from 'firebase/firestore';
 import { db, handleFirestoreError, logFirestoreError, OperationType } from '../firebase';
+import {
+  isBase64ImageUrl,
+  uploadDataUrlToFirebaseStorage,
+  stripBase64ImagesDeep,
+} from './storageService';
 import {
   Product,
   Customer,
@@ -201,6 +209,56 @@ export function subscribeToSales(callback: (sales: Sale[], meta: SnapshotSyncMet
   } catch (error) {
     console.warn('Error starting sales listener:', error);
     return () => {};
+  }
+}
+
+/**
+ * Fetches ONLY the latest `maxCount` sales on demand from Firestore (ordered by createdAt desc),
+ * avoiding downloading the entire historical sales collection.
+ */
+export async function fetchRecentSalesFromFirestore(maxCount = 15): Promise<Sale[]> {
+  try {
+    const safeLimit = Math.min(Math.max(1, Math.floor(maxCount)), 100);
+    const salesQuery = query(
+      collection(db, 'sales'),
+      orderBy('createdAt', 'desc'),
+      limit(safeLimit)
+    );
+    const snapshot = await getDocs(salesQuery);
+    const list: Sale[] = [];
+    snapshot.forEach((docSnap) => {
+      list.push({ ...(docSnap.data() as Sale), id: docSnap.id });
+    });
+    return list;
+  } catch (error) {
+    logFirestoreError(error, OperationType.GET, 'sales');
+    return [];
+  }
+}
+
+/**
+ * Fetches ONLY 1 document (the most recent sale) to sync the next sequential invoice number in POS.
+ */
+export async function fetchLatestInvoiceSequenceFromFirestore(): Promise<number> {
+  try {
+    const latestQuery = query(
+      collection(db, 'sales'),
+      orderBy('createdAt', 'desc'),
+      limit(1)
+    );
+    const snapshot = await getDocs(latestQuery);
+    let maxSeq = 100;
+    snapshot.forEach((docSnap) => {
+      const data = docSnap.data() as Sale;
+      const match = String(data?.invoiceNumber || '').match(/FACT-\d+-(\d+)/);
+      if (match) {
+        const seq = parseInt(match[1], 10);
+        if (Number.isFinite(seq) && seq > maxSeq) maxSeq = seq;
+      }
+    });
+    return maxSeq;
+  } catch {
+    return 100;
   }
 }
 
@@ -743,10 +801,80 @@ export function subscribeToDeletedIds(callback: (deletedIds: DeletedIdsMap) => v
   }
 }
 
+async function sanitizeImageUrlField(
+  url: string | undefined,
+  folder: 'products' | 'service-orders' | 'purchase-orders' | 'settings',
+  prefix: string
+): Promise<string | undefined> {
+  if (!url) return url;
+  if (!isBase64ImageUrl(url)) return url;
+  try {
+    return await uploadDataUrlToFirebaseStorage(url, folder, prefix);
+  } catch {
+    return '';
+  }
+}
+
+async function ensureProductHasNoBase64(product: Product): Promise<Product> {
+  const prefix = product.sku || product.id || 'producto';
+  const cleanPrimary = await sanitizeImageUrlField(product.imageUrl, 'products', prefix);
+  let cleanGallery = product.imageUrls;
+  if (Array.isArray(product.imageUrls)) {
+    const resolved: string[] = [];
+    for (let i = 0; i < product.imageUrls.length; i++) {
+      const next = await sanitizeImageUrlField(product.imageUrls[i], 'products', `${prefix}_${i}`);
+      if (next && !isBase64ImageUrl(next)) {
+        resolved.push(next);
+      }
+    }
+    cleanGallery = resolved;
+  }
+  const finalPrimary =
+    cleanPrimary && !isBase64ImageUrl(cleanPrimary)
+      ? cleanPrimary
+      : Array.isArray(cleanGallery) && cleanGallery.length > 0
+      ? cleanGallery[0]
+      : '';
+  return stripBase64ImagesDeep({
+    ...product,
+    imageUrl: finalPrimary,
+    ...(cleanGallery !== undefined ? { imageUrls: cleanGallery } : {}),
+  });
+}
+
+async function ensureServiceOrderHasNoBase64(order: ServiceOrder): Promise<ServiceOrder> {
+  const prefix = order.orderNumber || order.id || 'orden';
+  const intake = await sanitizeImageUrlField(order.seatIntakePhoto, 'service-orders', `${prefix}_ingreso`);
+  const delivery = await sanitizeImageUrlField(order.seatDeliveryPhoto, 'service-orders', `${prefix}_entrega`);
+  return stripBase64ImagesDeep({
+    ...order,
+    ...(order.seatIntakePhoto !== undefined ? { seatIntakePhoto: intake || '' } : {}),
+    ...(order.seatDeliveryPhoto !== undefined ? { seatDeliveryPhoto: delivery || '' } : {}),
+  });
+}
+
+async function ensurePurchaseOrderHasNoBase64(order: PurchaseOrder): Promise<PurchaseOrder> {
+  const prefix = order.orderNumber || order.id || 'compra';
+  const nextItems = Array.isArray(order.items)
+    ? await Promise.all(
+        order.items.map(async (item, idx) => {
+          if (!item?.imageUrl || !isBase64ImageUrl(item.imageUrl)) return item;
+          const clean = await sanitizeImageUrlField(item.imageUrl, 'purchase-orders', `${prefix}_item_${idx}`);
+          return { ...item, imageUrl: clean || '' };
+        })
+      )
+    : order.items;
+  return stripBase64ImagesDeep({
+    ...order,
+    items: nextItems,
+  });
+}
+
 // Single item mutations to Firestore
 export async function syncProductToFirestore(product: Product): Promise<void> {
   try {
-    await setDoc(doc(db, 'products', product.id), stripUndefined(product));
+    const cleanProduct = await ensureProductHasNoBase64(product);
+    await setDoc(doc(db, 'products', cleanProduct.id), stripUndefined(cleanProduct));
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, `products/${product.id}`);
   }
@@ -762,7 +890,8 @@ export async function removeProductFromFirestore(productId: string): Promise<voi
 
 export async function syncSettingsToFirestore(settings: BusinessSettings): Promise<void> {
   try {
-    await setDoc(doc(db, 'settings', 'business'), stripUndefined(settings), { merge: true });
+    const cleanSettings = stripBase64ImagesDeep(settings);
+    await setDoc(doc(db, 'settings', 'business'), stripUndefined(cleanSettings), { merge: true });
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, 'settings/business');
   }
@@ -802,7 +931,8 @@ export async function removeSaleFromFirestore(saleId: string): Promise<void> {
 
 export async function syncServiceOrderToFirestore(order: ServiceOrder): Promise<void> {
   try {
-    await setDoc(doc(db, 'serviceOrders', order.id), stripUndefined(order));
+    const cleanOrder = await ensureServiceOrderHasNoBase64(order);
+    await setDoc(doc(db, 'serviceOrders', cleanOrder.id), stripUndefined(cleanOrder));
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, `serviceOrders/${order.id}`);
   }
@@ -949,7 +1079,8 @@ export async function removeSupplierFromFirestore(supplierId: string): Promise<v
 
 export async function syncPurchaseOrderToFirestore(order: PurchaseOrder): Promise<void> {
   try {
-    await setDoc(doc(db, 'purchaseOrders', order.id), stripUndefined(order));
+    const cleanOrder = await ensurePurchaseOrderHasNoBase64(order);
+    await setDoc(doc(db, 'purchaseOrders', cleanOrder.id), stripUndefined(cleanOrder));
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, `purchaseOrders/${order.id}`);
   }
@@ -1169,7 +1300,7 @@ export async function uploadAllToFirestore(data: {
 
     // 1. Settings
     if (data.settings) {
-      await setDoc(doc(db, 'settings', 'business'), stripUndefined(data.settings), { merge: true });
+      await setDoc(doc(db, 'settings', 'business'), stripUndefined(stripBase64ImagesDeep(data.settings)), { merge: true });
       totalCount++;
     }
 
@@ -1238,10 +1369,11 @@ export async function uploadAllToFirestore(data: {
       }
     }
 
-    // 3. Products
+    // 3. Products (never write base64 images to Firestore)
     if (Array.isArray(data.products) && data.products.length > 0) {
       for (const p of data.products) {
-        await setDoc(doc(db, 'products', p.id), stripUndefined(p));
+        const cleanProduct = await ensureProductHasNoBase64(p);
+        await setDoc(doc(db, 'products', cleanProduct.id), stripUndefined(cleanProduct));
         totalCount++;
       }
     }
@@ -1262,10 +1394,11 @@ export async function uploadAllToFirestore(data: {
       }
     }
 
-    // 6. Service orders
+    // 6. Service orders (never write base64 images to Firestore)
     if (Array.isArray(data.serviceOrders) && data.serviceOrders.length > 0) {
       for (const ord of data.serviceOrders) {
-        await setDoc(doc(db, 'serviceOrders', ord.id), stripUndefined(ord));
+        const cleanOrder = await ensureServiceOrderHasNoBase64(ord);
+        await setDoc(doc(db, 'serviceOrders', cleanOrder.id), stripUndefined(cleanOrder));
         totalCount++;
       }
     }
@@ -1310,7 +1443,8 @@ export async function uploadAllToFirestore(data: {
 
     if (Array.isArray(data.purchaseOrders) && data.purchaseOrders.length > 0) {
       for (const po of data.purchaseOrders) {
-        await setDoc(doc(db, 'purchaseOrders', po.id), stripUndefined(po));
+        const cleanPo = await ensurePurchaseOrderHasNoBase64(po);
+        await setDoc(doc(db, 'purchaseOrders', cleanPo.id), stripUndefined(cleanPo));
         totalCount++;
       }
     }

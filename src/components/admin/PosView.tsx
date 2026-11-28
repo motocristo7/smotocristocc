@@ -14,6 +14,7 @@ import {
   PaymentCurrencyMode,
   ProductCategory,
   OpenAccount,
+  Sale,
 } from '../../types';
 import { formatUSD, formatBs, buildInvoiceWhatsAppMessage, buildMercadoLibreDebtWhatsAppMessage } from '../../utils/whatsapp';
 import {
@@ -62,6 +63,9 @@ import {
   ClipboardList,
   Wrench,
   Bike,
+  History,
+  RefreshCw,
+  Loader2,
 } from 'lucide-react';
 
 const OTHER_VENEZUELAN_STATES = [
@@ -121,11 +125,22 @@ export const PosView: React.FC = () => {
     updateOpenAccountMeta,
     cancelOpenAccount,
     settleOpenAccount,
+    fetchRecentSalesOnDemand,
   } = useApp();
 
   const [productSearch, setProductSearch] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
   const [posCart, setPosCart] = useState<PosCartItem[]>([]);
+
+  // On-demand recent invoices modal state (never preloaded when opening POS)
+  const [isRecentInvoicesOpen, setIsRecentInvoicesOpen] = useState(false);
+  const [recentInvoices, setRecentInvoices] = useState<Sale[]>([]);
+  const [recentInvoicesTotal, setRecentInvoicesTotal] = useState(0);
+  const [recentInvoicesHasMore, setRecentInvoicesHasMore] = useState(false);
+  const [recentInvoicesLimit, setRecentInvoicesLimit] = useState(15);
+  const [recentInvoicesSearch, setRecentInvoicesSearch] = useState('');
+  const [isLoadingRecentInvoices, setIsLoadingRecentInvoices] = useState(false);
+  const [recentInvoicesError, setRecentInvoicesError] = useState<string | null>(null);
 
   // Customer form (Venezuela)
   const [selectedCustomerId, setSelectedCustomerId] = useState<string>('');
@@ -1538,6 +1553,63 @@ export const PosView: React.FC = () => {
     return newSale;
   };
 
+  const loadRecentInvoices = async (limitOverride?: number, searchOverride?: string) => {
+    const targetLimit = limitOverride ?? recentInvoicesLimit;
+    const targetSearch = searchOverride !== undefined ? searchOverride : recentInvoicesSearch;
+    setIsLoadingRecentInvoices(true);
+    setRecentInvoicesError(null);
+    try {
+      const result = await fetchRecentSalesOnDemand({
+        limit: targetLimit,
+        search: targetSearch,
+      });
+      setRecentInvoices(result.sales);
+      setRecentInvoicesTotal(result.totalCount);
+      setRecentInvoicesHasMore(result.hasMore);
+    } catch (err) {
+      console.error('Error consultando últimas facturas bajo demanda:', err);
+      setRecentInvoicesError('No se pudieron consultar las últimas facturas. Intenta nuevamente.');
+    } finally {
+      setIsLoadingRecentInvoices(false);
+    }
+  };
+
+  const handleOpenRecentInvoicesModal = () => {
+    setIsRecentInvoicesOpen(true);
+    setRecentInvoicesLimit(15);
+    setRecentInvoicesSearch('');
+    void loadRecentInvoices(15, '');
+  };
+
+  const handleCloseRecentInvoicesModal = () => {
+    setIsRecentInvoicesOpen(false);
+    setRecentInvoices([]);
+    setRecentInvoicesError(null);
+  };
+
+  const handleSearchRecentInvoices = (e: React.FormEvent) => {
+    e.preventDefault();
+    void loadRecentInvoices(recentInvoicesLimit, recentInvoicesSearch);
+  };
+
+  const handleLoadMoreRecentInvoices = () => {
+    const nextLimit = Math.min(recentInvoicesLimit + 15, 100);
+    setRecentInvoicesLimit(nextLimit);
+    void loadRecentInvoices(nextLimit, recentInvoicesSearch);
+  };
+
+  const handleResendRecentInvoiceWhatsApp = (sale: Sale) => {
+    const { message, url } = buildInvoiceWhatsAppMessage(sale, settings);
+    setWhatsappModalData({
+      title: `Factura ${sale.invoiceNumber}`,
+      message,
+      url,
+      phone: sale.customerPhone,
+      recipientName: sale.customerName,
+      sale,
+    });
+  };
+
   return (
     <div className="space-y-4">
       {/* Top Header */}
@@ -1551,9 +1623,21 @@ export const PosView: React.FC = () => {
           </h1>
         </div>
 
-        <div className="flex items-center gap-2 bg-emerald-50 text-emerald-900 px-3 py-1.5 rounded-xl border border-emerald-200 text-xs font-bold self-start sm:self-auto shrink-0 tabular-nums">
-          <TrendingUp className="w-4 h-4 text-emerald-600" />
-          <span>Tasa Oficial BCV: Bs. {rate.toFixed(2)} / USD</span>
+        <div className="flex flex-wrap items-center gap-2 self-start sm:self-auto shrink-0">
+          <button
+            type="button"
+            onClick={handleOpenRecentInvoicesModal}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold border border-slate-700 shadow-sm transition-colors cursor-pointer"
+            title="Consultar últimas facturas emitidas bajo demanda"
+          >
+            <History className="w-3.5 h-3.5 text-amber-400" />
+            <span>Últimas Facturas</span>
+          </button>
+
+          <div className="flex items-center gap-2 bg-emerald-50 text-emerald-900 px-3 py-1.5 rounded-xl border border-emerald-200 text-xs font-bold tabular-nums">
+            <TrendingUp className="w-4 h-4 text-emerald-600" />
+            <span>Tasa Oficial BCV: Bs. {rate.toFixed(2)} / USD</span>
+          </div>
         </div>
       </div>
 
@@ -5328,6 +5412,253 @@ export const PosView: React.FC = () => {
           onClose={() => setSettlingAccountId(null)}
           onConfirmSettle={handleConfirmSettleOpenAccount}
         />
+      )}
+
+      {/* Modal: Consulta Bajo Demanda de Últimas Facturas */}
+      {isRecentInvoicesOpen && (
+        <div
+          className="fixed inset-0 z-50 bg-slate-950/60 backdrop-blur-xs flex items-center justify-center p-3 sm:p-4"
+          onClick={handleCloseRecentInvoicesModal}
+        >
+          <div
+            className="bg-white w-full max-w-3xl max-h-[86vh] rounded-2xl shadow-2xl border border-slate-200 flex flex-col overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Header */}
+            <div className="bg-slate-900 text-white px-5 py-4 flex items-center justify-between gap-3 shrink-0">
+              <div className="min-w-0">
+                <h2 className="text-base sm:text-lg font-bold flex items-center gap-2">
+                  <History className="w-4 h-4 text-amber-400 shrink-0" />
+                  <span>Últimas Facturas Emitidas</span>
+                </h2>
+                <p className="text-[11px] text-slate-300 mt-0.5">
+                  Consulta rápida bajo demanda sin cargar el historial completo al iniciar el POS.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={handleCloseRecentInvoicesModal}
+                className="p-1.5 rounded-lg text-slate-300 hover:text-white hover:bg-slate-800 transition-colors cursor-pointer"
+                aria-label="Cerrar consulta de últimas facturas"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Search & Refresh Toolbar */}
+            <form
+              onSubmit={handleSearchRecentInvoices}
+              className="px-4 sm:px-5 py-3 bg-slate-50 border-b border-slate-200 flex flex-col sm:flex-row items-stretch sm:items-center gap-2 shrink-0"
+            >
+              <div className="relative flex-1">
+                <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                <input
+                  type="text"
+                  value={recentInvoicesSearch}
+                  onChange={(e) => setRecentInvoicesSearch(e.target.value)}
+                  placeholder="Buscar por N° de factura, cliente, cédula o teléfono..."
+                  className="w-full pl-9 pr-3 py-2 text-xs bg-white border border-slate-300 rounded-lg focus:outline-none focus:border-amber-500"
+                />
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="submit"
+                  disabled={isLoadingRecentInvoices}
+                  className="px-3.5 py-2 bg-amber-500 hover:bg-amber-600 disabled:opacity-60 text-slate-950 font-bold text-xs rounded-lg transition-colors cursor-pointer flex items-center gap-1.5"
+                >
+                  <Search className="w-3.5 h-3.5" />
+                  <span>Buscar</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={isLoadingRecentInvoices}
+                  onClick={() => void loadRecentInvoices(recentInvoicesLimit, recentInvoicesSearch)}
+                  className="px-3 py-2 bg-white hover:bg-slate-100 disabled:opacity-60 text-slate-700 font-semibold text-xs rounded-lg border border-slate-300 transition-colors cursor-pointer flex items-center gap-1.5"
+                  title="Actualizar lista"
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${isLoadingRecentInvoices ? 'animate-spin' : ''}`} />
+                  <span>Actualizar</span>
+                </button>
+              </div>
+            </form>
+
+            {/* Count bar */}
+            <div className="px-4 sm:px-5 py-2 bg-white border-b border-slate-100 flex items-center justify-between text-[11px] text-slate-500 shrink-0">
+              <span>
+                Mostrando <strong className="text-slate-800">{recentInvoices.length}</strong>
+                {recentInvoicesTotal > 0 ? (
+                  <>
+                    {' '}de <strong className="text-slate-800">{recentInvoicesTotal}</strong> facturas
+                  </>
+                ) : (
+                  ' facturas'
+                )}
+              </span>
+              {recentInvoicesSearch.trim() && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setRecentInvoicesSearch('');
+                    void loadRecentInvoices(15, '');
+                  }}
+                  className="text-amber-700 hover:text-amber-800 font-semibold cursor-pointer"
+                >
+                  Limpiar búsqueda
+                </button>
+              )}
+            </div>
+
+            {/* Results List */}
+            <div className="flex-1 overflow-y-auto p-4 sm:p-5 space-y-2.5 bg-slate-50/60">
+              {recentInvoicesError && (
+                <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-800 text-xs font-medium flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 shrink-0" />
+                  <span>{recentInvoicesError}</span>
+                </div>
+              )}
+
+              {isLoadingRecentInvoices && recentInvoices.length === 0 ? (
+                <div className="py-12 flex flex-col items-center justify-center gap-2 text-slate-500">
+                  <Loader2 className="w-6 h-6 animate-spin text-amber-600" />
+                  <p className="text-xs font-medium">Consultando últimas facturas...</p>
+                </div>
+              ) : recentInvoices.length === 0 ? (
+                <div className="py-12 text-center text-slate-500">
+                  <FileText className="w-8 h-8 mx-auto text-slate-300 mb-2" />
+                  <p className="text-xs font-semibold text-slate-700">
+                    No se encontraron facturas para esta consulta.
+                  </p>
+                  <p className="text-[11px] text-slate-400 mt-1">
+                    Las facturas nuevas emitidas desde el POS aparecerán aquí al instante.
+                  </p>
+                </div>
+              ) : (
+                recentInvoices.map((sale) => {
+                  const isVoided = Boolean(sale.isVoided || sale.creditStatus === 'ANULADO');
+                  const isCredit = sale.paymentType === 'CREDITO';
+                  const formattedDate = (() => {
+                    try {
+                      return new Date(sale.createdAt).toLocaleString('es-VE', {
+                        dateStyle: 'short',
+                        timeStyle: 'short',
+                      });
+                    } catch {
+                      return sale.createdAt;
+                    }
+                  })();
+                  const totalItems = Array.isArray(sale.items)
+                    ? sale.items.reduce((sum, it) => sum + (Number(it.quantity) || 0), 0)
+                    : 0;
+
+                  return (
+                    <div
+                      key={sale.id}
+                      className={`p-3.5 rounded-xl border bg-white shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3 ${
+                        isVoided ? 'border-rose-200 opacity-75' : 'border-slate-200'
+                      }`}
+                    >
+                      <div className="min-w-0 space-y-1">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="font-mono text-xs font-extrabold text-slate-900">
+                            {sale.invoiceNumber}
+                          </span>
+                          <span className="text-[11px] text-slate-500 tabular-nums">
+                            {formattedDate}
+                          </span>
+                          {isVoided && (
+                            <span className="px-1.5 py-0.5 text-[10px] font-bold bg-rose-100 text-rose-700 rounded">
+                              ANULADA
+                            </span>
+                          )}
+                          {!isVoided && isCredit && (
+                            <span className="px-1.5 py-0.5 text-[10px] font-bold bg-amber-100 text-amber-800 rounded">
+                              CRÉDITO
+                            </span>
+                          )}
+                        </div>
+
+                        <p className="text-xs font-bold text-slate-800 truncate">
+                          {sale.customerName || 'Cliente Mostrador'}
+                        </p>
+
+                        <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[11px] text-slate-500">
+                          {sale.customerDocument && <span>C.I./RIF: {sale.customerDocument}</span>}
+                          {sale.customerPhone && sale.customerPhone !== 'N/A' && (
+                            <span>Tel: {sale.customerPhone}</span>
+                          )}
+                          <span>
+                            {totalItems} {totalItems === 1 ? 'artículo' : 'artículos'}
+                          </span>
+                          <span>{sale.paymentMethod}</span>
+                        </div>
+                      </div>
+
+                      <div className="flex sm:flex-col items-center sm:items-end justify-between gap-2 shrink-0 border-t sm:border-t-0 pt-2 sm:pt-0 border-slate-100">
+                        <div className="text-left sm:text-right tabular-nums">
+                          <p className="text-sm font-extrabold text-slate-900">
+                            {formatUSD(sale.total)}
+                          </p>
+                          <p className="text-[11px] font-semibold text-emerald-700">
+                            {formatBs(sale.totalBs || sale.total * rate)}
+                          </p>
+                        </div>
+
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => setSelectedInvoice(sale)}
+                            className="px-2.5 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-[11px] font-bold flex items-center gap-1 transition-colors cursor-pointer"
+                            title="Ver e imprimir factura"
+                          >
+                            <Printer className="w-3.5 h-3.5 text-amber-400" />
+                            <span>Ver / Imprimir</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleResendRecentInvoiceWhatsApp(sale)}
+                            className="px-2.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-[11px] font-bold flex items-center gap-1 transition-colors cursor-pointer"
+                            title="Enviar factura por WhatsApp"
+                          >
+                            <MessageSquare className="w-3.5 h-3.5" />
+                            <span>WhatsApp</span>
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+
+            {/* Footer */}
+            <div className="px-4 sm:px-5 py-3 bg-white border-t border-slate-200 flex items-center justify-between gap-2 shrink-0">
+              <div>
+                {recentInvoicesHasMore && recentInvoicesLimit < 100 && (
+                  <button
+                    type="button"
+                    disabled={isLoadingRecentInvoices}
+                    onClick={handleLoadMoreRecentInvoices}
+                    className="px-3.5 py-2 rounded-lg bg-slate-100 hover:bg-slate-200 disabled:opacity-60 text-slate-800 text-xs font-bold transition-colors cursor-pointer flex items-center gap-1.5"
+                  >
+                    {isLoadingRecentInvoices ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <Plus className="w-3.5 h-3.5" />
+                    )}
+                    <span>Cargar más (+15)</span>
+                  </button>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={handleCloseRecentInvoicesModal}
+                className="px-4 py-2 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold transition-colors cursor-pointer"
+              >
+                Cerrar
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

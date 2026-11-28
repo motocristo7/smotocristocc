@@ -1,31 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, Suspense, lazy } from 'react';
 import { AppProvider, useApp } from './context/AppContext';
 import { Navbar } from './components/layout/Navbar';
 import { Storefront } from './components/store/Storefront';
 import { CartDrawer } from './components/store/CartDrawer';
-import { CustomerPortal } from './components/portal/CustomerPortal';
-import { AdminDashboard } from './components/admin/AdminDashboard';
-import { TasksView } from './components/admin/TasksView';
-import { TaskReminderNotifier } from './components/admin/TaskReminderNotifier';
-import { PosView } from './components/admin/PosView';
-import { SalesDatabaseView } from './components/admin/SalesDatabaseView';
-import { AccountsReceivableView } from './components/admin/AccountsReceivableView';
-import { PurchaseOrdersView } from './components/admin/PurchaseOrdersView';
-import { ExpensesView } from './components/admin/ExpensesView';
-import { TreasuryFinanceView } from './components/admin/TreasuryFinanceView';
-import { InventoryView } from './components/admin/InventoryView';
-import { WholesalePricingView } from './components/admin/WholesalePricingView';
-import { ServiceOrdersView } from './components/admin/ServiceOrdersView';
-import { CommissionsView } from './components/admin/CommissionsView';
-import { OrdersView } from './components/admin/OrdersView';
-import { CustomersView } from './components/admin/CustomersView';
-import { SettingsView } from './components/admin/SettingsView';
-import { StaffManagementView } from './components/admin/StaffManagementView';
-import { AdminSidebar } from './components/layout/AdminSidebar';
-import { InvoiceModal } from './components/modals/InvoiceModal';
-import { WhatsAppModal } from './components/modals/WhatsAppModal';
-import { AuthModal } from './components/modals/AuthModal';
-import { ChangeAdminPasswordModal } from './components/modals/ChangeAdminPasswordModal';
+import { ErrorBoundary } from './components/ErrorBoundary';
 import {
   ShieldCheck,
   Phone,
@@ -33,6 +11,87 @@ import {
   Clock,
   Lock,
 } from 'lucide-react';
+
+// Lazy-load secondary views, heavy admin modules (Excel/PDF/Charts), and modals on demand
+// so initial storefront load stays lightweight and fast on every device.
+const CustomerPortal = lazy(() =>
+  import('./components/portal/CustomerPortal').then((m) => ({ default: m.CustomerPortal }))
+);
+const AdminDashboard = lazy(() =>
+  import('./components/admin/AdminDashboard').then((m) => ({ default: m.AdminDashboard }))
+);
+const TasksView = lazy(() =>
+  import('./components/admin/TasksView').then((m) => ({ default: m.TasksView }))
+);
+const TaskReminderNotifier = lazy(() =>
+  import('./components/admin/TaskReminderNotifier').then((m) => ({ default: m.TaskReminderNotifier }))
+);
+const PosView = lazy(() =>
+  import('./components/admin/PosView').then((m) => ({ default: m.PosView }))
+);
+const SalesDatabaseView = lazy(() =>
+  import('./components/admin/SalesDatabaseView').then((m) => ({ default: m.SalesDatabaseView }))
+);
+const AccountsReceivableView = lazy(() =>
+  import('./components/admin/AccountsReceivableView').then((m) => ({ default: m.AccountsReceivableView }))
+);
+const PurchaseOrdersView = lazy(() =>
+  import('./components/admin/PurchaseOrdersView').then((m) => ({ default: m.PurchaseOrdersView }))
+);
+const ExpensesView = lazy(() =>
+  import('./components/admin/ExpensesView').then((m) => ({ default: m.ExpensesView }))
+);
+const TreasuryFinanceView = lazy(() =>
+  import('./components/admin/TreasuryFinanceView').then((m) => ({ default: m.TreasuryFinanceView }))
+);
+const InventoryView = lazy(() =>
+  import('./components/admin/InventoryView').then((m) => ({ default: m.InventoryView }))
+);
+const WholesalePricingView = lazy(() =>
+  import('./components/admin/WholesalePricingView').then((m) => ({ default: m.WholesalePricingView }))
+);
+const ServiceOrdersView = lazy(() =>
+  import('./components/admin/ServiceOrdersView').then((m) => ({ default: m.ServiceOrdersView }))
+);
+const CommissionsView = lazy(() =>
+  import('./components/admin/CommissionsView').then((m) => ({ default: m.CommissionsView }))
+);
+const OrdersView = lazy(() =>
+  import('./components/admin/OrdersView').then((m) => ({ default: m.OrdersView }))
+);
+const CustomersView = lazy(() =>
+  import('./components/admin/CustomersView').then((m) => ({ default: m.CustomersView }))
+);
+const SettingsView = lazy(() =>
+  import('./components/admin/SettingsView').then((m) => ({ default: m.SettingsView }))
+);
+const StaffManagementView = lazy(() =>
+  import('./components/admin/StaffManagementView').then((m) => ({ default: m.StaffManagementView }))
+);
+const AdminSidebar = lazy(() =>
+  import('./components/layout/AdminSidebar').then((m) => ({ default: m.AdminSidebar }))
+);
+const InvoiceModal = lazy(() =>
+  import('./components/modals/InvoiceModal').then((m) => ({ default: m.InvoiceModal }))
+);
+const WhatsAppModal = lazy(() =>
+  import('./components/modals/WhatsAppModal').then((m) => ({ default: m.WhatsAppModal }))
+);
+const AuthModal = lazy(() =>
+  import('./components/modals/AuthModal').then((m) => ({ default: m.AuthModal }))
+);
+const ChangeAdminPasswordModal = lazy(() =>
+  import('./components/modals/ChangeAdminPasswordModal').then((m) => ({ default: m.ChangeAdminPasswordModal }))
+);
+
+const ViewLoadingFallback: React.FC = () => (
+  <div className="flex-1 flex items-center justify-center py-20 px-4">
+    <div className="flex items-center gap-3 text-xs font-semibold text-slate-500">
+      <span className="w-4 h-4 rounded-full border-2 border-slate-300 border-t-amber-500 animate-spin" />
+      <span>Cargando módulo...</span>
+    </div>
+  </div>
+);
 
 const AppContent: React.FC = () => {
   const {
@@ -47,11 +106,12 @@ const AppContent: React.FC = () => {
     isStaff,
     canAccessView,
     getDefaultStaffView,
-    currentUser,
     isAuthModalOpen,
     closeAuthModal,
     authModalTab,
-    openAuthModal,
+    selectedInvoice,
+    whatsappModalData,
+    isChangePasswordModalOpen,
   } = useApp();
   const [isCartOpen, setIsCartOpen] = useState(false);
   const [cartInitialStep, setCartInitialStep] = useState<'cart' | 'checkout'>('cart');
@@ -73,6 +133,13 @@ const AppContent: React.FC = () => {
 
   const isCurrentViewAdmin = currentView.startsWith('admin_') && isStaff;
   const hasCurrentViewAccess = !isCurrentViewAdmin || canAccessView(currentView);
+  const showStorefrontFallback =
+    currentView === 'tienda' || (currentView !== 'consulta_cliente' && !isCurrentViewAdmin);
+
+  const safeAddress = typeof settings?.address === 'string' ? settings.address : '';
+  const safeCity = typeof settings?.city === 'string' ? settings.city : 'Mérida';
+  const safeState = typeof settings?.state === 'string' ? settings.state : 'Mérida';
+  const safeWhatsapp = typeof settings?.whatsapp === 'string' ? settings.whatsapp : '';
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col text-slate-900">
@@ -81,74 +148,107 @@ const AppContent: React.FC = () => {
 
       {/* Main Content Viewport */}
       <div className="flex-1 flex flex-col md:flex-row">
-        {isCurrentViewAdmin && <AdminSidebar />}
+        {isCurrentViewAdmin && (
+          <Suspense fallback={null}>
+            <AdminSidebar />
+          </Suspense>
+        )}
 
         <div className="flex-1 min-w-0 flex flex-col">
-          {currentView === 'tienda' && <Storefront onOpenCart={(step) => handleOpenCart(step || 'cart')} />}
-          {currentView === 'consulta_cliente' && <CustomerPortal />}
+          <ErrorBoundary>
+            {showStorefrontFallback && (
+              <Storefront onOpenCart={(step) => handleOpenCart(step || 'cart')} />
+            )}
 
-          {/* Staff / Admin Views - enforced by role and module permissions */}
-          {isCurrentViewAdmin && (
-            <main className="max-w-[1440px] w-full mx-auto px-3 sm:px-5 lg:px-7 py-6 sm:py-7 flex-1">
-              {!hasCurrentViewAccess ? (
-                <div className="max-w-lg mx-auto my-12 bg-white rounded-2xl border border-slate-200 p-8 text-center space-y-4">
-                  <div className="w-12 h-12 rounded-xl bg-amber-50 border border-amber-200 text-amber-700 flex items-center justify-center mx-auto">
-                    <Lock className="w-6 h-6" />
+            {currentView === 'consulta_cliente' && (
+              <Suspense fallback={<ViewLoadingFallback />}>
+                <CustomerPortal />
+              </Suspense>
+            )}
+
+            {/* Staff / Admin Views - enforced by role and module permissions */}
+            {isCurrentViewAdmin && (
+              <main className="max-w-[1440px] w-full mx-auto px-3 sm:px-5 lg:px-7 py-6 sm:py-7 flex-1">
+                {!hasCurrentViewAccess ? (
+                  <div className="max-w-lg mx-auto my-12 bg-white rounded-2xl border border-slate-200 p-8 text-center space-y-4">
+                    <div className="w-12 h-12 rounded-xl bg-amber-50 border border-amber-200 text-amber-700 flex items-center justify-center mx-auto">
+                      <Lock className="w-6 h-6" />
+                    </div>
+                    <div className="space-y-1">
+                      <h2 className="text-lg font-bold text-slate-900">Área restringida</h2>
+                      <p className="text-xs text-slate-600">
+                        Tu usuario no tiene permisos habilitados para acceder a este módulo. Solicita autorización al administrador si lo necesitas para tu trabajo.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setCurrentView(getDefaultStaffView())}
+                      className="px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white font-semibold text-xs rounded-xl cursor-pointer transition-colors"
+                    >
+                      Ir a mi área autorizada
+                    </button>
                   </div>
-                  <div className="space-y-1">
-                    <h2 className="text-lg font-bold text-slate-900">Área restringida</h2>
-                    <p className="text-xs text-slate-600">
-                      Tu usuario no tiene permisos habilitados para acceder a este módulo. Solicita autorización al administrador si lo necesitas para tu trabajo.
-                    </p>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => setCurrentView(getDefaultStaffView())}
-                    className="px-4 py-2 bg-slate-900 hover:bg-slate-800 text-white font-semibold text-xs rounded-xl cursor-pointer transition-colors"
-                  >
-                    Ir a mi área autorizada
-                  </button>
-                </div>
-              ) : (
-                <>
-                  {currentView === 'admin_dashboard' && <AdminDashboard />}
-                  {currentView === 'admin_tareas' && <TasksView />}
-                  {currentView === 'admin_pos' && <PosView />}
-                  {currentView === 'admin_ventas' && <SalesDatabaseView />}
-                  {currentView === 'admin_cuentas_cobrar' && <AccountsReceivableView />}
-                  {currentView === 'admin_compras' && <PurchaseOrdersView />}
-                  {currentView === 'admin_gastos' && <ExpensesView />}
-                  {currentView === 'admin_tesoreria' && <TreasuryFinanceView />}
-                  {currentView === 'admin_inventario' && <InventoryView />}
-                  {currentView === 'admin_mayorista' && <WholesalePricingView />}
-                  {currentView === 'admin_taller' && <ServiceOrdersView />}
-                  {currentView === 'admin_comisiones' && <CommissionsView />}
-                  {currentView === 'admin_pedidos' && <OrdersView />}
-                  {currentView === 'admin_clientes' && <CustomersView />}
-                  {currentView === 'admin_usuarios' && isAdmin && <StaffManagementView />}
-                  {currentView === 'admin_ajustes' && <SettingsView />}
-                </>
-              )}
-            </main>
-          )}
+                ) : (
+                  <Suspense fallback={<ViewLoadingFallback />}>
+                    {currentView === 'admin_dashboard' && <AdminDashboard />}
+                    {currentView === 'admin_tareas' && <TasksView />}
+                    {currentView === 'admin_pos' && <PosView />}
+                    {currentView === 'admin_ventas' && <SalesDatabaseView />}
+                    {currentView === 'admin_cuentas_cobrar' && <AccountsReceivableView />}
+                    {currentView === 'admin_compras' && <PurchaseOrdersView />}
+                    {currentView === 'admin_gastos' && <ExpensesView />}
+                    {currentView === 'admin_tesoreria' && <TreasuryFinanceView />}
+                    {currentView === 'admin_inventario' && <InventoryView />}
+                    {currentView === 'admin_mayorista' && <WholesalePricingView />}
+                    {currentView === 'admin_taller' && <ServiceOrdersView />}
+                    {currentView === 'admin_comisiones' && <CommissionsView />}
+                    {currentView === 'admin_pedidos' && <OrdersView />}
+                    {currentView === 'admin_clientes' && <CustomersView />}
+                    {currentView === 'admin_usuarios' && isAdmin && <StaffManagementView />}
+                    {currentView === 'admin_ajustes' && <SettingsView />}
+                  </Suspense>
+                )}
+              </main>
+            )}
+          </ErrorBoundary>
         </div>
       </div>
 
-      {/* Global Modals */}
+      {/* Global Modals (mounted lazily only when opened) */}
       <CartDrawer
         isOpen={isCartOpen}
         onClose={() => setIsCartOpen(false)}
         initialStep={cartInitialStep}
       />
-      <InvoiceModal />
-      <WhatsAppModal />
-      <AuthModal
-        isOpen={isAuthModalOpen}
-        onClose={closeAuthModal}
-        defaultTab={authModalTab}
-      />
-      <ChangeAdminPasswordModal />
-      {isStaff && <TaskReminderNotifier />}
+      {selectedInvoice && (
+        <Suspense fallback={null}>
+          <InvoiceModal />
+        </Suspense>
+      )}
+      {whatsappModalData && (
+        <Suspense fallback={null}>
+          <WhatsAppModal />
+        </Suspense>
+      )}
+      {isAuthModalOpen && (
+        <Suspense fallback={null}>
+          <AuthModal
+            isOpen={isAuthModalOpen}
+            onClose={closeAuthModal}
+            defaultTab={authModalTab}
+          />
+        </Suspense>
+      )}
+      {isChangePasswordModalOpen && (
+        <Suspense fallback={null}>
+          <ChangeAdminPasswordModal />
+        </Suspense>
+      )}
+      {isStaff && (
+        <Suspense fallback={null}>
+          <TaskReminderNotifier />
+        </Suspense>
+      )}
 
       {/* Clean Domain Footer */}
       <footer className="bg-slate-950 text-slate-400 text-xs border-t border-slate-800 mt-auto no-print">
@@ -184,14 +284,14 @@ const AppContent: React.FC = () => {
               <div className="space-y-2 text-slate-400">
                 <p className="flex items-start gap-1.5">
                   <MapPin className="w-3.5 h-3.5 mt-0.5 text-amber-500 shrink-0" />
-                  <span>{settings.address.includes(settings.city) ? settings.address : `${settings.address}, ${settings.city} - ${settings.state}`}</span>
+                  <span>{safeAddress.includes(safeCity) ? safeAddress : `${safeAddress}, ${safeCity} - ${safeState}`}</span>
                 </p>
                 <p className="flex items-center gap-1.5">
                   <Phone className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
                   <span>
                     Teléfono / WhatsApp:{' '}
                     <a
-                      href={`https://api.whatsapp.com/send?phone=58${settings.whatsapp.replace(/\D/g, '').replace(/^0/, '')}`}
+                      href={`https://api.whatsapp.com/send?phone=58${safeWhatsapp.replace(/\D/g, '').replace(/^0/, '')}`}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="text-emerald-400 hover:underline font-mono font-bold"
@@ -272,8 +372,10 @@ const AppContent: React.FC = () => {
 
 export default function App() {
   return (
-    <AppProvider>
-      <AppContent />
-    </AppProvider>
+    <ErrorBoundary>
+      <AppProvider>
+        <AppContent />
+      </AppProvider>
+    </ErrorBoundary>
   );
 }

@@ -56,6 +56,7 @@ export const CustomerPendingAccountsModal: React.FC<CustomerPendingAccountsModal
     currentUser,
     setSelectedInvoice,
     openAuthModal,
+    ensureSalesHistoryLoaded,
   } = useApp();
 
   const [documentInput, setDocumentInput] = useState('');
@@ -63,6 +64,12 @@ export const CustomerPendingAccountsModal: React.FC<CustomerPendingAccountsModal
   const [showPaymentDetails, setShowPaymentDetails] = useState(false);
   const [copiedField, setCopiedField] = useState<string | null>(null);
   const [expandedPaymentsId, setExpandedPaymentsId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (isOpen) {
+      ensureSalesHistoryLoaded();
+    }
+  }, [isOpen]);
 
   useEffect(() => {
     if (isOpen && currentUser?.documentId && currentUser.role === 'CLIENTE') {

@@ -1537,15 +1537,99 @@ app.get('/api/auth/users', (_req, res) => {
   }
 });
 
+// Helper to compute highest FACT-YYYY-NNNN sequence without transferring full history
+function computeMaxInvoiceSeq(salesList: any[]): number {
+  let maxSeq = 100;
+  if (!Array.isArray(salesList)) return maxSeq;
+  for (let i = 0; i < salesList.length; i++) {
+    const match = String(salesList[i]?.invoiceNumber || '').match(/FACT-\d+-(\d+)/);
+    if (match) {
+      const seq = parseInt(match[1], 10);
+      if (Number.isFinite(seq) && seq > maxSeq) maxSeq = seq;
+    }
+  }
+  return maxSeq;
+}
+
 // API endpoints for persistent application database (products, customers, settings, sales, orders)
-app.get('/api/data', (_req, res) => {
+app.get('/api/data', (req, res) => {
   try {
     const dbData = readDatabase();
     // Never expose raw password or passwordHash fields in the general /api/data payload
     const safeUsers = (Array.isArray(dbData.users) ? dbData.users : []).map(
       ({ password: _pw, passwordHash: _ph, ...safe }: any) => safe
     );
-    return res.json({ success: true, data: { ...dbData, users: safeUsers } });
+    const excludeSales = req.query.excludeSales === '1' || req.query.excludeSales === 'true';
+    const allSales = Array.isArray(dbData.sales) ? dbData.sales : [];
+    const latestInvoiceSeq = computeMaxInvoiceSeq(allSales);
+
+    if (excludeSales) {
+      const { sales: _omittedSales, ...rest } = dbData;
+      return res.json({
+        success: true,
+        data: {
+          ...rest,
+          latestInvoiceSeq,
+          totalSalesCount: allSales.length,
+          users: safeUsers,
+        },
+      });
+    }
+
+    return res.json({
+      success: true,
+      data: {
+        ...dbData,
+        latestInvoiceSeq,
+        totalSalesCount: allSales.length,
+        users: safeUsers,
+      },
+    });
+  } catch (err: any) {
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Lightweight on-demand endpoint returning ONLY the latest N invoices (for POS quick lookup)
+app.get('/api/sales/recent', (req, res) => {
+  try {
+    const dbData = readDatabase();
+    const deletedSalesSet = new Set(dbData.deletedIds?.sales || []);
+    const rawLimit = parseInt(String(req.query.limit || '15'), 10);
+    const limitCount = Number.isFinite(rawLimit) ? Math.min(Math.max(rawLimit, 1), 100) : 15;
+    const rawOffset = parseInt(String(req.query.offset || '0'), 10);
+    const offset = Number.isFinite(rawOffset) && rawOffset > 0 ? rawOffset : 0;
+    const search = String(req.query.search || '').trim().toLowerCase();
+
+    const cleanSales = (Array.isArray(dbData.sales) ? dbData.sales : [])
+      .filter((s: any) => s && s.id && !deletedSalesSet.has(s.id))
+      .sort((a: any, b: any) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+
+    const latestInvoiceSeq = computeMaxInvoiceSeq(cleanSales);
+
+    const filtered = search
+      ? cleanSales.filter((s: any) => {
+          const inv = String(s.invoiceNumber || '').toLowerCase();
+          const name = String(s.customerName || '').toLowerCase();
+          const docId = String(s.customerDocument || '').toLowerCase();
+          const phone = String(s.customerPhone || '').toLowerCase();
+          return (
+            inv.includes(search) ||
+            name.includes(search) ||
+            docId.includes(search) ||
+            phone.includes(search)
+          );
+        })
+      : cleanSales;
+
+    const slice = filtered.slice(offset, offset + limitCount);
+    return res.json({
+      success: true,
+      sales: slice,
+      totalCount: filtered.length,
+      hasMore: offset + slice.length < filtered.length,
+      latestInvoiceSeq,
+    });
   } catch (err: any) {
     return res.status(500).json({ success: false, error: err.message });
   }

@@ -3,8 +3,7 @@ import QRCode from 'qrcode';
 import { Sale, BusinessSettings, Product, ServiceOrder, TechnicianPayout, PurchaseOrder, isSaleWithCredit, getServiceOrderPaymentSummary } from '../types';
 import { formatUSD, formatBs, getPublicAppOrigin } from './whatsapp';
 import { normalizeImageUrl, extractGoogleDriveId, getGoogleDriveThumbnailUrl } from './imageUrl';
-
-const PRODUCTS_STORAGE_KEY = 'servimotos_products_ve_v2';
+import { getInMemoryProductsCatalog } from './indexedDbCache';
 
 interface LoadedImageInfo {
   dataUrl: string;
@@ -14,15 +13,7 @@ interface LoadedImageInfo {
 
 function getCachedProductsCatalog(explicitProducts?: Product[]): Product[] {
   if (explicitProducts && explicitProducts.length > 0) return explicitProducts;
-  if (typeof window === 'undefined') return [];
-  try {
-    const raw = window.localStorage.getItem(PRODUCTS_STORAGE_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch {
-    return [];
-  }
+  return getInMemoryProductsCatalog();
 }
 
 function resolveProductImageUrl(

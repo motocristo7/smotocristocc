@@ -161,10 +161,40 @@ export function handleProductImageError(
 export const MAX_PRODUCT_IMAGES = 6;
 
 /**
- * Returns true if the URL is a directly uploaded embedded image (Data URL)
+ * Returns true if the URL is a legacy inline base64 Data URL.
  */
 export function isEmbeddedImageUrl(url?: string): boolean {
-  return Boolean(url && url.trim().startsWith('data:image/'));
+  return Boolean(url && url.trim().toLowerCase().startsWith('data:image/'));
+}
+
+/**
+ * Returns true if the URL is hosted on Firebase Storage.
+ */
+export function isFirebaseStorageImageUrl(url?: string): boolean {
+  if (!url) return false;
+  const lower = url.trim().toLowerCase();
+  return (
+    lower.includes('firebasestorage.googleapis.com') ||
+    lower.includes('firebasestorage.app') ||
+    lower.includes('storage.googleapis.com')
+  );
+}
+
+/**
+ * Returns true if the URL is one of the built-in bundled fallback placeholder assets.
+ */
+export function isPresetFallbackImageUrl(url?: string): boolean {
+  if (!url) return false;
+  const norm = normalizeImageUrl(url);
+  return Object.values(PRESET_PRODUCT_IMAGES).includes(norm);
+}
+
+/**
+ * Returns true if the URL is a real uploaded photo hosted on Firebase Storage (or legacy embedded photo).
+ */
+export function isUploadedImageUrl(url?: string): boolean {
+  if (!url) return false;
+  return isFirebaseStorageImageUrl(url) || isEmbeddedImageUrl(url);
 }
 
 /**
@@ -202,80 +232,16 @@ export function getProductImages(
 }
 
 /**
- * Returns true if the product has at least one directly uploaded embedded photo.
+ * Returns true if the product has at least one real uploaded photo (Firebase Storage URL or legacy uploaded photo).
  */
 export function hasAnyEmbeddedImage(
   product?: { imageUrl?: string; imageUrls?: string[] } | null
 ): boolean {
   if (!product) return false;
-  if (isEmbeddedImageUrl(product.imageUrl)) return true;
+  if (isUploadedImageUrl(product.imageUrl)) return true;
   if (Array.isArray(product.imageUrls)) {
-    return product.imageUrls.some((u) => isEmbeddedImageUrl(u));
+    return product.imageUrls.some((u) => isUploadedImageUrl(u));
   }
   return false;
 }
 
-/**
- * Resizes and compresses a local image file in the browser into a compact JPEG Data URL
- * sized safely for multi-photo Firestore documents (<= 135 KB chars per photo, up to 6 photos < 1MB).
- */
-export async function compressImageFileToDataUrl(
-  file: File,
-  maxDimension = 720,
-  quality = 0.8,
-  maxCharLength = 135_000
-): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onerror = () => reject(new Error('No se pudo leer el archivo de imagen.'));
-    reader.onload = () => {
-      const img = new Image();
-      img.onerror = () => reject(new Error('Formato de imagen no válido.'));
-      img.onload = () => {
-        const renderAt = (dim: number, q: number): string => {
-          let { width, height } = img;
-          if (width > dim || height > dim) {
-            if (width >= height) {
-              height = Math.max(1, Math.round((height * dim) / width));
-              width = dim;
-            } else {
-              width = Math.max(1, Math.round((width * dim) / height));
-              height = dim;
-            }
-          }
-          const canvas = document.createElement('canvas');
-          canvas.width = width;
-          canvas.height = height;
-          const ctx = canvas.getContext('2d');
-          if (!ctx) {
-            throw new Error('No se pudo procesar la imagen.');
-          }
-          // Fill white background so transparent PNG/WebP cutouts don't turn black in JPEG
-          ctx.fillStyle = '#ffffff';
-          ctx.fillRect(0, 0, width, height);
-          ctx.drawImage(img, 0, 0, width, height);
-          return canvas.toDataURL('image/jpeg', q);
-        };
-
-        try {
-          let result = renderAt(maxDimension, quality);
-          // Progressive compression so up to 6 photos comfortably stay under Firestore's 1MB doc limit
-          if (result.length > maxCharLength) {
-            result = renderAt(Math.min(maxDimension, 620), 0.72);
-          }
-          if (result.length > maxCharLength) {
-            result = renderAt(Math.min(maxDimension, 500), 0.62);
-          }
-          if (result.length > maxCharLength) {
-            result = renderAt(Math.min(maxDimension, 420), 0.54);
-          }
-          resolve(result);
-        } catch (err) {
-          reject(err);
-        }
-      };
-      img.src = String(reader.result || '');
-    };
-    reader.readAsDataURL(file);
-  });
-}

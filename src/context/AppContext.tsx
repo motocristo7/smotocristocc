@@ -97,6 +97,8 @@ import {
   subscribeToSettings,
   subscribeToCustomers,
   subscribeToSales,
+  fetchRecentSalesFromFirestore,
+  fetchLatestInvoiceSequenceFromFirestore,
   subscribeToServiceOrders,
   subscribeToOnlineOrders,
   subscribeToTechnicians,
@@ -176,6 +178,20 @@ import {
 } from '../utils/authCrypto';
 import { computePunctuality, calculateWorkedMinutes } from '../utils/staffAnalytics';
 import { getLocalTodayISO, getLocalTimeHHMM } from '../utils/taskNotifications';
+import { safeSetStorageItem } from '../utils/safeStorage';
+import {
+  IDB_CACHE_KEYS,
+  idbGet,
+  idbSet,
+  idbGetMany,
+  idbClear,
+  idbAppendSale,
+  idbGetLatestInvoiceSeq,
+  idbGetRecentSales,
+  extractInvoiceSeq,
+  migrateLegacyLocalStorageToIdb,
+  setInMemoryProductsCatalog,
+} from '../utils/indexedDbCache';
 
 function normalizePhoneKey(phone?: string): string {
   if (!phone) return '';
@@ -397,6 +413,19 @@ interface AppContextType {
   overdueCreditSales: Sale[];
   totalAccountsReceivableUSD: number;
   totalAccountsReceivableBs: number;
+
+  // Lazy / on-demand sales history & recent invoice queries (avoids loading all history in POS)
+  isSalesHistoryLoaded: boolean;
+  ensureSalesHistoryLoaded: () => void;
+  fetchRecentSalesOnDemand: (options?: {
+    limit?: number;
+    search?: string;
+  }) => Promise<{
+    sales: Sale[];
+    totalCount: number;
+    hasMore: boolean;
+    source: 'firestore' | 'server' | 'cache';
+  }>;
 
   updateMercadoLibreCommission: (saleId: string, status: 'PENDIENTE' | 'PAGADO', commissionUSD?: number) => void;
   settleAllMercadoLibreCommissions: () => void;
@@ -999,18 +1028,14 @@ interface AppContextType {
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
 
+// Lightweight localStorage keys only (products, sales, orders & images live exclusively in IndexedDB)
 const STORAGE_KEYS = {
   SETTINGS: 'servimotos_settings_ve_v2',
-  PRODUCTS: 'servimotos_products_ve_v2',
   CUSTOMERS: 'servimotos_customers_ve_v2',
-  SALES: 'servimotos_sales_ve_v2',
-  SERVICE_ORDERS: 'servimotos_service_orders_ve_v2',
-  ONLINE_ORDERS: 'servimotos_online_orders_ve_v2',
   TECHNICIANS: 'servimotos_technicians_ve_v1',
   SERVICE_COMMISSIONS: 'servimotos_service_commissions_ve_v1',
   TECH_PAYOUTS: 'servimotos_tech_payouts_ve_v1',
   SUPPLIERS: 'servimotos_suppliers_ve_v1',
-  PURCHASE_ORDERS: 'servimotos_purchase_orders_ve_v1',
   EXPENSES: 'servimotos_expenses_ve_v1',
   TREASURY_ACCOUNTS: 'servimotos_treasury_accounts_ve_v1',
   TREASURY_COMMITMENTS: 'servimotos_treasury_commitments_ve_v1',
@@ -1096,7 +1121,17 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     try {
       const stored = localStorage.getItem('servimotos_auth_user_v1');
       if (stored) {
-        return JSON.parse(stored);
+        const parsed = JSON.parse(stored);
+        if (
+          parsed &&
+          typeof parsed === 'object' &&
+          typeof parsed.id === 'string' &&
+          typeof parsed.name === 'string' &&
+          parsed.name.trim().length > 0 &&
+          typeof parsed.role === 'string'
+        ) {
+          return parsed as AppUser;
+        }
       }
     } catch {}
     return null;
@@ -1170,7 +1205,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
     setCurrentUser(cleanUser);
     try {
-      localStorage.setItem('servimotos_auth_user_v1', JSON.stringify(cleanUser));
+      safeSetStorageItem('servimotos_auth_user_v1', JSON.stringify(cleanUser));
     } catch {}
 
     if (cleanUser.role === 'ADMIN' || cleanUser.role === 'EMPLEADO') {
@@ -1343,7 +1378,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       if (res.ok && data.success && data.user) {
         setCurrentUser(data.user);
         try {
-          localStorage.setItem('servimotos_auth_user_v1', JSON.stringify(data.user));
+          safeSetStorageItem('servimotos_auth_user_v1', JSON.stringify(data.user));
         } catch {}
 
         setIsPublicClientMode(true);
@@ -1601,6 +1636,57 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     return initialPhone || currentUser?.phone || currentUser?.documentId || '';
   });
 
+  // Views that require the full historical sales dataset; POS ('admin_pos') and Storefront ('tienda') stay lightweight
+  const VIEWS_REQUIRING_FULL_SALES = useMemo(
+    () =>
+      new Set<AppView>([
+        'admin_dashboard',
+        'admin_ventas',
+        'admin_cuentas_cobrar',
+        'admin_clientes',
+        'admin_usuarios',
+        'consulta_cliente',
+      ]),
+    []
+  );
+
+  const [salesHistoryRequested, setSalesHistoryRequested] = useState<boolean>(() =>
+    VIEWS_REQUIRING_FULL_SALES.has(currentView)
+  );
+  const salesHistoryRequestedRef = useRef<boolean>(salesHistoryRequested);
+  const [isSalesHistoryLoaded, setIsSalesHistoryLoaded] = useState<boolean>(false);
+  const salesHistoryLoadedRef = useRef<boolean>(false);
+  const latestInvoiceSeqRef = useRef<number>((() => {
+    try {
+      const saved = parseInt(localStorage.getItem('servimotos_last_invoice_seq_v1') || '100', 10);
+      return Number.isFinite(saved) && saved >= 100 ? saved : 100;
+    } catch {
+      return 100;
+    }
+  })());
+
+  const bumpLatestInvoiceSeq = (candidate: number) => {
+    if (Number.isFinite(candidate) && candidate > latestInvoiceSeqRef.current) {
+      latestInvoiceSeqRef.current = candidate;
+      try {
+        safeSetStorageItem('servimotos_last_invoice_seq_v1', String(candidate));
+      } catch {}
+    }
+  };
+
+  const ensureSalesHistoryLoaded = () => {
+    if (!salesHistoryRequestedRef.current) {
+      salesHistoryRequestedRef.current = true;
+      setSalesHistoryRequested(true);
+    }
+  };
+
+  useEffect(() => {
+    if (VIEWS_REQUIRING_FULL_SALES.has(currentView)) {
+      ensureSalesHistoryLoaded();
+    }
+  }, [currentView, VIEWS_REQUIRING_FULL_SALES]);
+
   const setIsPublicClientMode = (mode: boolean) => {
     _setIsPublicClientMode(mode);
     try {
@@ -1715,7 +1801,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     setIsAdminSidebarCollapsed((prev) => {
       const next = !prev;
       try {
-        localStorage.setItem('servimotos_sidebar_collapsed', JSON.stringify(next));
+        safeSetStorageItem('servimotos_sidebar_collapsed', JSON.stringify(next));
       } catch {}
       return next;
     });
@@ -1726,7 +1812,35 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     try {
       const stored = localStorage.getItem(STORAGE_KEYS.SETTINGS);
       if (stored) {
-        return JSON.parse(stored);
+        const parsed = JSON.parse(stored);
+        if (parsed && typeof parsed === 'object') {
+          const parsedRate = Number(parsed.bcvRate);
+          return {
+            ...INITIAL_SETTINGS,
+            ...parsed,
+            commercialName:
+              typeof parsed.commercialName === 'string' && parsed.commercialName.trim()
+                ? parsed.commercialName
+                : INITIAL_SETTINGS.commercialName,
+            address:
+              typeof parsed.address === 'string' ? parsed.address : INITIAL_SETTINGS.address,
+            city: typeof parsed.city === 'string' ? parsed.city : INITIAL_SETTINGS.city,
+            state: typeof parsed.state === 'string' ? parsed.state : INITIAL_SETTINGS.state,
+            phone: typeof parsed.phone === 'string' ? parsed.phone : INITIAL_SETTINGS.phone,
+            whatsapp:
+              typeof parsed.whatsapp === 'string' ? parsed.whatsapp : INITIAL_SETTINGS.whatsapp,
+            bcvRate:
+              Number.isFinite(parsedRate) && parsedRate > 0
+                ? parsedRate
+                : INITIAL_SETTINGS.bcvRate,
+            bankDetails: {
+              ...INITIAL_SETTINGS.bankDetails,
+              ...(parsed.bankDetails && typeof parsed.bankDetails === 'object'
+                ? parsed.bankDetails
+                : {}),
+            },
+          };
+        }
       }
       return INITIAL_SETTINGS;
     } catch {
@@ -1817,7 +1931,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
   useEffect(() => {
     deletedIdsRef.current = deletedIds;
     try {
-      localStorage.setItem(STORAGE_KEYS.DELETED_IDS, JSON.stringify(deletedIds));
+      safeSetStorageItem(STORAGE_KEYS.DELETED_IDS, JSON.stringify(deletedIds));
     } catch {}
   }, [deletedIds]);
 
@@ -1828,40 +1942,15 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     deletedIdsRef.current = next;
     setDeletedIds(next);
     try {
-      localStorage.setItem(STORAGE_KEYS.DELETED_IDS, JSON.stringify(next));
+      safeSetStorageItem(STORAGE_KEYS.DELETED_IDS, JSON.stringify(next));
     } catch {}
     recordDeletedIdsInFirestore(category, cleanIds).catch((err) =>
       console.warn('Firestore tombstone sync error:', err)
     );
   };
 
-  // Products
-  const [products, setProducts] = useState<Product[]>(() => {
-    try {
-      const deletedSet = new Set(deletedIdsRef.current.products);
-      const stored = localStorage.getItem(STORAGE_KEYS.PRODUCTS);
-      if (stored !== null) {
-        const parsed: Product[] = JSON.parse(stored);
-        const filtered = parsed.filter((p) => !DEMO_PRODUCT_IDS.has(p.id) && !deletedSet.has(p.id));
-        const normalized = filtered.map((p) => {
-          let updatedImg = normalizeImageUrl(p.imageUrl);
-          if (p.name.toLowerCase().includes('maleta') && (!updatedImg || updatedImg.includes('brake_kit'))) {
-            updatedImg = PRESET_PRODUCT_IMAGES.maletaParaMoto;
-          }
-          return {
-            ...p,
-            imageUrl: updatedImg || p.imageUrl || PRESET_PRODUCT_IMAGES.brakeKit,
-          };
-        });
-
-        localStorage.setItem(STORAGE_KEYS.PRODUCTS, JSON.stringify(normalized.length > 0 ? normalized : INITIAL_PRODUCTS));
-        return normalized.length > 0 ? normalized : INITIAL_PRODUCTS;
-      }
-      return INITIAL_PRODUCTS;
-    } catch {
-      return INITIAL_PRODUCTS;
-    }
-  });
+  // Products (cached exclusively in IndexedDB, never localStorage)
+  const [products, setProducts] = useState<Product[]>(() => INITIAL_PRODUCTS);
 
   // Customers
   const [customers, setCustomers] = useState<Customer[]>(() => {
@@ -1869,14 +1958,18 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       const deletedSet = new Set(deletedIdsRef.current.customers);
       const stored = localStorage.getItem(STORAGE_KEYS.CUSTOMERS);
       if (stored) {
-        const parsed: Customer[] = JSON.parse(stored);
-        const filtered = parsed.filter(
+        const parsed = JSON.parse(stored);
+        if (!Array.isArray(parsed)) return INITIAL_CUSTOMERS;
+        const filtered = (parsed as Customer[]).filter(
           (c) =>
+            c &&
+            typeof c === 'object' &&
+            typeof c.id === 'string' &&
             !DEMO_CUSTOMER_IDS.has(c.id) &&
             !deletedSet.has(c.id) &&
             !DEMO_CUSTOMER_NAMES.has((c.name || '').trim().toLowerCase())
         );
-        localStorage.setItem(STORAGE_KEYS.CUSTOMERS, JSON.stringify(filtered.length > 0 ? filtered : INITIAL_CUSTOMERS));
+        safeSetStorageItem(STORAGE_KEYS.CUSTOMERS, JSON.stringify(filtered.length > 0 ? filtered : INITIAL_CUSTOMERS));
         return filtered.length > 0 ? filtered : INITIAL_CUSTOMERS;
       }
       return INITIAL_CUSTOMERS;
@@ -1885,60 +1978,31 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     }
   });
 
-  // Sales
-  const [sales, setSales] = useState<Sale[]>(() => {
-    try {
-      const deletedSet = new Set(deletedIdsRef.current.sales);
-      const stored = localStorage.getItem(STORAGE_KEYS.SALES);
-      if (stored) {
-        const parsed: Sale[] = JSON.parse(stored);
-        const filtered = parsed.filter((s) => !DEMO_SALE_IDS.has(s.id) && !deletedSet.has(s.id));
-        localStorage.setItem(STORAGE_KEYS.SALES, JSON.stringify(filtered));
-        return filtered;
-      }
-      return INITIAL_SALES;
-    } catch {
-      return INITIAL_SALES;
-    }
-  });
+  // Sales (cached exclusively in IndexedDB, never localStorage)
+  const [sales, setSales] = useState<Sale[]>(() => INITIAL_SALES);
 
-  // Service Orders
-  const [serviceOrders, setServiceOrders] = useState<ServiceOrder[]>(() => {
-    try {
-      const stored = localStorage.getItem(STORAGE_KEYS.SERVICE_ORDERS);
-      if (stored) {
-        const parsed: ServiceOrder[] = JSON.parse(stored);
-        return Array.isArray(parsed)
-          ? parsed.filter((o) => !DEMO_SERVICE_ORDER_IDS.has(o.id))
-          : [];
-      }
-      return [];
-    } catch {
-      return [];
-    }
-  });
+  // Service Orders (cached exclusively in IndexedDB, never localStorage)
+  const [serviceOrders, setServiceOrders] = useState<ServiceOrder[]>(() => []);
 
-  // Online Orders
-  const [onlineOrders, setOnlineOrders] = useState<OnlineOrder[]>(() => {
-    try {
-      const stored = localStorage.getItem(STORAGE_KEYS.ONLINE_ORDERS);
-      if (stored) {
-        const parsed: OnlineOrder[] = JSON.parse(stored);
-        const filtered = parsed.filter((o) => !DEMO_ONLINE_ORDER_IDS.has(o.id));
-        localStorage.setItem(STORAGE_KEYS.ONLINE_ORDERS, JSON.stringify(filtered));
-        return filtered;
-      }
-      return INITIAL_ONLINE_ORDERS;
-    } catch {
-      return INITIAL_ONLINE_ORDERS;
-    }
-  });
+  // Online Orders (cached exclusively in IndexedDB, never localStorage)
+  const [onlineOrders, setOnlineOrders] = useState<OnlineOrder[]>(() => INITIAL_ONLINE_ORDERS);
 
   // Cart
   const [cart, setCart] = useState<CartItem[]>(() => {
     try {
       const stored = localStorage.getItem(STORAGE_KEYS.CART);
-      return stored ? JSON.parse(stored) : [];
+      if (!stored) return [];
+      const parsed = JSON.parse(stored);
+      return Array.isArray(parsed)
+        ? parsed.filter(
+            (item) =>
+              item &&
+              typeof item === 'object' &&
+              item.product &&
+              typeof item.product.id === 'string' &&
+              Number(item.quantity) > 0
+          )
+        : [];
     } catch {
       return [];
     }
@@ -1948,7 +2012,9 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
   const [mlEntries, setMlEntries] = useState<MercadoLibreEntry[]>(() => {
     try {
       const stored = localStorage.getItem(STORAGE_KEYS.ML_ENTRIES);
-      return stored ? JSON.parse(stored) : [];
+      if (!stored) return [];
+      const parsed = JSON.parse(stored);
+      return Array.isArray(parsed) ? parsed : [];
     } catch {
       return [];
     }
@@ -2031,17 +2097,8 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     return [];
   });
 
-  const [purchaseOrders, setPurchaseOrders] = useState<PurchaseOrder[]>(() => {
-    try {
-      const delSet = new Set(deletedIdsRef.current.purchaseOrders);
-      const stored = localStorage.getItem(STORAGE_KEYS.PURCHASE_ORDERS);
-      if (stored) {
-        const parsed: PurchaseOrder[] = JSON.parse(stored);
-        return Array.isArray(parsed) ? parsed.filter((po) => !delSet.has(po.id)) : [];
-      }
-    } catch {}
-    return [];
-  });
+  // Purchase Orders (cached exclusively in IndexedDB, never localStorage)
+  const [purchaseOrders, setPurchaseOrders] = useState<PurchaseOrder[]>(() => []);
 
   // Business Expenses
   const [expenses, setExpenses] = useState<BusinessExpense[]>(() => {
@@ -2199,7 +2256,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
 
   const persistPendingSyncSaleIds = () => {
     try {
-      localStorage.setItem(
+      safeSetStorageItem(
         STORAGE_KEYS.PENDING_SYNC_SALES,
         JSON.stringify(Array.from(pendingSyncSaleIdsRef.current))
       );
@@ -2267,123 +2324,311 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
   const staffNotificationsRef = useRef<StaffNotification[]>(staffNotifications);
   const settingsRef = useRef<BusinessSettings>(settings);
 
-  // Sync to LocalStorage and live refs immediately on any state change
+  const idbHydratedRef = useRef<boolean>(false);
+
+  // Hydrate heavy collections from IndexedDB on startup (and purge any legacy localStorage copies)
+  // NOTE: Full sales history is NOT loaded on POS/storefront startup — only latest invoice sequence is checked.
+  useEffect(() => {
+    let cancelled = false;
+    async function hydrateFromIndexedDb() {
+      try {
+        await migrateLegacyLocalStorageToIdb();
+        const keysToLoad: string[] = [
+          IDB_CACHE_KEYS.PRODUCTS,
+          IDB_CACHE_KEYS.SERVICE_ORDERS,
+          IDB_CACHE_KEYS.ONLINE_ORDERS,
+          IDB_CACHE_KEYS.PURCHASE_ORDERS,
+        ];
+        if (salesHistoryRequestedRef.current) {
+          keysToLoad.push(IDB_CACHE_KEYS.SALES);
+        }
+        const cached = await idbGetMany(keysToLoad);
+        if (cancelled) return;
+
+        if (!salesHistoryRequestedRef.current) {
+          const seqFromIdb = await idbGetLatestInvoiceSeq();
+          bumpLatestInvoiceSeq(seqFromIdb);
+        }
+
+        const delProducts = new Set(deletedIdsRef.current.products);
+        const delSales = new Set([...DEMO_SALE_IDS, ...deletedIdsRef.current.sales]);
+        const delServiceOrders = new Set(deletedIdsRef.current.serviceOrders);
+        const delOnlineOrders = new Set(deletedIdsRef.current.onlineOrders);
+        const delPurchaseOrders = new Set(deletedIdsRef.current.purchaseOrders);
+
+        const cachedProducts = cached[IDB_CACHE_KEYS.PRODUCTS];
+        if (Array.isArray(cachedProducts) && cachedProducts.length > 0) {
+          const normalized = (cachedProducts as Product[])
+            .filter(
+              (p) =>
+                p &&
+                typeof p === 'object' &&
+                typeof p.id === 'string' &&
+                !DEMO_PRODUCT_IDS.has(p.id) &&
+                !delProducts.has(p.id)
+            )
+            .map((p) => {
+              let updatedImg = normalizeImageUrl(p.imageUrl);
+              if (
+                (p.name || '').toLowerCase().includes('maleta') &&
+                (!updatedImg || updatedImg.includes('brake_kit'))
+              ) {
+                updatedImg = PRESET_PRODUCT_IMAGES.maletaParaMoto;
+              }
+              return {
+                ...p,
+                name: typeof p.name === 'string' ? p.name : 'Repuesto',
+                imageUrl: updatedImg || p.imageUrl || PRESET_PRODUCT_IMAGES.brakeKit,
+              };
+            });
+          if (normalized.length > 0) {
+            setProducts((prev) => {
+              if (prev.length > 0) {
+                const existingIds = new Set(prev.map((p) => p.id));
+                const extras = normalized.filter((p) => !existingIds.has(p.id));
+                const merged = [...prev, ...extras];
+                productsRef.current = merged;
+                setInMemoryProductsCatalog(merged);
+                return merged;
+              }
+              productsRef.current = normalized;
+              setInMemoryProductsCatalog(normalized);
+              return normalized;
+            });
+          }
+        }
+
+        const cachedSales = cached[IDB_CACHE_KEYS.SALES];
+        if (salesHistoryRequestedRef.current && Array.isArray(cachedSales) && cachedSales.length > 0) {
+          const cleanSales = (cachedSales as Sale[]).filter(
+            (s) => s && typeof s === 'object' && typeof s.id === 'string' && !delSales.has(s.id)
+          );
+          if (cleanSales.length > 0) {
+            cleanSales.forEach((s) => bumpLatestInvoiceSeq(extractInvoiceSeq(s.invoiceNumber)));
+            setSales((prev) => {
+              const map = new Map<string, Sale>();
+              for (const s of cleanSales) map.set(s.id, s);
+              for (const s of prev) map.set(s.id, s);
+              const merged = Array.from(map.values()).sort((a, b) =>
+                (b.createdAt || '').localeCompare(a.createdAt || '')
+              );
+              salesRef.current = merged;
+              return merged;
+            });
+            salesHistoryLoadedRef.current = true;
+            setIsSalesHistoryLoaded(true);
+          }
+        }
+
+        const cachedServiceOrders = cached[IDB_CACHE_KEYS.SERVICE_ORDERS];
+        if (Array.isArray(cachedServiceOrders) && cachedServiceOrders.length > 0) {
+          const cleanOrders = (cachedServiceOrders as ServiceOrder[]).filter(
+            (o) =>
+              o &&
+              typeof o === 'object' &&
+              typeof o.id === 'string' &&
+              !DEMO_SERVICE_ORDER_IDS.has(o.id) &&
+              !delServiceOrders.has(o.id)
+          );
+          if (cleanOrders.length > 0) {
+            setServiceOrders((prev) => {
+              const map = new Map<string, ServiceOrder>();
+              for (const o of cleanOrders) map.set(o.id, o);
+              for (const o of prev) map.set(o.id, o);
+              const merged = Array.from(map.values()).sort((a, b) =>
+                (b.createdAt || '').localeCompare(a.createdAt || '')
+              );
+              serviceOrdersRef.current = merged;
+              return merged;
+            });
+          }
+        }
+
+        const cachedOnlineOrders = cached[IDB_CACHE_KEYS.ONLINE_ORDERS];
+        if (Array.isArray(cachedOnlineOrders) && cachedOnlineOrders.length > 0) {
+          const cleanOnline = (cachedOnlineOrders as OnlineOrder[]).filter(
+            (o) =>
+              o &&
+              typeof o === 'object' &&
+              typeof o.id === 'string' &&
+              !DEMO_ONLINE_ORDER_IDS.has(o.id) &&
+              !delOnlineOrders.has(o.id)
+          );
+          if (cleanOnline.length > 0) {
+            setOnlineOrders((prev) => {
+              const map = new Map<string, OnlineOrder>();
+              for (const o of cleanOnline) map.set(o.id, o);
+              for (const o of prev) map.set(o.id, o);
+              const merged = Array.from(map.values()).sort((a, b) =>
+                (b.createdAt || '').localeCompare(a.createdAt || '')
+              );
+              onlineOrdersRef.current = merged;
+              return merged;
+            });
+          }
+        }
+
+        const cachedPurchaseOrders = cached[IDB_CACHE_KEYS.PURCHASE_ORDERS];
+        if (Array.isArray(cachedPurchaseOrders) && cachedPurchaseOrders.length > 0) {
+          const cleanPo = (cachedPurchaseOrders as PurchaseOrder[]).filter(
+            (po) => po && typeof po === 'object' && typeof po.id === 'string' && !delPurchaseOrders.has(po.id)
+          );
+          if (cleanPo.length > 0) {
+            setPurchaseOrders((prev) => {
+              const map = new Map<string, PurchaseOrder>();
+              for (const po of cleanPo) map.set(po.id, po);
+              for (const po of prev) map.set(po.id, po);
+              const merged = Array.from(map.values()).sort((a, b) =>
+                (b.createdAt || '').localeCompare(a.createdAt || '')
+              );
+              purchaseOrdersRef.current = merged;
+              return merged;
+            });
+          }
+        }
+      } catch (err) {
+        console.warn('Error hydrating local IndexedDB cache:', err);
+      } finally {
+        idbHydratedRef.current = true;
+      }
+    }
+    hydrateFromIndexedDb();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // Sync to IndexedDB (heavy collections) / LocalStorage (lightweight settings) and live refs
   useEffect(() => {
     settingsRef.current = settings;
-    localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(settings));
+    safeSetStorageItem(STORAGE_KEYS.SETTINGS, JSON.stringify(settings));
   }, [settings]);
 
   useEffect(() => {
     productsRef.current = products;
-    localStorage.setItem(STORAGE_KEYS.PRODUCTS, JSON.stringify(products));
+    setInMemoryProductsCatalog(products);
+    if (idbHydratedRef.current || products.length > 0) {
+      idbSet(IDB_CACHE_KEYS.PRODUCTS, products).catch(() => {});
+    }
   }, [products]);
 
   useEffect(() => {
     customersRef.current = customers;
-    localStorage.setItem(STORAGE_KEYS.CUSTOMERS, JSON.stringify(customers));
+    safeSetStorageItem(STORAGE_KEYS.CUSTOMERS, JSON.stringify(customers));
   }, [customers]);
 
   useEffect(() => {
     salesRef.current = sales;
-    localStorage.setItem(STORAGE_KEYS.SALES, JSON.stringify(sales));
+    sales.forEach((s) => bumpLatestInvoiceSeq(extractInvoiceSeq(s.invoiceNumber)));
+    // Only persist the full array to IndexedDB when full history has been loaded;
+    // POS-only sessions persist individual emitted invoices via idbAppendSale so history is never overwritten.
+    if (salesHistoryLoadedRef.current && (idbHydratedRef.current || sales.length > 0)) {
+      idbSet(IDB_CACHE_KEYS.SALES, sales).catch(() => {});
+    }
   }, [sales]);
 
   useEffect(() => {
     serviceOrdersRef.current = serviceOrders;
-    localStorage.setItem(STORAGE_KEYS.SERVICE_ORDERS, JSON.stringify(serviceOrders));
+    if (idbHydratedRef.current || serviceOrders.length > 0) {
+      idbSet(IDB_CACHE_KEYS.SERVICE_ORDERS, serviceOrders).catch(() => {});
+    }
   }, [serviceOrders]);
 
   useEffect(() => {
     onlineOrdersRef.current = onlineOrders;
-    localStorage.setItem(STORAGE_KEYS.ONLINE_ORDERS, JSON.stringify(onlineOrders));
+    if (idbHydratedRef.current || onlineOrders.length > 0) {
+      idbSet(IDB_CACHE_KEYS.ONLINE_ORDERS, onlineOrders).catch(() => {});
+    }
   }, [onlineOrders]);
 
   useEffect(() => {
     techniciansRef.current = technicians;
-    localStorage.setItem(STORAGE_KEYS.TECHNICIANS, JSON.stringify(technicians));
+    safeSetStorageItem(STORAGE_KEYS.TECHNICIANS, JSON.stringify(technicians));
   }, [technicians]);
 
   useEffect(() => {
     serviceCommissionsRef.current = serviceCommissions;
-    localStorage.setItem(STORAGE_KEYS.SERVICE_COMMISSIONS, JSON.stringify(serviceCommissions));
+    safeSetStorageItem(STORAGE_KEYS.SERVICE_COMMISSIONS, JSON.stringify(serviceCommissions));
   }, [serviceCommissions]);
 
   useEffect(() => {
     technicianPayoutsRef.current = technicianPayouts;
-    localStorage.setItem(STORAGE_KEYS.TECH_PAYOUTS, JSON.stringify(technicianPayouts));
+    safeSetStorageItem(STORAGE_KEYS.TECH_PAYOUTS, JSON.stringify(technicianPayouts));
   }, [technicianPayouts]);
 
   useEffect(() => {
     suppliersRef.current = suppliers;
-    localStorage.setItem(STORAGE_KEYS.SUPPLIERS, JSON.stringify(suppliers));
+    safeSetStorageItem(STORAGE_KEYS.SUPPLIERS, JSON.stringify(suppliers));
   }, [suppliers]);
 
   useEffect(() => {
     purchaseOrdersRef.current = purchaseOrders;
-    localStorage.setItem(STORAGE_KEYS.PURCHASE_ORDERS, JSON.stringify(purchaseOrders));
+    if (idbHydratedRef.current || purchaseOrders.length > 0) {
+      idbSet(IDB_CACHE_KEYS.PURCHASE_ORDERS, purchaseOrders).catch(() => {});
+    }
   }, [purchaseOrders]);
 
   useEffect(() => {
     expensesRef.current = expenses;
-    localStorage.setItem(STORAGE_KEYS.EXPENSES, JSON.stringify(expenses));
+    safeSetStorageItem(STORAGE_KEYS.EXPENSES, JSON.stringify(expenses));
   }, [expenses]);
 
   useEffect(() => {
     treasuryAccountsRef.current = treasuryAccounts;
-    localStorage.setItem(STORAGE_KEYS.TREASURY_ACCOUNTS, JSON.stringify(treasuryAccounts));
+    safeSetStorageItem(STORAGE_KEYS.TREASURY_ACCOUNTS, JSON.stringify(treasuryAccounts));
   }, [treasuryAccounts]);
 
   useEffect(() => {
     treasuryCommitmentsRef.current = treasuryCommitments;
-    localStorage.setItem(STORAGE_KEYS.TREASURY_COMMITMENTS, JSON.stringify(treasuryCommitments));
+    safeSetStorageItem(STORAGE_KEYS.TREASURY_COMMITMENTS, JSON.stringify(treasuryCommitments));
   }, [treasuryCommitments]);
 
   useEffect(() => {
     treasuryMovementsRef.current = treasuryMovements;
-    localStorage.setItem(STORAGE_KEYS.TREASURY_MOVEMENTS, JSON.stringify(treasuryMovements));
+    safeSetStorageItem(STORAGE_KEYS.TREASURY_MOVEMENTS, JSON.stringify(treasuryMovements));
   }, [treasuryMovements]);
 
   useEffect(() => {
     treasuryDebtsRef.current = treasuryDebts;
-    localStorage.setItem(STORAGE_KEYS.TREASURY_DEBTS, JSON.stringify(treasuryDebts));
+    safeSetStorageItem(STORAGE_KEYS.TREASURY_DEBTS, JSON.stringify(treasuryDebts));
   }, [treasuryDebts]);
 
   useEffect(() => {
     openAccountsRef.current = openAccounts;
-    localStorage.setItem(STORAGE_KEYS.OPEN_ACCOUNTS, JSON.stringify(openAccounts));
+    safeSetStorageItem(STORAGE_KEYS.OPEN_ACCOUNTS, JSON.stringify(openAccounts));
   }, [openAccounts]);
 
   useEffect(() => {
     adminTasksRef.current = adminTasks;
-    localStorage.setItem(STORAGE_KEYS.ADMIN_TASKS, JSON.stringify(adminTasks));
+    safeSetStorageItem(STORAGE_KEYS.ADMIN_TASKS, JSON.stringify(adminTasks));
   }, [adminTasks]);
 
   useEffect(() => {
     staffUsersRef.current = staffUsers;
     // Strip passwordHash before writing staff directory to localStorage except for employees needing offline fallback
-    localStorage.setItem(STORAGE_KEYS.STAFF_USERS, JSON.stringify(staffUsers));
+    safeSetStorageItem(STORAGE_KEYS.STAFF_USERS, JSON.stringify(staffUsers));
   }, [staffUsers]);
 
   useEffect(() => {
     staffAttendanceRef.current = staffAttendance;
-    localStorage.setItem(STORAGE_KEYS.STAFF_ATTENDANCE, JSON.stringify(staffAttendance));
+    safeSetStorageItem(STORAGE_KEYS.STAFF_ATTENDANCE, JSON.stringify(staffAttendance));
   }, [staffAttendance]);
 
   useEffect(() => {
     staffNotificationsRef.current = staffNotifications;
-    localStorage.setItem(STORAGE_KEYS.STAFF_NOTIFICATIONS, JSON.stringify(staffNotifications));
+    safeSetStorageItem(STORAGE_KEYS.STAFF_NOTIFICATIONS, JSON.stringify(staffNotifications));
   }, [staffNotifications]);
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.DEBT_CATEGORIES, JSON.stringify(customDebtCategories));
+    safeSetStorageItem(STORAGE_KEYS.DEBT_CATEGORIES, JSON.stringify(customDebtCategories));
   }, [customDebtCategories]);
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.CART, JSON.stringify(cart));
+    safeSetStorageItem(STORAGE_KEYS.CART, JSON.stringify(cart));
   }, [cart]);
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.ML_ENTRIES, JSON.stringify(mlEntries));
+    safeSetStorageItem(STORAGE_KEYS.ML_ENTRIES, JSON.stringify(mlEntries));
   }, [mlEntries]);
 
   // Auto-repair any legacy sales where two distinct customer names accidentally received the same customerId
@@ -2452,20 +2697,26 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
 
     async function loadServerData() {
       try {
-        const response = await fetch('/api/data');
+        const endpoint = salesHistoryRequestedRef.current
+          ? '/api/data'
+          : '/api/data?excludeSales=1';
+        const response = await fetch(endpoint);
         if (!response.ok) {
           throw new Error(`Server returned HTTP ${response.status}`);
         }
         const json = await response.json();
         if (json?.success && json.data && isMounted) {
           const serverDb = json.data;
+          if (typeof serverDb.latestInvoiceSeq === 'number') {
+            bumpLatestInvoiceSeq(serverDb.latestInvoiceSeq);
+          }
 
           // Merge deletedIds tombstones first so deleted items NEVER resurrect
           const mergedDeleted = mergeDeletedMaps(deletedIdsRef.current, serverDb.deletedIds);
           deletedIdsRef.current = mergedDeleted;
           setDeletedIds(mergedDeleted);
           try {
-            localStorage.setItem(STORAGE_KEYS.DELETED_IDS, JSON.stringify(mergedDeleted));
+            safeSetStorageItem(STORAGE_KEYS.DELETED_IDS, JSON.stringify(mergedDeleted));
           } catch {}
 
           const deletedProdsSet = new Set(mergedDeleted.products);
@@ -2506,13 +2757,20 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
 
               const merged = [...cleanServerProds, ...localAdditions].map((p) => {
                 let updatedImg = normalizeImageUrl(p.imageUrl);
-                if (p.name.toLowerCase().includes('maleta') && (!updatedImg || updatedImg.includes('brake_kit'))) {
+                if (
+                  (p.name || '').toLowerCase().includes('maleta') &&
+                  (!updatedImg || updatedImg.includes('brake_kit'))
+                ) {
                   updatedImg = PRESET_PRODUCT_IMAGES.maletaParaMoto;
                 }
-                return { ...p, imageUrl: updatedImg || p.imageUrl || PRESET_PRODUCT_IMAGES.brakeKit };
+                return {
+                  ...p,
+                  name: typeof p.name === 'string' ? p.name : 'Repuesto',
+                  imageUrl: updatedImg || p.imageUrl || PRESET_PRODUCT_IMAGES.brakeKit,
+                };
               });
 
-              localStorage.setItem(STORAGE_KEYS.PRODUCTS, JSON.stringify(merged));
+              idbSet(IDB_CACHE_KEYS.PRODUCTS, merged).catch(() => {});
               return merged;
             });
           }
@@ -2542,7 +2800,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
               });
 
               const merged = [...cleanServerCusts, ...localAdditions];
-              localStorage.setItem(STORAGE_KEYS.CUSTOMERS, JSON.stringify(merged));
+              safeSetStorageItem(STORAGE_KEYS.CUSTOMERS, JSON.stringify(merged));
               return merged;
             });
           }
@@ -2605,17 +2863,20 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
               const { merged: nextSettings } = applyFreshBcvIfNewer(baseNextSettings, prev);
               settingsRef.current = nextSettings;
               try {
-                localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(nextSettings));
+                safeSetStorageItem(STORAGE_KEYS.SETTINGS, JSON.stringify(nextSettings));
               } catch {}
               return nextSettings;
             });
           }
 
-          // Sales (excluding demo & deleted sales, preserving newest first)
+          // Sales (excluding demo & deleted sales, preserving newest first; omitted when excludeSales=1)
           if (Array.isArray(serverDb.sales)) {
             const cleanServerSales: Sale[] = serverDb.sales.filter(
               (s: Sale) => !deletedSalesSet.has(s.id)
             );
+            cleanServerSales.forEach((s) => bumpLatestInvoiceSeq(extractInvoiceSeq(s.invoiceNumber)));
+            salesHistoryLoadedRef.current = true;
+            setIsSalesHistoryLoaded(true);
             setSales((currentLocalSales) => {
               const serverById = new Map<string, Sale>(cleanServerSales.map((s: Sale) => [s.id, s]));
               const mergedList: Sale[] = [];
@@ -2642,7 +2903,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
 
               mergedList.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
               salesRef.current = mergedList;
-              localStorage.setItem(STORAGE_KEYS.SALES, JSON.stringify(mergedList));
+              idbSet(IDB_CACHE_KEYS.SALES, mergedList).catch(() => {});
               return mergedList;
             });
           }
@@ -2658,7 +2919,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
                 (o) => !DEMO_SERVICE_ORDER_IDS.has(o.id) && !deletedServiceSet.has(o.id) && !serverIdSet.has(o.id)
               );
               const merged = [...validServerOrders, ...localAdditions];
-              localStorage.setItem(STORAGE_KEYS.SERVICE_ORDERS, JSON.stringify(merged));
+              idbSet(IDB_CACHE_KEYS.SERVICE_ORDERS, merged).catch(() => {});
               return merged;
             });
           }
@@ -2674,7 +2935,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
                 (o) => !DEMO_ONLINE_ORDER_IDS.has(o.id) && !deletedOnlineSet.has(o.id) && !serverIdSet.has(o.id)
               );
               const merged = [...validServerOnline, ...localAdditions];
-              localStorage.setItem(STORAGE_KEYS.ONLINE_ORDERS, JSON.stringify(merged));
+              idbSet(IDB_CACHE_KEYS.ONLINE_ORDERS, merged).catch(() => {});
               return merged;
             });
           }
@@ -2688,7 +2949,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
               const serverIdSet = new Set(validServerTechs.map((t: Technician) => t.id));
               const localAdditions = current.filter((t) => !deletedTechSet.has(t.id) && !serverIdSet.has(t.id));
               const merged = [...validServerTechs, ...localAdditions];
-              localStorage.setItem(STORAGE_KEYS.TECHNICIANS, JSON.stringify(merged));
+              safeSetStorageItem(STORAGE_KEYS.TECHNICIANS, JSON.stringify(merged));
               return merged;
             });
           }
@@ -2704,7 +2965,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
               const merged = [...validServerComms, ...localAdditions].sort((a, b) =>
                 (b.createdAt || '').localeCompare(a.createdAt || '')
               );
-              localStorage.setItem(STORAGE_KEYS.SERVICE_COMMISSIONS, JSON.stringify(merged));
+              safeSetStorageItem(STORAGE_KEYS.SERVICE_COMMISSIONS, JSON.stringify(merged));
               return merged;
             });
           }
@@ -2720,7 +2981,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
               const merged = [...validServerPayouts, ...localAdditions].sort((a, b) =>
                 (b.createdAt || '').localeCompare(a.createdAt || '')
               );
-              localStorage.setItem(STORAGE_KEYS.TECH_PAYOUTS, JSON.stringify(merged));
+              safeSetStorageItem(STORAGE_KEYS.TECH_PAYOUTS, JSON.stringify(merged));
               return merged;
             });
           }
@@ -2737,7 +2998,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
                 (a.name || '').localeCompare(b.name || '', 'es', { sensitivity: 'base' })
               );
               suppliersRef.current = merged;
-              localStorage.setItem(STORAGE_KEYS.SUPPLIERS, JSON.stringify(merged));
+              safeSetStorageItem(STORAGE_KEYS.SUPPLIERS, JSON.stringify(merged));
               return merged;
             });
           }
@@ -2770,7 +3031,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
               }
               mergedList.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
               purchaseOrdersRef.current = mergedList;
-              localStorage.setItem(STORAGE_KEYS.PURCHASE_ORDERS, JSON.stringify(mergedList));
+              idbSet(IDB_CACHE_KEYS.PURCHASE_ORDERS, mergedList).catch(() => {});
               return mergedList;
             });
           }
@@ -2803,7 +3064,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
               }
               mergedList.sort((a, b) => (b.date || b.createdAt || '').localeCompare(a.date || a.createdAt || '') || (b.createdAt || '').localeCompare(a.createdAt || ''));
               expensesRef.current = mergedList;
-              localStorage.setItem(STORAGE_KEYS.EXPENSES, JSON.stringify(mergedList));
+              safeSetStorageItem(STORAGE_KEYS.EXPENSES, JSON.stringify(mergedList));
               return mergedList;
             });
           }
@@ -2835,7 +3096,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
                 }
               }
               treasuryAccountsRef.current = mergedList;
-              localStorage.setItem(STORAGE_KEYS.TREASURY_ACCOUNTS, JSON.stringify(mergedList));
+              safeSetStorageItem(STORAGE_KEYS.TREASURY_ACCOUNTS, JSON.stringify(mergedList));
               return mergedList;
             });
           }
@@ -2868,7 +3129,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
               }
               mergedList.sort((a, b) => (a.dueDate || '').localeCompare(b.dueDate || ''));
               treasuryCommitmentsRef.current = mergedList;
-              localStorage.setItem(STORAGE_KEYS.TREASURY_COMMITMENTS, JSON.stringify(mergedList));
+              safeSetStorageItem(STORAGE_KEYS.TREASURY_COMMITMENTS, JSON.stringify(mergedList));
               return mergedList;
             });
           }
@@ -2905,7 +3166,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
                   (b.createdAt || '').localeCompare(a.createdAt || '')
               );
               treasuryMovementsRef.current = mergedList;
-              localStorage.setItem(STORAGE_KEYS.TREASURY_MOVEMENTS, JSON.stringify(mergedList));
+              safeSetStorageItem(STORAGE_KEYS.TREASURY_MOVEMENTS, JSON.stringify(mergedList));
               return mergedList;
             });
           }
@@ -2938,7 +3199,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
               }
               mergedList.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
               treasuryDebtsRef.current = mergedList;
-              localStorage.setItem(STORAGE_KEYS.TREASURY_DEBTS, JSON.stringify(mergedList));
+              safeSetStorageItem(STORAGE_KEYS.TREASURY_DEBTS, JSON.stringify(mergedList));
               return mergedList;
             });
           }
@@ -2971,7 +3232,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
               }
               mergedList.sort((a, b) => (b.updatedAt || b.openedAt || '').localeCompare(a.updatedAt || a.openedAt || ''));
               openAccountsRef.current = mergedList;
-              localStorage.setItem(STORAGE_KEYS.OPEN_ACCOUNTS, JSON.stringify(mergedList));
+              safeSetStorageItem(STORAGE_KEYS.OPEN_ACCOUNTS, JSON.stringify(mergedList));
               return mergedList;
             });
           }
@@ -3008,7 +3269,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
                 `${a.dueDate}T${a.dueTime}`.localeCompare(`${b.dueDate}T${b.dueTime}`)
               );
               adminTasksRef.current = mergedList;
-              localStorage.setItem(STORAGE_KEYS.ADMIN_TASKS, JSON.stringify(mergedList));
+              safeSetStorageItem(STORAGE_KEYS.ADMIN_TASKS, JSON.stringify(mergedList));
               return mergedList;
             });
           }
@@ -3259,7 +3520,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
           deletedIdsRef.current = mergedInit;
           setDeletedIds(mergedInit);
           try {
-            localStorage.setItem(STORAGE_KEYS.DELETED_IDS, JSON.stringify(mergedInit));
+            safeSetStorageItem(STORAGE_KEYS.DELETED_IDS, JSON.stringify(mergedInit));
           } catch {}
           applyTombstonesToState(mergedInit);
         }
@@ -3270,7 +3531,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
           deletedIdsRef.current = merged;
           setDeletedIds(merged);
           try {
-            localStorage.setItem(STORAGE_KEYS.DELETED_IDS, JSON.stringify(merged));
+            safeSetStorageItem(STORAGE_KEYS.DELETED_IDS, JSON.stringify(merged));
           } catch {}
           applyTombstonesToState(merged);
         });
@@ -3419,7 +3680,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
               );
               settingsRef.current = nextSettings;
               try {
-                localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(nextSettings));
+                safeSetStorageItem(STORAGE_KEYS.SETTINGS, JSON.stringify(nextSettings));
               } catch {}
               if (shouldPushLiveToCloud) {
                 queueMicrotask(() => {
@@ -3480,79 +3741,12 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
           setFirebaseSyncStatus('synced');
         });
 
-        // 4. Real-time sales listener (NEVER drops local or pending-sync sales on optimistic/cached snapshots)
-        const unsubSales = subscribeToSales((firestoreSales, meta) => {
-          if (!Array.isArray(firestoreSales)) return;
-          const delSet = new Set([...DEMO_SALE_IDS, ...deletedIdsRef.current.sales]);
-          firestoreSales.forEach((s) => {
-            if (delSet.has(s.id)) {
-              removeSaleFromFirestore(s.id).catch(() => {});
-            }
-          });
-          const cleanRemoteSales = firestoreSales.filter((s) => !delSet.has(s.id));
-          const remoteById = new Map<string, Sale>(cleanRemoteSales.map((s) => [s.id, s]));
-          const remoteIdSet = new Set(cleanRemoteSales.map((s) => s.id));
-          const prevSeen = seenFirestoreIdsRef.current.sales;
-          const isServerConfirmed = !meta?.fromCache && !meta?.hasPendingWrites;
-
-          if (isServerConfirmed) {
-            // Any pending-sync sale now present on confirmed server can be marked synced
-            remoteIdSet.forEach((id) => {
-              if (pendingSyncSaleIdsRef.current.has(id)) {
-                clearSalePendingSync(id);
-              }
-            });
-          }
-
-          setSales((prev) => {
-            const toUpload: Sale[] = [];
-            const mergedMap = new Map<string, Sale>();
-
-            // Start with confirmed/remote sales
-            for (const remoteSale of cleanRemoteSales) {
-              mergedMap.set(remoteSale.id, remoteSale);
-            }
-
-            // Merge local sales safely
-            for (const localSale of prev) {
-              if (delSet.has(localSale.id)) continue;
-
-              const isPendingLocal = pendingSyncSaleIdsRef.current.has(localSale.id);
-              const inRemote = remoteById.has(localSale.id);
-
-              if (!inRemote) {
-                // Keep if pending local sync, if snapshot is cached/optimistic, OR if never confirmed-seen on server before
-                if (isPendingLocal || !isServerConfirmed || !prevSeen.has(localSale.id)) {
-                  mergedMap.set(localSale.id, localSale);
-                  toUpload.push(localSale);
-                }
-              } else if (isPendingLocal) {
-                // Preserve local unconfirmed edits/payments until Firestore confirms upload
-                mergedMap.set(localSale.id, localSale);
-                toUpload.push(localSale);
-              }
-            }
-
-            const mergedSorted = Array.from(mergedMap.values()).sort((a, b) =>
-              (b.createdAt || '').localeCompare(a.createdAt || '')
-            );
-
-            if (toUpload.length > 0 && isServerConfirmed) {
-              queueMicrotask(() => {
-                toUpload.forEach((s) => syncSaleWithRetry(s));
-              });
-            }
-
-            salesRef.current = mergedSorted;
-            return mergedSorted;
-          });
-
-          if (isServerConfirmed) {
-            seenFirestoreIdsRef.current.sales = remoteIdSet;
-            firestoreSyncedFlags.current.sales = true;
-          }
-          setFirebaseSyncStatus('synced');
-        });
+        // 4. Lightweight invoice counter sync (1 document max) when full sales history isn't requested yet
+        if (!salesHistoryRequestedRef.current) {
+          fetchLatestInvoiceSequenceFromFirestore()
+            .then((seq) => bumpLatestInvoiceSeq(seq))
+            .catch(() => {});
+        }
 
         // 5. Real-time service orders listener (NON-DESTRUCTIVE merge)
         const unsubServiceOrders = subscribeToServiceOrders((firestoreOrders, meta) => {
@@ -3642,6 +3836,359 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
           setFirebaseSyncStatus('synced');
         });
 
+        // 6B. Real-time Users (Admin + Employees) listener — kept active for staff login
+        const unsubUsers = subscribeToUsers((firestoreUsers, meta) => {
+          if (!Array.isArray(firestoreUsers)) return;
+          const delSet = new Set(deletedIdsRef.current.users);
+          const cleanStaff = firestoreUsers.filter(
+            (u) => (u.role === 'EMPLEADO' || u.role === 'ADMIN') && (u.role === 'ADMIN' || !delSet.has(u.id))
+          );
+          const remoteById = new Map(cleanStaff.map((u) => [u.id, u]));
+          const remoteIdSet = new Set(cleanStaff.map((u) => u.id));
+          const prevSeen = seenFirestoreIdsRef.current.staffUsers;
+          const isServerConfirmed = !meta?.fromCache && !meta?.hasPendingWrites;
+
+          if (isServerConfirmed) {
+            remoteIdSet.forEach((id) => pendingSyncStaffUserIdsRef.current.delete(id));
+          }
+
+          setStaffUsers((prev) => {
+            const toUpload: AppUser[] = [];
+            const mergedMap = new Map<string, AppUser>();
+            for (const ru of cleanStaff) mergedMap.set(ru.id, ru);
+
+            for (const lu of prev) {
+              if (lu.role !== 'ADMIN' && delSet.has(lu.id)) continue;
+              const ru = remoteById.get(lu.id);
+              const isPendingLocal = pendingSyncStaffUserIdsRef.current.has(lu.id);
+              const isNewerLocal =
+                ru &&
+                (lu.updatedAt || lu.createdAt) &&
+                (!(ru.updatedAt || ru.createdAt) ||
+                  (lu.updatedAt || lu.createdAt) > (ru.updatedAt || ru.createdAt));
+
+              if (!ru) {
+                if (isPendingLocal || !isServerConfirmed || !prevSeen.has(lu.id)) {
+                  mergedMap.set(lu.id, lu);
+                  toUpload.push(lu);
+                }
+              } else if (isPendingLocal || isNewerLocal) {
+                mergedMap.set(lu.id, { ...ru, ...lu, passwordHash: lu.passwordHash || ru.passwordHash });
+                toUpload.push({ ...ru, ...lu, passwordHash: lu.passwordHash || ru.passwordHash });
+              }
+            }
+
+            if (toUpload.length > 0 && isServerConfirmed) {
+              queueMicrotask(() => {
+                toUpload.forEach((u) => {
+                  pendingSyncStaffUserIdsRef.current.add(u.id);
+                  syncUserToFirestore(u)
+                    .then(() => pendingSyncStaffUserIdsRef.current.delete(u.id))
+                    .catch(() => {});
+                });
+              });
+            }
+
+            const merged = Array.from(mergedMap.values());
+            staffUsersRef.current = merged;
+            return merged;
+          });
+
+          if (isServerConfirmed) {
+            seenFirestoreIdsRef.current.staffUsers = remoteIdSet;
+            firestoreSyncedFlags.current.staffUsers = true;
+          }
+        });
+
+        unsubs = [
+          unsubDeleted,
+          unsubProducts,
+          unsubSettings,
+          unsubCustomers,
+          unsubServiceOrders,
+          unsubOnlineOrders,
+          unsubUsers,
+        ];
+      } catch (err) {
+        console.warn('Error starting core Firestore real-time listeners:', err);
+      }
+    }
+
+    initFirestore();
+
+    return () => {
+      isCancelled = true;
+      unsubs.forEach((u) => {
+        try {
+          u();
+        } catch {}
+      });
+    };
+  }, []);
+
+  // On-demand full sales history loader & real-time listener (only runs for views that require historical sales; skipped in Facturar POS)
+  useEffect(() => {
+    if (!salesHistoryRequested) return;
+    let isCancelled = false;
+    let unsubSales: (() => void) | null = null;
+
+    const mergeSalesBatch = (incoming: Sale[]) => {
+      if (!Array.isArray(incoming) || incoming.length === 0) return;
+      const delSet = new Set([...DEMO_SALE_IDS, ...deletedIdsRef.current.sales]);
+      const clean = incoming.filter((s) => s && typeof s === 'object' && typeof s.id === 'string' && !delSet.has(s.id));
+      clean.forEach((s) => bumpLatestInvoiceSeq(extractInvoiceSeq(s.invoiceNumber)));
+      if (clean.length === 0) return;
+
+      setSales((prev) => {
+        const mergedMap = new Map<string, Sale>();
+        for (const s of clean) mergedMap.set(s.id, s);
+        for (const s of prev) {
+          if (delSet.has(s.id)) continue;
+          if (!mergedMap.has(s.id) || pendingSyncSaleIdsRef.current.has(s.id)) {
+            mergedMap.set(s.id, s);
+          }
+        }
+        const sorted = Array.from(mergedMap.values()).sort((a, b) =>
+          (b.createdAt || '').localeCompare(a.createdAt || '')
+        );
+        salesRef.current = sorted;
+        return sorted;
+      });
+    };
+
+    async function loadSalesHistoryOnDemand() {
+      try {
+        // 1. Hydrate from IndexedDB first for instant display
+        const cachedSales = await idbGet<Sale[]>(IDB_CACHE_KEYS.SALES);
+        if (!isCancelled && Array.isArray(cachedSales) && cachedSales.length > 0) {
+          mergeSalesBatch(cachedSales);
+          salesHistoryLoadedRef.current = true;
+          setIsSalesHistoryLoaded(true);
+        }
+
+        // 2. Fetch from local server DB if not yet confirmed by Firestore
+        if (!isCancelled && !firestoreSyncedFlags.current.sales) {
+          try {
+            const res = await fetch('/api/data');
+            if (res.ok) {
+              const json = await res.json();
+              if (!isCancelled && json?.success && Array.isArray(json.data?.sales)) {
+                mergeSalesBatch(json.data.sales);
+                salesHistoryLoadedRef.current = true;
+                setIsSalesHistoryLoaded(true);
+              }
+            }
+          } catch {}
+        }
+
+        if (isCancelled) return;
+
+        // 3. Subscribe to Firestore sales only when a history-dependent module is active
+        unsubSales = subscribeToSales((firestoreSales, meta) => {
+          if (!Array.isArray(firestoreSales)) return;
+          const delSet = new Set([...DEMO_SALE_IDS, ...deletedIdsRef.current.sales]);
+          firestoreSales.forEach((s) => {
+            if (delSet.has(s.id)) {
+              removeSaleFromFirestore(s.id).catch(() => {});
+            }
+          });
+          const cleanRemoteSales = firestoreSales.filter((s) => !delSet.has(s.id));
+          cleanRemoteSales.forEach((s) => bumpLatestInvoiceSeq(extractInvoiceSeq(s.invoiceNumber)));
+          const remoteById = new Map<string, Sale>(cleanRemoteSales.map((s) => [s.id, s]));
+          const remoteIdSet = new Set(cleanRemoteSales.map((s) => s.id));
+          const prevSeen = seenFirestoreIdsRef.current.sales;
+          const isServerConfirmed = !meta?.fromCache && !meta?.hasPendingWrites;
+
+          if (isServerConfirmed) {
+            remoteIdSet.forEach((id) => {
+              if (pendingSyncSaleIdsRef.current.has(id)) {
+                clearSalePendingSync(id);
+              }
+            });
+          }
+
+          setSales((prev) => {
+            const toUpload: Sale[] = [];
+            const mergedMap = new Map<string, Sale>();
+
+            for (const remoteSale of cleanRemoteSales) {
+              mergedMap.set(remoteSale.id, remoteSale);
+            }
+
+            for (const localSale of prev) {
+              if (delSet.has(localSale.id)) continue;
+
+              const isPendingLocal = pendingSyncSaleIdsRef.current.has(localSale.id);
+              const inRemote = remoteById.has(localSale.id);
+
+              if (!inRemote) {
+                if (isPendingLocal || !isServerConfirmed || !prevSeen.has(localSale.id)) {
+                  mergedMap.set(localSale.id, localSale);
+                  toUpload.push(localSale);
+                }
+              } else if (isPendingLocal) {
+                mergedMap.set(localSale.id, localSale);
+                toUpload.push(localSale);
+              }
+            }
+
+            const mergedSorted = Array.from(mergedMap.values()).sort((a, b) =>
+              (b.createdAt || '').localeCompare(a.createdAt || '')
+            );
+
+            if (toUpload.length > 0 && isServerConfirmed) {
+              queueMicrotask(() => {
+                toUpload.forEach((s) => syncSaleWithRetry(s));
+              });
+            }
+
+            salesRef.current = mergedSorted;
+            return mergedSorted;
+          });
+
+          salesHistoryLoadedRef.current = true;
+          setIsSalesHistoryLoaded(true);
+
+          if (isServerConfirmed) {
+            seenFirestoreIdsRef.current.sales = remoteIdSet;
+            firestoreSyncedFlags.current.sales = true;
+          }
+          setFirebaseSyncStatus('synced');
+        });
+      } catch (err) {
+        console.warn('Error loading sales history on demand:', err);
+      }
+    }
+
+    loadSalesHistoryOnDemand();
+
+    return () => {
+      isCancelled = true;
+      if (unsubSales) {
+        try {
+          unsubSales();
+        } catch {}
+      }
+    };
+  }, [salesHistoryRequested]);
+
+  // On-demand recent invoices query for Facturar POS (fetches only top N invoices without loading full history into state)
+  const fetchRecentSalesOnDemand = async (options?: {
+    limit?: number;
+    search?: string;
+  }): Promise<{
+    sales: Sale[];
+    totalCount: number;
+    hasMore: boolean;
+    source: 'firestore' | 'server' | 'cache';
+  }> => {
+    const requestedLimit = Math.min(Math.max(1, options?.limit ?? 15), 100);
+    const searchTerm = (options?.search || '').trim();
+    const delSet = new Set([...DEMO_SALE_IDS, ...deletedIdsRef.current.sales]);
+    const combinedMap = new Map<string, Sale>();
+
+    // Always include any newly emitted session sales currently in memory
+    for (const localSale of salesRef.current) {
+      if (localSale && localSale.id && !delSet.has(localSale.id)) {
+        combinedMap.set(localSale.id, localSale);
+      }
+    }
+
+    let source: 'firestore' | 'server' | 'cache' = 'cache';
+    let serverTotalCount = 0;
+    let serverHasMore = false;
+
+    // 1. Try lightweight paginated server endpoint first (zero Firestore reads, instant search/pagination)
+    try {
+      const qs = new URLSearchParams({
+        limit: String(requestedLimit),
+        ...(searchTerm ? { search: searchTerm } : {}),
+      });
+      const res = await fetch(`/api/sales/recent?${qs.toString()}`);
+      if (res.ok) {
+        const json = await res.json();
+        if (json?.success && Array.isArray(json.sales)) {
+          if (typeof json.latestInvoiceSeq === 'number') {
+            bumpLatestInvoiceSeq(json.latestInvoiceSeq);
+          }
+          for (const s of json.sales as Sale[]) {
+            if (s && s.id && !delSet.has(s.id) && !combinedMap.has(s.id)) {
+              combinedMap.set(s.id, s);
+            }
+          }
+          serverTotalCount = Number(json.totalCount) || combinedMap.size;
+          serverHasMore = Boolean(json.hasMore);
+          source = 'server';
+        }
+      }
+    } catch {}
+
+    // 2. Also query bounded Firestore top-N (only N docs, never full collection) when no text search is active
+    if (!searchTerm) {
+      try {
+        const cloudRecent = await fetchRecentSalesFromFirestore(requestedLimit);
+        if (cloudRecent.length > 0) {
+          for (const s of cloudRecent) {
+            if (s && s.id && !delSet.has(s.id)) {
+              bumpLatestInvoiceSeq(extractInvoiceSeq(s.invoiceNumber));
+              // Cloud wins unless there is a local pending sync edit
+              if (!pendingSyncSaleIdsRef.current.has(s.id) || !combinedMap.has(s.id)) {
+                combinedMap.set(s.id, s);
+              }
+            }
+          }
+          source = 'firestore';
+        }
+      } catch {}
+    }
+
+    // 3. Merge recent slice from IndexedDB as offline fallback
+    try {
+      const idbRecent = await idbGetRecentSales(requestedLimit, searchTerm, delSet);
+      if (idbRecent.latestInvoiceSeq > 100) {
+        bumpLatestInvoiceSeq(idbRecent.latestInvoiceSeq);
+      }
+      for (const s of idbRecent.sales) {
+        if (s && s.id && !delSet.has(s.id) && !combinedMap.has(s.id)) {
+          combinedMap.set(s.id, s);
+        }
+      }
+      if (idbRecent.totalCount > serverTotalCount) {
+        serverTotalCount = idbRecent.totalCount;
+      }
+    } catch {}
+
+    const term = searchTerm.toLowerCase();
+    const filtered = Array.from(combinedMap.values())
+      .filter((s) => {
+        if (!term) return true;
+        return (
+          String(s.invoiceNumber || '').toLowerCase().includes(term) ||
+          String(s.customerName || '').toLowerCase().includes(term) ||
+          String(s.customerDocument || '').toLowerCase().includes(term) ||
+          String(s.customerPhone || '').toLowerCase().includes(term)
+        );
+      })
+      .sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
+
+    const sliced = filtered.slice(0, requestedLimit);
+    const totalCount = Math.max(serverTotalCount, filtered.length);
+    const hasMore = serverHasMore || filtered.length > requestedLimit || totalCount > sliced.length;
+
+    return {
+      sales: sliced,
+      totalCount,
+      hasMore,
+      source,
+    };
+  };
+
+  // Staff-only internal Firestore listeners (skipped for public storefront visitors to save bandwidth & Firestore read quota)
+  useEffect(() => {
+    if (!isStaff) return;
+
+    let staffUnsubs: Array<() => void> = [];
+    try {
         // 7. Real-time technicians listener
         const unsubTechnicians = subscribeToTechnicians((firestoreTechs, meta) => {
           if (!Array.isArray(firestoreTechs)) return;
@@ -4399,70 +4946,6 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
           setFirebaseSyncStatus('synced');
         });
 
-        // 19. Real-time Users (Admin + Employees) listener
-        const unsubUsers = subscribeToUsers((firestoreUsers, meta) => {
-          if (!Array.isArray(firestoreUsers)) return;
-          const delSet = new Set(deletedIdsRef.current.users);
-          const cleanStaff = firestoreUsers.filter(
-            (u) => (u.role === 'EMPLEADO' || u.role === 'ADMIN') && (u.role === 'ADMIN' || !delSet.has(u.id))
-          );
-          const remoteById = new Map(cleanStaff.map((u) => [u.id, u]));
-          const remoteIdSet = new Set(cleanStaff.map((u) => u.id));
-          const prevSeen = seenFirestoreIdsRef.current.staffUsers;
-          const isServerConfirmed = !meta?.fromCache && !meta?.hasPendingWrites;
-
-          if (isServerConfirmed) {
-            remoteIdSet.forEach((id) => pendingSyncStaffUserIdsRef.current.delete(id));
-          }
-
-          setStaffUsers((prev) => {
-            const toUpload: AppUser[] = [];
-            const mergedMap = new Map<string, AppUser>();
-            for (const ru of cleanStaff) mergedMap.set(ru.id, ru);
-
-            for (const lu of prev) {
-              if (lu.role !== 'ADMIN' && delSet.has(lu.id)) continue;
-              const ru = remoteById.get(lu.id);
-              const isPendingLocal = pendingSyncStaffUserIdsRef.current.has(lu.id);
-              const isNewerLocal =
-                ru &&
-                (lu.updatedAt || lu.createdAt) &&
-                (!(ru.updatedAt || ru.createdAt) ||
-                  (lu.updatedAt || lu.createdAt) > (ru.updatedAt || ru.createdAt));
-
-              if (!ru) {
-                if (isPendingLocal || !isServerConfirmed || !prevSeen.has(lu.id)) {
-                  mergedMap.set(lu.id, lu);
-                  toUpload.push(lu);
-                }
-              } else if (isPendingLocal || isNewerLocal) {
-                mergedMap.set(lu.id, { ...ru, ...lu, passwordHash: lu.passwordHash || ru.passwordHash });
-                toUpload.push({ ...ru, ...lu, passwordHash: lu.passwordHash || ru.passwordHash });
-              }
-            }
-
-            if (toUpload.length > 0 && isServerConfirmed) {
-              queueMicrotask(() => {
-                toUpload.forEach((u) => {
-                  pendingSyncStaffUserIdsRef.current.add(u.id);
-                  syncUserToFirestore(u)
-                    .then(() => pendingSyncStaffUserIdsRef.current.delete(u.id))
-                    .catch(() => {});
-                });
-              });
-            }
-
-            const merged = Array.from(mergedMap.values());
-            staffUsersRef.current = merged;
-            return merged;
-          });
-
-          if (isServerConfirmed) {
-            seenFirestoreIdsRef.current.staffUsers = remoteIdSet;
-            firestoreSyncedFlags.current.staffUsers = true;
-          }
-        });
-
         // 20. Real-time Staff Attendance listener
         const unsubStaffAttendance = subscribeToStaffAttendance((firestoreRecs, meta) => {
           if (!Array.isArray(firestoreRecs)) return;
@@ -4591,14 +5074,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
           }
         });
 
-        unsubs = [
-          unsubDeleted,
-          unsubProducts,
-          unsubSettings,
-          unsubCustomers,
-          unsubSales,
-          unsubServiceOrders,
-          unsubOnlineOrders,
+        staffUnsubs = [
           unsubTechnicians,
           unsubCommissions,
           unsubPayouts,
@@ -4611,26 +5087,21 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
           unsubTreasuryDebts,
           unsubOpenAccounts,
           unsubAdminTasks,
-          unsubUsers,
           unsubStaffAttendance,
           unsubStaffNotifications,
         ];
-      } catch (err) {
-        console.warn('Error starting Firestore real-time listeners:', err);
-      }
+    } catch (err) {
+      console.warn('Error starting staff Firestore real-time listeners:', err);
     }
 
-    initFirestore();
-
     return () => {
-      isCancelled = true;
-      unsubs.forEach((u) => {
+      staffUnsubs.forEach((u) => {
         try {
           u();
         } catch {}
       });
     };
-  }, []);
+  }, [isStaff]);
 
   const syncAllToFirebase = async (): Promise<{ success: boolean; count: number }> => {
     setFirebaseSyncStatus('syncing');
@@ -4671,9 +5142,9 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     }
   };
 
-  // Debounced synchronization to server file system database
+  // Debounced synchronization to server file system database (staff sessions only)
   useEffect(() => {
-    if (!isInitialLoaded.current) return;
+    if (!isInitialLoaded.current || !isStaff) return;
 
     if (saveTimeoutRef.current) {
       clearTimeout(saveTimeoutRef.current);
@@ -4687,7 +5158,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
           settings,
           products,
           customers,
-          sales,
+          ...(salesHistoryLoadedRef.current ? { sales } : {}),
           serviceOrders,
           onlineOrders,
           technicians,
@@ -4719,15 +5190,16 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     };
   }, [settings, products, customers, sales, serviceOrders, onlineOrders, technicians, serviceCommissions, technicianPayouts, suppliers, purchaseOrders, expenses, treasuryAccounts, treasuryCommitments, treasuryMovements, treasuryDebts, openAccounts, adminTasks, staffAttendance, staffNotifications, staffUsers, deletedIds]);
 
-  // Guarantee save before tab/window is closed
+  // Guarantee save before tab/window is closed (staff sessions only)
   useEffect(() => {
+    if (!isStaff) return;
     const handleBeforeUnload = () => {
-      if (isInitialLoaded.current) {
+      if (isInitialLoaded.current && isStaff) {
         const payload = JSON.stringify({
           settings,
           products,
           customers,
-          sales,
+          ...(salesHistoryLoadedRef.current ? { sales } : {}),
           serviceOrders,
           onlineOrders,
           technicians,
@@ -4766,7 +5238,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     return () => {
       window.removeEventListener('beforeunload', handleBeforeUnload);
     };
-  }, [settings, products, customers, sales, serviceOrders, onlineOrders, technicians, serviceCommissions, technicianPayouts, suppliers, purchaseOrders, expenses, treasuryAccounts, treasuryCommitments, treasuryMovements, treasuryDebts, openAccounts, adminTasks, deletedIds]);
+  }, [isStaff, settings, products, customers, sales, serviceOrders, onlineOrders, technicians, serviceCommissions, technicianPayouts, suppliers, purchaseOrders, expenses, treasuryAccounts, treasuryCommitments, treasuryMovements, treasuryDebts, openAccounts, adminTasks, staffAttendance, staffNotifications, staffUsers, deletedIds]);
 
   // Online products: show items with stock > 0 OR made-to-order (tracksInventory === false), sanitize internal pricing fields, and sort A-Z
   const onlineProducts = useMemo(() => {
@@ -4833,7 +5305,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
         customCategories: [...prevCustom, formatted],
       };
       try {
-        localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(updated));
+        safeSetStorageItem(STORAGE_KEYS.SETTINGS, JSON.stringify(updated));
       } catch {}
       syncSettingsToFirestore(updated).catch((err) =>
         console.warn('Firestore custom category sync error:', err)
@@ -4920,7 +5392,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       };
       settingsRef.current = updated;
       try {
-        localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(updated));
+        safeSetStorageItem(STORAGE_KEYS.SETTINGS, JSON.stringify(updated));
       } catch {}
       syncSettingsToFirestore(updated).catch((err) =>
         console.warn('Firestore custom model category sync error:', err)
@@ -4979,7 +5451,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       };
       settingsRef.current = updated;
       try {
-        localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(updated));
+        safeSetStorageItem(STORAGE_KEYS.SETTINGS, JSON.stringify(updated));
       } catch {}
       syncSettingsToFirestore(updated).catch(() => {});
       return updated;
@@ -5003,7 +5475,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       });
       if (touched.length > 0) {
         try {
-          localStorage.setItem(STORAGE_KEYS.PRODUCTS, JSON.stringify(next));
+          idbSet(IDB_CACHE_KEYS.PRODUCTS, next).catch(() => {});
         } catch {}
         touched.forEach((p) => syncProductToFirestore(p).catch(() => {}));
       }
@@ -5042,7 +5514,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       };
       settingsRef.current = updated;
       try {
-        localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(updated));
+        safeSetStorageItem(STORAGE_KEYS.SETTINGS, JSON.stringify(updated));
       } catch {}
       syncSettingsToFirestore(updated).catch(() => {});
       return updated;
@@ -5062,7 +5534,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       });
       if (touched.length > 0) {
         try {
-          localStorage.setItem(STORAGE_KEYS.PRODUCTS, JSON.stringify(next));
+          idbSet(IDB_CACHE_KEYS.PRODUCTS, next).catch(() => {});
         } catch {}
         touched.forEach((p) => syncProductToFirestore(p).catch(() => {}));
       }
@@ -5104,7 +5576,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
 
       if (touched.length > 0) {
         try {
-          localStorage.setItem(STORAGE_KEYS.PRODUCTS, JSON.stringify(next));
+          idbSet(IDB_CACHE_KEYS.PRODUCTS, next).catch(() => {});
         } catch {}
         touched.forEach((p) => syncProductToFirestore(p).catch(() => {}));
       }
@@ -5155,7 +5627,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
           };
           settingsRef.current = updated;
           try {
-            localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(updated));
+            safeSetStorageItem(STORAGE_KEYS.SETTINGS, JSON.stringify(updated));
           } catch {}
 
           // Persist to Firestore whenever the official rate/date actually updated or on manual force sync
@@ -5257,7 +5729,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
 
     settingsRef.current = updatedSettings;
     setSettings(updatedSettings);
-    localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(updatedSettings));
+    safeSetStorageItem(STORAGE_KEYS.SETTINGS, JSON.stringify(updatedSettings));
     syncSettingsToFirestore(updatedSettings).catch((err) =>
       console.warn('Firestore settings sync error:', err)
     );
@@ -5301,7 +5773,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
             }),
           };
           try {
-            localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(updated));
+            safeSetStorageItem(STORAGE_KEYS.SETTINGS, JSON.stringify(updated));
           } catch {}
           syncSettingsToFirestore(updated).catch(() => {});
           return updated;
@@ -5352,7 +5824,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
         };
         settingsRef.current = updated;
         try {
-          localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(updated));
+          safeSetStorageItem(STORAGE_KEYS.SETTINGS, JSON.stringify(updated));
         } catch {}
         syncSettingsToFirestore(updated).catch(() => {});
         return updated;
@@ -5373,7 +5845,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
           usdtSource: 'Ajuste Manual / Binance USDT',
         };
         try {
-          localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(updated));
+          safeSetStorageItem(STORAGE_KEYS.SETTINGS, JSON.stringify(updated));
         } catch {}
         syncSettingsToFirestore(updated).catch(() => {});
         return updated;
@@ -5796,11 +6268,12 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
 
     const year = new Date().getFullYear();
     const maxExistingSeq = salesRef.current.reduce((maxSeq, s) => {
-      const match = (s.invoiceNumber || '').match(/FACT-\d+-(\d+)/);
-      const seq = match ? parseInt(match[1], 10) : 0;
+      const seq = extractInvoiceSeq(s.invoiceNumber);
       return seq > maxSeq ? seq : maxSeq;
-    }, 100);
-    const invoiceNum = `FACT-${year}-${String(maxExistingSeq + 1).padStart(4, '0')}`;
+    }, Math.max(100, latestInvoiceSeqRef.current));
+    const nextInvoiceSeq = maxExistingSeq + 1;
+    bumpLatestInvoiceSeq(nextInvoiceSeq);
+    const invoiceNum = `FACT-${year}-${String(nextInvoiceSeq).padStart(4, '0')}`;
     const rate = settingsRef.current.bcvRate;
 
     const saleId = `sale-${Date.now()}-${Math.floor(Math.random() * 1000).toString().padStart(3, '0')}`;
@@ -6046,15 +6519,15 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     setSales((prev) => {
       const next = prev.some((s) => s.id === newSale.id) ? prev : [newSale, ...prev];
       salesRef.current = next;
-      try {
-        localStorage.setItem(STORAGE_KEYS.SALES, JSON.stringify(next));
-      } catch {}
       return next;
     });
 
-    try {
-      localStorage.setItem(STORAGE_KEYS.SALES, JSON.stringify(optimisticList));
-    } catch {}
+    // Persist atomically into IndexedDB without needing or overwriting full history
+    if (salesHistoryLoadedRef.current) {
+      idbSet(IDB_CACHE_KEYS.SALES, optimisticList).catch(() => {});
+    } else {
+      idbAppendSale(newSale).catch(() => {});
+    }
 
     fetch('/api/sales', {
       method: 'POST',
@@ -6607,7 +7080,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
             treasuryMovementsRef.current = nextMovements;
             setTreasuryMovements(nextMovements);
             try {
-              localStorage.setItem(STORAGE_KEYS.TREASURY_MOVEMENTS, JSON.stringify(nextMovements));
+              safeSetStorageItem(STORAGE_KEYS.TREASURY_MOVEMENTS, JSON.stringify(nextMovements));
             } catch {}
             syncTreasuryMovementToFirestore(updatedMovement)
               .then(() => pendingSyncTreasuryMovementIdsRef.current.delete(updatedMovement.id))
@@ -6708,7 +7181,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       const next = prev.map((s) => (s.id === saleId ? updatedSale : s));
       salesRef.current = next;
       try {
-        localStorage.setItem(STORAGE_KEYS.SALES, JSON.stringify(next));
+        idbSet(IDB_CACHE_KEYS.SALES, next).catch(() => {});
       } catch {}
       return next;
     });
@@ -6750,7 +7223,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       });
       salesRef.current = next;
       try {
-        localStorage.setItem(STORAGE_KEYS.SALES, JSON.stringify(next));
+        idbSet(IDB_CACHE_KEYS.SALES, next).catch(() => {});
       } catch {}
       return next;
     });
@@ -6866,7 +7339,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
 
     setSales(nextSalesList);
     try {
-      localStorage.setItem(STORAGE_KEYS.SALES, JSON.stringify(nextSalesList));
+      idbSet(IDB_CACHE_KEYS.SALES, nextSalesList).catch(() => {});
     } catch {}
 
     // Compute total remaining debt across all active pending accounts of this customer after applying the payment
@@ -6956,7 +7429,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       const next = prev.filter((s) => s.id !== saleId);
       salesRef.current = next;
       try {
-        localStorage.setItem(STORAGE_KEYS.SALES, JSON.stringify(next));
+        idbSet(IDB_CACHE_KEYS.SALES, next).catch(() => {});
       } catch {}
       return next;
     });
@@ -7036,7 +7509,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       const next = prev.map((s) => (s.id === saleId ? updatedTargetSale : s));
       salesRef.current = next;
       try {
-        localStorage.setItem(STORAGE_KEYS.SALES, JSON.stringify(next));
+        idbSet(IDB_CACHE_KEYS.SALES, next).catch(() => {});
       } catch {}
       return next;
     });
@@ -7075,7 +7548,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       const next = prev.map((s) => (s.id === saleId ? updatedTargetSale : s));
       salesRef.current = next;
       try {
-        localStorage.setItem(STORAGE_KEYS.SALES, JSON.stringify(next));
+        idbSet(IDB_CACHE_KEYS.SALES, next).catch(() => {});
       } catch {}
       return next;
     });
@@ -7148,7 +7621,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       const next = prev.filter((s) => !targetIds.has(s.id));
       salesRef.current = next;
       try {
-        localStorage.setItem(STORAGE_KEYS.SALES, JSON.stringify(next));
+        idbSet(IDB_CACHE_KEYS.SALES, next).catch(() => {});
       } catch {}
       return next;
     });
@@ -7240,7 +7713,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       });
       salesRef.current = next;
       try {
-        localStorage.setItem(STORAGE_KEYS.SALES, JSON.stringify(next));
+        idbSet(IDB_CACHE_KEYS.SALES, next).catch(() => {});
       } catch {}
       return next;
     });
@@ -7273,7 +7746,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       const next = prev.filter((s) => !targetIds.has(s.id));
       salesRef.current = next;
       try {
-        localStorage.setItem(STORAGE_KEYS.SALES, JSON.stringify(next));
+        idbSet(IDB_CACHE_KEYS.SALES, next).catch(() => {});
       } catch {}
       return next;
     });
@@ -7871,7 +8344,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     serviceOrdersRef.current = nextList;
     setServiceOrders(nextList);
     try {
-      localStorage.setItem(STORAGE_KEYS.SERVICE_ORDERS, JSON.stringify(nextList));
+      idbSet(IDB_CACHE_KEYS.SERVICE_ORDERS, nextList).catch(() => {});
     } catch {}
     syncServiceOrderToFirestore(updatedOrder).catch((err) =>
       console.warn('Firestore service order payment sync error:', err)
@@ -7914,7 +8387,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     serviceOrdersRef.current = nextList;
     setServiceOrders(nextList);
     try {
-      localStorage.setItem(STORAGE_KEYS.SERVICE_ORDERS, JSON.stringify(nextList));
+      idbSet(IDB_CACHE_KEYS.SERVICE_ORDERS, nextList).catch(() => {});
     } catch {}
     syncServiceOrderToFirestore(updatedOrder).catch((err) =>
       console.warn('Firestore service order payment delete sync error:', err)
@@ -8326,7 +8799,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       techniciansRef.current = nextTechList;
       setTechnicians(nextTechList);
       try {
-        localStorage.setItem(STORAGE_KEYS.TECHNICIANS, JSON.stringify(nextTechList));
+        safeSetStorageItem(STORAGE_KEYS.TECHNICIANS, JSON.stringify(nextTechList));
       } catch {}
       syncTechnicianToFirestore(updatedTechRec).catch(() => {});
     }
@@ -8418,7 +8891,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     serviceCommissionsRef.current = nextComms;
     setServiceCommissions(nextComms);
     try {
-      localStorage.setItem(STORAGE_KEYS.SERVICE_COMMISSIONS, JSON.stringify(nextComms));
+      safeSetStorageItem(STORAGE_KEYS.SERVICE_COMMISSIONS, JSON.stringify(nextComms));
     } catch {}
     updatedMap.forEach((c) => {
       pendingSyncCommissionIdsRef.current.add(c.id);
@@ -8481,7 +8954,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     technicianPayoutsRef.current = nextPayouts;
     setTechnicianPayouts(nextPayouts);
     try {
-      localStorage.setItem(STORAGE_KEYS.TECH_PAYOUTS, JSON.stringify(nextPayouts));
+      safeSetStorageItem(STORAGE_KEYS.TECH_PAYOUTS, JSON.stringify(nextPayouts));
     } catch {}
     syncTechnicianPayoutToFirestore(newPayout).catch(() => {});
 
@@ -8905,7 +9378,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     purchaseOrdersRef.current = nextOrders;
     setPurchaseOrders(nextOrders);
     try {
-      localStorage.setItem(STORAGE_KEYS.PURCHASE_ORDERS, JSON.stringify(nextOrders));
+      idbSet(IDB_CACHE_KEYS.PURCHASE_ORDERS, nextOrders).catch(() => {});
     } catch {}
     syncPurchaseOrderToFirestore(newOrder)
       .then(() => pendingSyncPurchaseOrderIdsRef.current.delete(newOrder.id))
@@ -9282,7 +9755,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     purchaseOrdersRef.current = nextList;
     setPurchaseOrders(nextList);
     try {
-      localStorage.setItem(STORAGE_KEYS.PURCHASE_ORDERS, JSON.stringify(nextList));
+      idbSet(IDB_CACHE_KEYS.PURCHASE_ORDERS, nextList).catch(() => {});
     } catch {}
     syncPurchaseOrderToFirestore(updatedOrder)
       .then(() => pendingSyncPurchaseOrderIdsRef.current.delete(id))
@@ -9320,7 +9793,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       treasuryCommitmentsRef.current = nextCommitments;
       setTreasuryCommitments(nextCommitments);
       try {
-        localStorage.setItem(STORAGE_KEYS.TREASURY_COMMITMENTS, JSON.stringify(nextCommitments));
+        safeSetStorageItem(STORAGE_KEYS.TREASURY_COMMITMENTS, JSON.stringify(nextCommitments));
       } catch {}
       updatedCommitments.forEach((cm) => {
         syncTreasuryCommitmentToFirestore(cm).catch(() => {});
@@ -9354,7 +9827,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     purchaseOrdersRef.current = nextList;
     setPurchaseOrders(nextList);
     try {
-      localStorage.setItem(STORAGE_KEYS.PURCHASE_ORDERS, JSON.stringify(nextList));
+      idbSet(IDB_CACHE_KEYS.PURCHASE_ORDERS, nextList).catch(() => {});
     } catch {}
     syncPurchaseOrderToFirestore(updatedOrder)
       .then(() => pendingSyncPurchaseOrderIdsRef.current.delete(id))
@@ -9410,7 +9883,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     purchaseOrdersRef.current = nextList;
     setPurchaseOrders(nextList);
     try {
-      localStorage.setItem(STORAGE_KEYS.PURCHASE_ORDERS, JSON.stringify(nextList));
+      idbSet(IDB_CACHE_KEYS.PURCHASE_ORDERS, nextList).catch(() => {});
     } catch {}
     syncPurchaseOrderToFirestore(updatedOrder)
       .then(() => pendingSyncPurchaseOrderIdsRef.current.delete(orderId))
@@ -9499,7 +9972,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       };
       settingsRef.current = updated;
       try {
-        localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(updated));
+        safeSetStorageItem(STORAGE_KEYS.SETTINGS, JSON.stringify(updated));
       } catch {}
       syncSettingsToFirestore(updated).catch((err) =>
         console.warn('Firestore custom expense category sync error:', err)
@@ -9523,7 +9996,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       };
       settingsRef.current = updated;
       try {
-        localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(updated));
+        safeSetStorageItem(STORAGE_KEYS.SETTINGS, JSON.stringify(updated));
       } catch {}
       syncSettingsToFirestore(updated).catch(() => {});
       return updated;
@@ -9581,7 +10054,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       };
       settingsRef.current = updated;
       try {
-        localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(updated));
+        safeSetStorageItem(STORAGE_KEYS.SETTINGS, JSON.stringify(updated));
       } catch {}
       syncSettingsToFirestore(updated).catch((err) =>
         console.warn('Firestore custom income category sync error:', err)
@@ -9605,7 +10078,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       };
       settingsRef.current = updated;
       try {
-        localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(updated));
+        safeSetStorageItem(STORAGE_KEYS.SETTINGS, JSON.stringify(updated));
       } catch {}
       syncSettingsToFirestore(updated).catch(() => {});
       return updated;
@@ -9677,7 +10150,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       };
       settingsRef.current = updated;
       try {
-        localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(updated));
+        safeSetStorageItem(STORAGE_KEYS.SETTINGS, JSON.stringify(updated));
       } catch {}
       syncSettingsToFirestore(updated).catch((err) =>
         console.warn('Firestore custom commitment category sync error:', err)
@@ -9701,7 +10174,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       };
       settingsRef.current = updated;
       try {
-        localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(updated));
+        safeSetStorageItem(STORAGE_KEYS.SETTINGS, JSON.stringify(updated));
       } catch {}
       syncSettingsToFirestore(updated).catch(() => {});
       return updated;
@@ -9755,7 +10228,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
         customExpensePosBanks: [...prevCustom, formatted],
       };
       try {
-        localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(updated));
+        safeSetStorageItem(STORAGE_KEYS.SETTINGS, JSON.stringify(updated));
       } catch {}
       syncSettingsToFirestore(updated).catch((err) =>
         console.warn('Firestore custom POS bank sync error:', err)
@@ -9778,7 +10251,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
         customExpensePosBanks: nextCustom,
       };
       try {
-        localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(updated));
+        safeSetStorageItem(STORAGE_KEYS.SETTINGS, JSON.stringify(updated));
       } catch {}
       syncSettingsToFirestore(updated).catch(() => {});
       return updated;
@@ -9950,7 +10423,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     treasuryCommitmentsRef.current = nextList;
     setTreasuryCommitments(nextList);
     try {
-      localStorage.setItem(STORAGE_KEYS.TREASURY_COMMITMENTS, JSON.stringify(nextList));
+      safeSetStorageItem(STORAGE_KEYS.TREASURY_COMMITMENTS, JSON.stringify(nextList));
     } catch {}
     syncTreasuryCommitmentToFirestore(updatedCommitment)
       .then(() => pendingSyncTreasuryCommitmentIdsRef.current.delete(updatedCommitment.id))
@@ -10074,7 +10547,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
         treasuryMovementsRef.current = nextMovements;
         setTreasuryMovements(nextMovements);
         try {
-          localStorage.setItem(STORAGE_KEYS.TREASURY_MOVEMENTS, JSON.stringify(nextMovements));
+          safeSetStorageItem(STORAGE_KEYS.TREASURY_MOVEMENTS, JSON.stringify(nextMovements));
         } catch {}
         syncTreasuryMovementToFirestore(newMovement)
           .then(() => pendingSyncTreasuryMovementIdsRef.current.delete(newMovement.id))
@@ -10123,7 +10596,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     expensesRef.current = nextList;
     setExpenses(nextList);
     try {
-      localStorage.setItem(STORAGE_KEYS.EXPENSES, JSON.stringify(nextList));
+      safeSetStorageItem(STORAGE_KEYS.EXPENSES, JSON.stringify(nextList));
     } catch {}
     syncExpenseToFirestore(newExpense)
       .then(() => pendingSyncExpenseIdsRef.current.delete(newExpense.id))
@@ -10305,7 +10778,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
         treasuryMovementsRef.current = nextMovements;
         setTreasuryMovements(nextMovements);
         try {
-          localStorage.setItem(STORAGE_KEYS.TREASURY_MOVEMENTS, JSON.stringify(nextMovements));
+          safeSetStorageItem(STORAGE_KEYS.TREASURY_MOVEMENTS, JSON.stringify(nextMovements));
         } catch {}
         syncTreasuryMovementToFirestore(updatedMovement)
           .then(() => pendingSyncTreasuryMovementIdsRef.current.delete(updatedMovement.id))
@@ -10361,7 +10834,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
         treasuryMovementsRef.current = nextMovements;
         setTreasuryMovements(nextMovements);
         try {
-          localStorage.setItem(STORAGE_KEYS.TREASURY_MOVEMENTS, JSON.stringify(nextMovements));
+          safeSetStorageItem(STORAGE_KEYS.TREASURY_MOVEMENTS, JSON.stringify(nextMovements));
         } catch {}
         syncTreasuryMovementToFirestore(newMovement)
           .then(() => pendingSyncTreasuryMovementIdsRef.current.delete(newMovement.id))
@@ -10409,7 +10882,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     expensesRef.current = nextList;
     setExpenses(nextList);
     try {
-      localStorage.setItem(STORAGE_KEYS.EXPENSES, JSON.stringify(nextList));
+      safeSetStorageItem(STORAGE_KEYS.EXPENSES, JSON.stringify(nextList));
     } catch {}
     syncExpenseToFirestore(updatedExpense)
       .then(() => pendingSyncExpenseIdsRef.current.delete(id))
@@ -10580,7 +11053,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     treasuryAccountsRef.current = nextAccounts;
     setTreasuryAccounts(nextAccounts);
     try {
-      localStorage.setItem(STORAGE_KEYS.TREASURY_ACCOUNTS, JSON.stringify(nextAccounts));
+      safeSetStorageItem(STORAGE_KEYS.TREASURY_ACCOUNTS, JSON.stringify(nextAccounts));
     } catch {}
     toInsert.forEach((acc) => {
       pendingSyncTreasuryAccountIdsRef.current.add(acc.id);
@@ -10725,7 +11198,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     treasuryAccountsRef.current = nextAccounts;
     setTreasuryAccounts(nextAccounts);
     try {
-      localStorage.setItem(STORAGE_KEYS.TREASURY_ACCOUNTS, JSON.stringify(nextAccounts));
+      safeSetStorageItem(STORAGE_KEYS.TREASURY_ACCOUNTS, JSON.stringify(nextAccounts));
     } catch {}
     syncTreasuryAccountToFirestore(created)
       .then(() => pendingSyncTreasuryAccountIdsRef.current.delete(created.id))
@@ -10851,7 +11324,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     treasuryMovementsRef.current = nextMovements;
     setTreasuryMovements(nextMovements);
     try {
-      localStorage.setItem(STORAGE_KEYS.TREASURY_MOVEMENTS, JSON.stringify(nextMovements));
+      safeSetStorageItem(STORAGE_KEYS.TREASURY_MOVEMENTS, JSON.stringify(nextMovements));
     } catch {}
     syncTreasuryMovementToFirestore(newMovement)
       .then(() => pendingSyncTreasuryMovementIdsRef.current.delete(newMovement.id))
@@ -10885,7 +11358,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     treasuryAccountsRef.current = nextList;
     setTreasuryAccounts(nextList);
     try {
-      localStorage.setItem(STORAGE_KEYS.TREASURY_ACCOUNTS, JSON.stringify(nextList));
+      safeSetStorageItem(STORAGE_KEYS.TREASURY_ACCOUNTS, JSON.stringify(nextList));
     } catch {}
     syncTreasuryAccountToFirestore(newAccount)
       .then(() => pendingSyncTreasuryAccountIdsRef.current.delete(newAccount.id))
@@ -10925,7 +11398,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     treasuryAccountsRef.current = nextList;
     setTreasuryAccounts(nextList);
     try {
-      localStorage.setItem(STORAGE_KEYS.TREASURY_ACCOUNTS, JSON.stringify(nextList));
+      safeSetStorageItem(STORAGE_KEYS.TREASURY_ACCOUNTS, JSON.stringify(nextList));
     } catch {}
     syncTreasuryAccountToFirestore(updatedAccount)
       .then(() => pendingSyncTreasuryAccountIdsRef.current.delete(id))
@@ -11186,7 +11659,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     treasuryCommitmentsRef.current = nextList;
     setTreasuryCommitments(nextList);
     try {
-      localStorage.setItem(STORAGE_KEYS.TREASURY_COMMITMENTS, JSON.stringify(nextList));
+      safeSetStorageItem(STORAGE_KEYS.TREASURY_COMMITMENTS, JSON.stringify(nextList));
     } catch {}
     createdList.forEach((cm) => {
       syncTreasuryCommitmentToFirestore(cm)
@@ -11268,7 +11741,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     treasuryCommitmentsRef.current = nextList;
     setTreasuryCommitments(nextList);
     try {
-      localStorage.setItem(STORAGE_KEYS.TREASURY_COMMITMENTS, JSON.stringify(nextList));
+      safeSetStorageItem(STORAGE_KEYS.TREASURY_COMMITMENTS, JSON.stringify(nextList));
     } catch {}
     syncTreasuryCommitmentToFirestore(newCommitment)
       .then(() => pendingSyncTreasuryCommitmentIdsRef.current.delete(newCommitment.id))
@@ -11401,7 +11874,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     treasuryCommitmentsRef.current = nextList;
     setTreasuryCommitments(nextList);
     try {
-      localStorage.setItem(STORAGE_KEYS.TREASURY_COMMITMENTS, JSON.stringify(nextList));
+      safeSetStorageItem(STORAGE_KEYS.TREASURY_COMMITMENTS, JSON.stringify(nextList));
     } catch {}
     syncTreasuryCommitmentToFirestore(updatedCommitment)
       .then(() => pendingSyncTreasuryCommitmentIdsRef.current.delete(id))
@@ -11508,7 +11981,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     treasuryAccountsRef.current = nextAccounts;
     setTreasuryAccounts(nextAccounts);
     try {
-      localStorage.setItem(STORAGE_KEYS.TREASURY_ACCOUNTS, JSON.stringify(nextAccounts));
+      safeSetStorageItem(STORAGE_KEYS.TREASURY_ACCOUNTS, JSON.stringify(nextAccounts));
     } catch {}
     syncTreasuryAccountToFirestore(updatedAcc)
       .then(() => pendingSyncTreasuryAccountIdsRef.current.delete(updatedAcc.id))
@@ -11641,7 +12114,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     treasuryMovementsRef.current = nextMovements;
     setTreasuryMovements(nextMovements);
     try {
-      localStorage.setItem(STORAGE_KEYS.TREASURY_MOVEMENTS, JSON.stringify(nextMovements));
+      safeSetStorageItem(STORAGE_KEYS.TREASURY_MOVEMENTS, JSON.stringify(nextMovements));
     } catch {}
     syncTreasuryMovementToFirestore(newMovement)
       .then(() => pendingSyncTreasuryMovementIdsRef.current.delete(newMovement.id))
@@ -11796,7 +12269,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     treasuryMovementsRef.current = nextMovements;
     setTreasuryMovements(nextMovements);
     try {
-      localStorage.setItem(STORAGE_KEYS.TREASURY_MOVEMENTS, JSON.stringify(nextMovements));
+      safeSetStorageItem(STORAGE_KEYS.TREASURY_MOVEMENTS, JSON.stringify(nextMovements));
     } catch {}
     syncTreasuryMovementToFirestore(newMovement)
       .then(() => pendingSyncTreasuryMovementIdsRef.current.delete(newMovement.id))
@@ -11931,7 +12404,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     treasuryMovementsRef.current = nextMovements;
     setTreasuryMovements(nextMovements);
     try {
-      localStorage.setItem(STORAGE_KEYS.TREASURY_MOVEMENTS, JSON.stringify(nextMovements));
+      safeSetStorageItem(STORAGE_KEYS.TREASURY_MOVEMENTS, JSON.stringify(nextMovements));
     } catch {}
     syncTreasuryMovementToFirestore(expenseMovement)
       .then(() => pendingSyncTreasuryMovementIdsRef.current.delete(expenseMovement.id))
@@ -11974,7 +12447,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     treasuryMovementsRef.current = nextList;
     setTreasuryMovements(nextList);
     try {
-      localStorage.setItem(STORAGE_KEYS.TREASURY_MOVEMENTS, JSON.stringify(nextList));
+      safeSetStorageItem(STORAGE_KEYS.TREASURY_MOVEMENTS, JSON.stringify(nextList));
     } catch {}
 
     // If this standalone movement (without a linked BusinessExpense) discounted a worker commitment as a vale, restore it
@@ -12008,7 +12481,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
         expensesRef.current = nextExpenses;
         setExpenses(nextExpenses);
         try {
-          localStorage.setItem(STORAGE_KEYS.EXPENSES, JSON.stringify(nextExpenses));
+          safeSetStorageItem(STORAGE_KEYS.EXPENSES, JSON.stringify(nextExpenses));
         } catch {}
         syncExpenseToFirestore(unlinkedExp)
           .then(() => pendingSyncExpenseIdsRef.current.delete(unlinkedExp.id))
@@ -12032,7 +12505,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
         salesRef.current = nextSales;
         setSales(nextSales);
         try {
-          localStorage.setItem(STORAGE_KEYS.SALES, JSON.stringify(nextSales));
+          idbSet(IDB_CACHE_KEYS.SALES, nextSales).catch(() => {});
         } catch {}
         syncSaleWithRetry(unlinkedSale);
       }
@@ -12096,7 +12569,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
           treasuryDebtsRef.current = nextDebts;
           setTreasuryDebts(nextDebts);
           try {
-            localStorage.setItem(STORAGE_KEYS.TREASURY_DEBTS, JSON.stringify(nextDebts));
+            safeSetStorageItem(STORAGE_KEYS.TREASURY_DEBTS, JSON.stringify(nextDebts));
           } catch {}
           syncTreasuryDebtToFirestore(updatedDebt)
             .then(() => pendingSyncTreasuryDebtIdsRef.current.delete(updatedDebt.id))
@@ -12206,7 +12679,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     setCustomDebtCategories((prev) => {
       const next = [...prev, cleaned];
       try {
-        localStorage.setItem(STORAGE_KEYS.DEBT_CATEGORIES, JSON.stringify(next));
+        safeSetStorageItem(STORAGE_KEYS.DEBT_CATEGORIES, JSON.stringify(next));
       } catch {}
       return next;
     });
@@ -12239,7 +12712,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
         next.push(newClean);
       }
       try {
-        localStorage.setItem(STORAGE_KEYS.DEBT_CATEGORIES, JSON.stringify(next));
+        safeSetStorageItem(STORAGE_KEYS.DEBT_CATEGORIES, JSON.stringify(next));
       } catch {}
       return next;
     });
@@ -12263,7 +12736,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       treasuryDebtsRef.current = nextDebts;
       setTreasuryDebts(nextDebts);
       try {
-        localStorage.setItem(STORAGE_KEYS.TREASURY_DEBTS, JSON.stringify(nextDebts));
+        safeSetStorageItem(STORAGE_KEYS.TREASURY_DEBTS, JSON.stringify(nextDebts));
       } catch {}
       touchedDebts.forEach((d) => {
         pendingSyncTreasuryDebtIdsRef.current.add(d.id);
@@ -12283,7 +12756,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       const next = prev.filter((c) => c.trim().toLowerCase() !== target);
       const safeNext = next.length > 0 ? next : ['Otras Deudas'];
       try {
-        localStorage.setItem(STORAGE_KEYS.DEBT_CATEGORIES, JSON.stringify(safeNext));
+        safeSetStorageItem(STORAGE_KEYS.DEBT_CATEGORIES, JSON.stringify(safeNext));
       } catch {}
       return safeNext;
     });
@@ -12345,7 +12818,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     treasuryDebtsRef.current = nextList;
     setTreasuryDebts(nextList);
     try {
-      localStorage.setItem(STORAGE_KEYS.TREASURY_DEBTS, JSON.stringify(nextList));
+      safeSetStorageItem(STORAGE_KEYS.TREASURY_DEBTS, JSON.stringify(nextList));
     } catch {}
     syncTreasuryDebtToFirestore(newDebt)
       .then(() => pendingSyncTreasuryDebtIdsRef.current.delete(newDebt.id))
@@ -12399,7 +12872,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     treasuryDebtsRef.current = nextList;
     setTreasuryDebts(nextList);
     try {
-      localStorage.setItem(STORAGE_KEYS.TREASURY_DEBTS, JSON.stringify(nextList));
+      safeSetStorageItem(STORAGE_KEYS.TREASURY_DEBTS, JSON.stringify(nextList));
     } catch {}
     syncTreasuryDebtToFirestore(updatedDebt)
       .then(() => pendingSyncTreasuryDebtIdsRef.current.delete(updatedDebt.id))
@@ -12415,7 +12888,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     treasuryDebtsRef.current = nextList;
     setTreasuryDebts(nextList);
     try {
-      localStorage.setItem(STORAGE_KEYS.TREASURY_DEBTS, JSON.stringify(nextList));
+      safeSetStorageItem(STORAGE_KEYS.TREASURY_DEBTS, JSON.stringify(nextList));
     } catch {}
   };
 
@@ -12554,7 +13027,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     treasuryMovementsRef.current = nextMovements;
     setTreasuryMovements(nextMovements);
     try {
-      localStorage.setItem(STORAGE_KEYS.TREASURY_MOVEMENTS, JSON.stringify(nextMovements));
+      safeSetStorageItem(STORAGE_KEYS.TREASURY_MOVEMENTS, JSON.stringify(nextMovements));
     } catch {}
     syncTreasuryMovementToFirestore(newMovement)
       .then(() => pendingSyncTreasuryMovementIdsRef.current.delete(newMovement.id))
@@ -12808,7 +13281,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     openAccountsRef.current = nextList;
     setOpenAccounts(nextList);
     try {
-      localStorage.setItem(STORAGE_KEYS.OPEN_ACCOUNTS, JSON.stringify(nextList));
+      safeSetStorageItem(STORAGE_KEYS.OPEN_ACCOUNTS, JSON.stringify(nextList));
     } catch {}
 
     pendingSyncOpenAccountIdsRef.current.add(newAccount.id);
@@ -12856,7 +13329,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     openAccountsRef.current = nextList;
     setOpenAccounts(nextList);
     try {
-      localStorage.setItem(STORAGE_KEYS.OPEN_ACCOUNTS, JSON.stringify(nextList));
+      safeSetStorageItem(STORAGE_KEYS.OPEN_ACCOUNTS, JSON.stringify(nextList));
     } catch {}
 
     pendingSyncOpenAccountIdsRef.current.add(updatedAccount.id);
@@ -12920,7 +13393,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     openAccountsRef.current = nextList;
     setOpenAccounts(nextList);
     try {
-      localStorage.setItem(STORAGE_KEYS.OPEN_ACCOUNTS, JSON.stringify(nextList));
+      safeSetStorageItem(STORAGE_KEYS.OPEN_ACCOUNTS, JSON.stringify(nextList));
     } catch {}
 
     pendingSyncOpenAccountIdsRef.current.add(updatedAccount.id);
@@ -12955,7 +13428,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     openAccountsRef.current = nextList;
     setOpenAccounts(nextList);
     try {
-      localStorage.setItem(STORAGE_KEYS.OPEN_ACCOUNTS, JSON.stringify(nextList));
+      safeSetStorageItem(STORAGE_KEYS.OPEN_ACCOUNTS, JSON.stringify(nextList));
     } catch {}
 
     pendingSyncOpenAccountIdsRef.current.add(updatedAccount.id);
@@ -12995,7 +13468,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     openAccountsRef.current = nextList;
     setOpenAccounts(nextList);
     try {
-      localStorage.setItem(STORAGE_KEYS.OPEN_ACCOUNTS, JSON.stringify(nextList));
+      safeSetStorageItem(STORAGE_KEYS.OPEN_ACCOUNTS, JSON.stringify(nextList));
     } catch {}
 
     pendingSyncOpenAccountIdsRef.current.add(updatedAccount.id);
@@ -13021,7 +13494,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     openAccountsRef.current = nextList;
     setOpenAccounts(nextList);
     try {
-      localStorage.setItem(STORAGE_KEYS.OPEN_ACCOUNTS, JSON.stringify(nextList));
+      safeSetStorageItem(STORAGE_KEYS.OPEN_ACCOUNTS, JSON.stringify(nextList));
     } catch {}
 
     removeOpenAccountFromFirestore(accountId).catch(() => {});
@@ -13164,7 +13637,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     openAccountsRef.current = nextList;
     setOpenAccounts(nextList);
     try {
-      localStorage.setItem(STORAGE_KEYS.OPEN_ACCOUNTS, JSON.stringify(nextList));
+      safeSetStorageItem(STORAGE_KEYS.OPEN_ACCOUNTS, JSON.stringify(nextList));
     } catch {}
 
     pendingSyncOpenAccountIdsRef.current.add(closedAccount.id);
@@ -13227,7 +13700,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     adminTasksRef.current = nextList;
     setAdminTasks(nextList);
     try {
-      localStorage.setItem(STORAGE_KEYS.ADMIN_TASKS, JSON.stringify(nextList));
+      safeSetStorageItem(STORAGE_KEYS.ADMIN_TASKS, JSON.stringify(nextList));
     } catch {}
 
     pendingSyncAdminTaskIdsRef.current.add(newTask.id);
@@ -13293,7 +13766,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     adminTasksRef.current = nextList;
     setAdminTasks(nextList);
     try {
-      localStorage.setItem(STORAGE_KEYS.ADMIN_TASKS, JSON.stringify(nextList));
+      safeSetStorageItem(STORAGE_KEYS.ADMIN_TASKS, JSON.stringify(nextList));
     } catch {}
 
     pendingSyncAdminTaskIdsRef.current.add(updatedTask.id);
@@ -13322,7 +13795,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     adminTasksRef.current = nextList;
     setAdminTasks(nextList);
     try {
-      localStorage.setItem(STORAGE_KEYS.ADMIN_TASKS, JSON.stringify(nextList));
+      safeSetStorageItem(STORAGE_KEYS.ADMIN_TASKS, JSON.stringify(nextList));
     } catch {}
 
     pendingSyncAdminTaskIdsRef.current.add(updatedTask.id);
@@ -13351,7 +13824,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     adminTasksRef.current = nextList;
     setAdminTasks(nextList);
     try {
-      localStorage.setItem(STORAGE_KEYS.ADMIN_TASKS, JSON.stringify(nextList));
+      safeSetStorageItem(STORAGE_KEYS.ADMIN_TASKS, JSON.stringify(nextList));
     } catch {}
 
     pendingSyncAdminTaskIdsRef.current.delete(taskId);
@@ -13399,7 +13872,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
       };
       setCurrentUser(refreshed);
       try {
-        localStorage.setItem('servimotos_auth_user_v1', JSON.stringify(refreshed));
+        safeSetStorageItem('servimotos_auth_user_v1', JSON.stringify(refreshed));
       } catch {}
     }
   }, [staffUsers, currentUser]);
@@ -14070,6 +14543,7 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
     setAdminTasks([]);
     setCart([]);
     localStorage.clear();
+    idbClear().catch(() => {});
   };
 
   return (
@@ -14131,6 +14605,9 @@ const DEMO_ONLINE_ORDER_IDS = new Set(['ord-onl-1', 'ord-onl-2']);
         overdueCreditSales,
         totalAccountsReceivableUSD,
         totalAccountsReceivableBs,
+        isSalesHistoryLoaded,
+        ensureSalesHistoryLoaded,
+        fetchRecentSalesOnDemand,
         updateMercadoLibreCommission,
         settleAllMercadoLibreCommissions,
         mercadolibreDebtUSD,

@@ -21,7 +21,8 @@ import {
   round4,
 } from '../../utils/pricing';
 import { downloadPurchaseOrderPDF } from '../../utils/pdfInvoice';
-import { compressImageFileToDataUrl, normalizeImageUrl } from '../../utils/imageUrl';
+import { normalizeImageUrl } from '../../utils/imageUrl';
+import { uploadImageToFirebaseStorage } from '../../services/storageService';
 import {
   downloadPurchaseOrderTemplate,
   ParsedPOExcelItem,
@@ -742,16 +743,22 @@ export const PurchaseOrdersView: React.FC = () => {
     e.target.value = '';
     if (!file || !file.type.startsWith('image/')) return;
     try {
-      const compressed = await compressImageFileToDataUrl(file, 720, 0.82);
+      const storageUrl = await uploadImageToFirebaseStorage(
+        file,
+        'purchase-orders',
+        customPartSku.trim() || customPartName.trim() || 'compra',
+        1080,
+        0.82
+      );
       if (targetItemIdx !== undefined) {
         setOrdItems((prev) =>
-          prev.map((it, i) => (i === targetItemIdx ? { ...it, imageUrl: compressed } : it))
+          prev.map((it, i) => (i === targetItemIdx ? { ...it, imageUrl: storageUrl } : it))
         );
       } else {
-        setCustomPartImageUrl(compressed);
+        setCustomPartImageUrl(storageUrl);
       }
-    } catch {
-      // Ignore upload error silently
+    } catch (err: any) {
+      setCustomPartError(err?.message || 'No se pudo subir la imagen a Firebase Storage.');
     }
   };
 

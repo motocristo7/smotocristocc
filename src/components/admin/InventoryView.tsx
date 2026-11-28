@@ -57,14 +57,19 @@ import {
   normalizeImageUrl,
   isGoogleDriveUrl,
   isEmbeddedImageUrl,
+  isFirebaseStorageImageUrl,
+  isUploadedImageUrl,
   PRESET_PRODUCT_IMAGES,
   getFallbackProductImage,
   handleProductImageError,
-  compressImageFileToDataUrl,
   MAX_PRODUCT_IMAGES,
   getProductImages,
   hasAnyEmbeddedImage,
 } from '../../utils/imageUrl';
+import {
+  uploadImageToFirebaseStorage,
+  isBase64ImageUrl,
+} from '../../services/storageService';
 import { doesProductMatchModelCategory } from '../../utils/modelCategories';
 import { downloadInventoryTemplate, exportInventoryToExcel, ParsedProductRow } from '../../utils/excelInventory';
 import { ImportExcelModal } from './ImportExcelModal';
@@ -549,10 +554,11 @@ export const InventoryView: React.FC = () => {
     );
     setIsCompressingUpload(true);
     try {
-      const compressedList: string[] = [];
+      const uploadedUrls: string[] = [];
+      const prefix = formData.sku.trim() || formData.name.trim() || editingProduct?.id || 'producto';
       for (const file of filesToProcess) {
-        const compressedDataUrl = await compressImageFileToDataUrl(file, 720, 0.8, 135_000);
-        compressedList.push(compressedDataUrl);
+        const storageUrl = await uploadImageToFirebaseStorage(file, 'products', prefix, 1080, 0.82);
+        uploadedUrls.push(storageUrl);
       }
       setImagePreviewError(false);
       setFormData((prev) => {
@@ -562,7 +568,8 @@ export const InventoryView: React.FC = () => {
             : prev.imageUrl
             ? [prev.imageUrl]
             : [];
-        const merged = [...base, ...compressedList].slice(0, MAX_PRODUCT_IMAGES);
+        const cleanBase = base.filter((u) => !isBase64ImageUrl(u));
+        const merged = [...cleanBase, ...uploadedUrls].slice(0, MAX_PRODUCT_IMAGES);
         return {
           ...prev,
           imageUrls: merged,
@@ -570,7 +577,7 @@ export const InventoryView: React.FC = () => {
         };
       });
     } catch (err: any) {
-      setUploadError(err?.message || 'No se pudieron procesar las fotos seleccionadas.');
+      setUploadError(err?.message || 'No se pudieron subir las fotos a Firebase Storage.');
     } finally {
       setIsCompressingUpload(false);
     }
@@ -635,7 +642,9 @@ export const InventoryView: React.FC = () => {
     }
 
     const existingPhotos = getProductImages(product, false);
-    const keepExisting = existingPhotos.filter((u) => isEmbeddedImageUrl(u));
+    const keepExisting = existingPhotos.filter(
+      (u) => isFirebaseStorageImageUrl(u) && !isBase64ImageUrl(u)
+    );
     const remainingSlots = MAX_PRODUCT_IMAGES - keepExisting.length;
     if (remainingSlots <= 0) {
       showToast(`⚠️ "${product.name}" ya tiene el máximo de ${MAX_PRODUCT_IMAGES} fotos. Edítalo para reemplazar o quitar alguna.`);
@@ -645,9 +654,10 @@ export const InventoryView: React.FC = () => {
     setQuickUploadingId(product.id);
     try {
       const uploaded: string[] = [];
+      const prefix = product.sku || product.id || product.name;
       for (const file of validFiles.slice(0, remainingSlots)) {
-        const compressedDataUrl = await compressImageFileToDataUrl(file, 720, 0.8, 135_000);
-        uploaded.push(compressedDataUrl);
+        const storageUrl = await uploadImageToFirebaseStorage(file, 'products', prefix, 1080, 0.82);
+        uploaded.push(storageUrl);
       }
       const nextImages = [...keepExisting, ...uploaded].slice(0, MAX_PRODUCT_IMAGES);
       updateProduct(product.id, {
@@ -656,11 +666,11 @@ export const InventoryView: React.FC = () => {
       });
       showToast(
         uploaded.length === 1
-          ? `✓ Foto agregada a "${product.name}" (${nextImages.length} foto${nextImages.length > 1 ? 's' : ''}).`
-          : `✓ ${uploaded.length} fotos subidas a "${product.name}" (${nextImages.length} en total).`
+          ? `✓ Foto subida a Firebase Storage para "${product.name}" (${nextImages.length} foto${nextImages.length > 1 ? 's' : ''}).`
+          : `✓ ${uploaded.length} fotos subidas a Firebase Storage para "${product.name}" (${nextImages.length} en total).`
       );
     } catch (err: any) {
-      showToast(`⚠️ ${err?.message || 'No se pudo subir la imagen.'}`);
+      showToast(`⚠️ ${err?.message || 'No se pudo subir la imagen a Firebase Storage.'}`);
     } finally {
       setQuickUploadingId((prev) => (prev === product.id ? null : prev));
     }
@@ -804,7 +814,7 @@ export const InventoryView: React.FC = () => {
           ...(formData.imageUrl.trim() ? [formData.imageUrl.trim()] : []),
         ]
           .map((u) => normalizeImageUrl(u))
-          .filter(Boolean)
+          .filter((u) => Boolean(u) && !isBase64ImageUrl(u))
       )
     ).slice(0, MAX_PRODUCT_IMAGES);
 
@@ -2947,10 +2957,8 @@ export const InventoryView: React.FC = () => {
                       : formData.imageUrl
                       ? [formData.imageUrl]
                       : [];
-                  const totalKb = modalPhotos.reduce(
-                    (acc, url) => acc + (isEmbeddedImageUrl(url) ? Math.round((url.length * 0.75) / 1024) : 0),
-                    0
-                  );
+                  const cloudCount = modalPhotos.filter((url) => isFirebaseStorageImageUrl(url)).length;
+                  const hasLegacyBase64 = modalPhotos.some((url) => isEmbeddedImageUrl(url));
                   const canAddMore = modalPhotos.length < MAX_PRODUCT_IMAGES;
 
                   return (
@@ -2963,10 +2971,15 @@ export const InventoryView: React.FC = () => {
                           <span className="inline-flex items-center gap-1 text-[10px] bg-slate-900 text-amber-300 px-2 py-0.5 rounded-full font-bold tabular-nums">
                             {modalPhotos.length} / {MAX_PRODUCT_IMAGES} fotos
                           </span>
-                          {totalKb > 0 && (
-                            <span className="inline-flex items-center gap-1 text-[10px] bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full font-semibold tabular-nums">
+                          {cloudCount > 0 && (
+                            <span className="inline-flex items-center gap-1 text-[10px] bg-emerald-100 text-emerald-800 px-2 py-0.5 rounded-full font-semibold">
                               <CheckCircle2 className="w-3 h-3 text-emerald-600" />
-                              {totalKb} KB
+                              Firebase Storage ({cloudCount})
+                            </span>
+                          )}
+                          {hasLegacyBase64 && (
+                            <span className="inline-flex items-center gap-1 text-[10px] bg-amber-100 text-amber-800 px-2 py-0.5 rounded-full font-semibold">
+                              Sube foto nueva (reemplaza base64)
                             </span>
                           )}
                         </div>
@@ -3058,7 +3071,7 @@ export const InventoryView: React.FC = () => {
                                 <Plus className="w-5 h-5 mb-1" />
                               )}
                               <span className="text-[11px] font-bold">
-                                {isCompressingUpload ? 'Optimizando...' : 'Agregar más fotos'}
+                                {isCompressingUpload ? 'Subiendo a la nube...' : 'Agregar más fotos'}
                               </span>
                               <span className="text-[10px] opacity-75">
                                 Quedan {MAX_PRODUCT_IMAGES - modalPhotos.length}
@@ -3083,7 +3096,7 @@ export const InventoryView: React.FC = () => {
                             </div>
                           </div>
                           <div className="flex-1 text-xs text-slate-500">
-                            Sube hasta <strong>{MAX_PRODUCT_IMAGES} fotos</strong> del repuesto (distintos ángulos, empaque, medidas o detalle).
+                            Sube hasta <strong>{MAX_PRODUCT_IMAGES} fotos</strong> del repuesto directamente a <strong>Firebase Storage</strong> (distintos ángulos, empaque, medidas o detalle).
                           </div>
                         </div>
                       )}
@@ -3103,10 +3116,10 @@ export const InventoryView: React.FC = () => {
                           )}
                           <span>
                             {isCompressingUpload
-                              ? 'Optimizando fotos...'
+                              ? 'Subiendo a Firebase Storage...'
                               : modalPhotos.length > 0
-                              ? 'Subir más fotos desde dispositivo'
-                              : 'Subir fotos desde dispositivo (varias a la vez)'}
+                              ? 'Subir más fotos a la nube'
+                              : 'Subir fotos a la nube (varias a la vez)'}
                           </span>
                           <input
                             type="file"

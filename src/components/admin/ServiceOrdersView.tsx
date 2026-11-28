@@ -30,7 +30,7 @@ import {
   hasValidWhatsAppPhone,
 } from '../../utils/whatsapp';
 import { downloadServiceOrderPDF } from '../../utils/pdfInvoice';
-import { compressImageFileToDataUrl } from '../../utils/imageUrl';
+import { uploadImageToFirebaseStorage } from '../../services/storageService';
 import {
   Wrench,
   Plus,
@@ -1738,11 +1738,11 @@ const SeatPhotoUploader: React.FC<SeatPhotoUploaderProps> = ({
     setUploadError(null);
     setIsProcessing(true);
     try {
-      const compressed = await compressImageFileToDataUrl(file, 720, 0.8);
-      onChange(compressed);
-    } catch (err) {
-      console.warn('Error comprimiendo foto de asiento:', err);
-      setUploadError('No se pudo procesar la foto. Intenta con otra imagen.');
+      const storageUrl = await uploadImageToFirebaseStorage(file, 'service-orders', 'asiento', 1080, 0.82);
+      onChange(storageUrl);
+    } catch (err: any) {
+      console.warn('Error subiendo foto de asiento a Firebase Storage:', err);
+      setUploadError(err?.message || 'No se pudo subir la foto a Firebase Storage. Intenta nuevamente.');
     } finally {
       setIsProcessing(false);
     }
@@ -2310,12 +2310,18 @@ export const ServiceOrdersView: React.FC = () => {
     if (!file || !file.type.startsWith('image/')) return;
     setUploadingDeliveryOrderId(order.id);
     try {
-      const compressed = await compressImageFileToDataUrl(file, 720, 0.8);
-      updateServiceOrder(order.id, { seatDeliveryPhoto: compressed });
-      setEditSuccessMessage(`¡Foto de entrega guardada en la orden #${order.orderNumber}!`);
+      const storageUrl = await uploadImageToFirebaseStorage(
+        file,
+        'service-orders',
+        `orden_${order.orderNumber || order.id}_entrega`,
+        1080,
+        0.82
+      );
+      updateServiceOrder(order.id, { seatDeliveryPhoto: storageUrl });
+      setEditSuccessMessage(`¡Foto de entrega guardada en Firebase Storage para la orden #${order.orderNumber}!`);
       setTimeout(() => setEditSuccessMessage(null), 4000);
     } catch (err) {
-      console.warn('Error guardando foto de entrega del asiento:', err);
+      console.warn('Error subiendo foto de entrega del asiento:', err);
     } finally {
       setUploadingDeliveryOrderId(null);
     }

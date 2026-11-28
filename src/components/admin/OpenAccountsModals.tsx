@@ -512,6 +512,25 @@ export const OpenAccountDetailModal: React.FC<OpenAccountDetailModalProps> = ({
   const [editMoto, setEditMoto] = useState(account.motorcycleInfo || '');
   const [editNotes, setEditNotes] = useState(account.notes || '');
   const [confirmCancel, setConfirmCancel] = useState(false);
+  const [qtyDrafts, setQtyDrafts] = useState<Record<string, string>>({});
+
+  const clearEntryQtyDraft = (entryId: string) => {
+    setQtyDrafts((prev) => {
+      if (!(entryId in prev)) return prev;
+      const next = { ...prev };
+      delete next[entryId];
+      return next;
+    });
+  };
+
+  const commitEntryQtyDraft = (entryId: string, currentQty: number) => {
+    const raw = qtyDrafts[entryId];
+    clearEntryQtyDraft(entryId);
+    if (raw === undefined) return;
+    const parsed = parseInt(raw.trim(), 10);
+    if (Number.isNaN(parsed) || parsed <= 0 || parsed === currentQty) return;
+    onUpdateItem(account.id, entryId, { quantity: parsed });
+  };
 
   const totalBs = Math.round((account.subtotal || 0) * rate * 100) / 100;
 
@@ -741,25 +760,47 @@ export const OpenAccountDetailModal: React.FC<OpenAccountDetailModalProps> = ({
                       </div>
 
                       <div className="flex items-center justify-between sm:justify-end gap-3 shrink-0">
-                        <div className="flex items-center border border-slate-200 rounded-lg bg-white">
+                        <div className="flex items-center border border-slate-200 rounded-lg bg-white focus-within:border-violet-500 focus-within:ring-1 focus-within:ring-violet-400/40">
                           <button
                             type="button"
-                            onClick={() =>
-                              onUpdateItem(account.id, item.entryId, { quantity: item.quantity - 1 })
-                            }
+                            onClick={() => {
+                              clearEntryQtyDraft(item.entryId);
+                              onUpdateItem(account.id, item.entryId, { quantity: item.quantity - 1 });
+                            }}
                             className="p-1.5 hover:bg-slate-100 text-slate-700 cursor-pointer rounded-l-lg"
                             title="Restar 1 (devuelve al stock)"
                           >
                             <Minus className="w-3 h-3" />
                           </button>
-                          <span className="px-2.5 font-mono font-bold text-xs min-w-[28px] text-center">
-                            {item.quantity}
-                          </span>
+                          <input
+                            type="number"
+                            inputMode="numeric"
+                            min="1"
+                            step="1"
+                            value={qtyDrafts[item.entryId] ?? String(item.quantity)}
+                            onChange={(e) =>
+                              setQtyDrafts((prev) => ({ ...prev, [item.entryId]: e.target.value }))
+                            }
+                            onBlur={() => commitEntryQtyDraft(item.entryId, item.quantity)}
+                            onFocus={(e) => e.currentTarget.select()}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                e.currentTarget.blur();
+                              } else if (e.key === 'Escape') {
+                                clearEntryQtyDraft(item.entryId);
+                                e.currentTarget.blur();
+                              }
+                            }}
+                            aria-label={`Cantidad de ${item.name}`}
+                            title="Usa las flechas o escribe la cantidad con el teclado"
+                            className="w-14 px-1 py-0.5 font-mono font-bold text-xs text-center text-slate-900 bg-transparent border-x border-slate-100 outline-none tabular-nums"
+                          />
                           <button
                             type="button"
-                            onClick={() =>
-                              onUpdateItem(account.id, item.entryId, { quantity: item.quantity + 1 })
-                            }
+                            onClick={() => {
+                              clearEntryQtyDraft(item.entryId);
+                              onUpdateItem(account.id, item.entryId, { quantity: item.quantity + 1 });
+                            }}
                             className="p-1.5 hover:bg-slate-100 text-slate-700 cursor-pointer rounded-r-lg"
                             title="Sumar 1 (descuenta del stock)"
                           >

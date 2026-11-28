@@ -131,6 +131,7 @@ export const PosView: React.FC = () => {
   const [productSearch, setProductSearch] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
   const [posCart, setPosCart] = useState<PosCartItem[]>([]);
+  const [qtyDrafts, setQtyDrafts] = useState<Record<string, string>>({});
 
   // On-demand recent invoices modal state (never preloaded when opening POS)
   const [isRecentInvoicesOpen, setIsRecentInvoicesOpen] = useState(false);
@@ -761,6 +762,15 @@ export const PosView: React.FC = () => {
     setActiveSuggestionSource(null);
   };
 
+  const clearQtyDraft = (productId: string) => {
+    setQtyDrafts((prev) => {
+      if (!(productId in prev)) return prev;
+      const next = { ...prev };
+      delete next[productId];
+      return next;
+    });
+  };
+
   const handleAddToCart = (product: Product) => {
     setPosFormError(null);
     const tracksInv = productTracksInventory(product);
@@ -769,6 +779,7 @@ export const PosView: React.FC = () => {
       return;
     }
 
+    clearQtyDraft(product.id);
     setPosCart((prev) => {
       const existing = prev.find((item) => item.product.id === product.id);
       if (existing) {
@@ -777,7 +788,9 @@ export const PosView: React.FC = () => {
           return prev;
         }
         return prev.map((item) =>
-          item.product.id === product.id ? { ...item, quantity: item.quantity + 1 } : item
+          item.product.id === product.id
+            ? { ...item, quantity: Math.round((item.quantity + 1) * 1000) / 1000 }
+            : item
         );
       }
       return [...prev, { product, quantity: 1 }];
@@ -785,11 +798,12 @@ export const PosView: React.FC = () => {
   };
 
   const handleUpdateQty = (productId: string, delta: number) => {
+    clearQtyDraft(productId);
     setPosCart((prev) => {
       return prev
         .map((item) => {
           if (item.product.id === productId) {
-            const newQty = item.quantity + delta;
+            const newQty = Math.round((item.quantity + delta) * 1000) / 1000;
             if (newQty <= 0) return null;
             if (productTracksInventory(item.product) && newQty > item.product.stock) {
               showToast(`Stock máximo disponible alcanzado: ${item.product.stock}`, 'error');
@@ -803,7 +817,43 @@ export const PosView: React.FC = () => {
     });
   };
 
+  const handleQtyInputChange = (productId: string, rawValue: string) => {
+    setQtyDrafts((prev) => ({ ...prev, [productId]: rawValue }));
+
+    const normalized = rawValue.trim().replace(',', '.');
+    if (normalized === '') return;
+
+    const parsed = parseFloat(normalized);
+    if (Number.isNaN(parsed) || parsed <= 0) return;
+
+    const cleanQty = Math.round(parsed * 1000) / 1000;
+    const targetItem = posCart.find((item) => item.product.id === productId);
+    if (!targetItem) return;
+
+    if (productTracksInventory(targetItem.product) && cleanQty > targetItem.product.stock) {
+      showToast(`Stock máximo disponible alcanzado: ${targetItem.product.stock}`, 'error');
+      setQtyDrafts((prev) => ({ ...prev, [productId]: String(targetItem.product.stock) }));
+      setPosCart((prev) =>
+        prev.map((item) =>
+          item.product.id === productId ? { ...item, quantity: targetItem.product.stock } : item
+        )
+      );
+      return;
+    }
+
+    setPosCart((prev) =>
+      prev.map((item) =>
+        item.product.id === productId ? { ...item, quantity: cleanQty } : item
+      )
+    );
+  };
+
+  const handleQtyInputCommit = (productId: string) => {
+    clearQtyDraft(productId);
+  };
+
   const handleRemoveFromCart = (productId: string) => {
+    clearQtyDraft(productId);
     setPosCart((prev) => prev.filter((item) => item.product.id !== productId));
   };
 
@@ -915,7 +965,7 @@ export const PosView: React.FC = () => {
 
   const subtotalBs = subtotalUSD * rate;
   const totalBs = Math.round((preShippingTotalUSD * rate + shippingCostBs) * 100) / 100;
-  const totalCartUnits = posCart.reduce((sum, item) => sum + item.quantity, 0);
+  const totalCartUnits = Math.round(posCart.reduce((sum, item) => sum + item.quantity, 0) * 1000) / 1000;
 
   const hasMixtoCreditSplit =
     paymentType === 'MIXTO' && mixtoSplits.some((sp) => sp.splitType === 'CREDITO');
@@ -1742,7 +1792,7 @@ export const PosView: React.FC = () => {
                       </div>
 
                       <div className="flex items-center gap-1.5 shrink-0">
-                        <div className="flex items-center border border-slate-700 rounded bg-slate-900">
+                        <div className="flex items-center border border-slate-700 rounded bg-slate-900 focus-within:border-amber-400">
                           <button
                             type="button"
                             onClick={() => handleUpdateQty(item.product.id, -1)}
@@ -1751,10 +1801,32 @@ export const PosView: React.FC = () => {
                           >
                             -
                           </button>
+                          <input
+                            type="number"
+                            inputMode="decimal"
+                            min="1"
+                            max={productTracksInventory(item.product) ? item.product.stock : undefined}
+                            step="1"
+                            value={qtyDrafts[item.product.id] ?? String(item.quantity)}
+                            onChange={(e) => handleQtyInputChange(item.product.id, e.target.value)}
+                            onBlur={() => handleQtyInputCommit(item.product.id)}
+                            onFocus={(e) => e.currentTarget.select()}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                e.currentTarget.blur();
+                              } else if (e.key === 'Escape') {
+                                clearQtyDraft(item.product.id);
+                                e.currentTarget.blur();
+                              }
+                            }}
+                            aria-label={`Cantidad rápida de ${item.product.name}`}
+                            title="Usa las flechas o escribe la cantidad con el teclado"
+                            className="w-12 px-1 py-0.5 font-mono font-bold text-xs text-center text-amber-300 bg-slate-950/70 border-x border-slate-700 outline-none tabular-nums"
+                          />
                           <button
                             type="button"
                             onClick={() => handleUpdateQty(item.product.id, 1)}
-                            className="px-1.5 py-0.5 text-slate-300 hover:text-white hover:bg-slate-800 cursor-pointer border-l border-slate-700"
+                            className="px-1.5 py-0.5 text-slate-300 hover:text-white hover:bg-slate-800 cursor-pointer"
                             title="Sumar 1"
                           >
                             +
@@ -2497,23 +2569,42 @@ export const PosView: React.FC = () => {
 
                         {/* Bottom: Quantity, Editable Price, and Subtotal */}
                         <div className="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-slate-200/80">
-                          {/* Qty +/- */}
-                          <div className="flex items-center border border-slate-200 rounded-lg bg-white shrink-0">
+                          {/* Qty +/- & Direct Keyboard Input */}
+                          <div className="flex items-center border border-slate-200 rounded-lg bg-white shrink-0 focus-within:border-amber-500 focus-within:ring-1 focus-within:ring-amber-400/40">
                             <button
                               type="button"
                               onClick={() => handleUpdateQty(item.product.id, -1)}
-                              className="p-1 hover:bg-slate-100 text-slate-700 cursor-pointer rounded-l-lg"
+                              className="p-1.5 hover:bg-slate-100 text-slate-700 cursor-pointer rounded-l-lg"
                               title="Restar cantidad"
                             >
                               <Minus className="w-2.5 h-2.5" />
                             </button>
-                            <span className="px-2 font-mono font-bold text-xs min-w-[20px] text-center">
-                              {item.quantity}
-                            </span>
+                            <input
+                              type="number"
+                              inputMode="decimal"
+                              min="1"
+                              max={productTracksInventory(item.product) ? item.product.stock : undefined}
+                              step="1"
+                              value={qtyDrafts[item.product.id] ?? String(item.quantity)}
+                              onChange={(e) => handleQtyInputChange(item.product.id, e.target.value)}
+                              onBlur={() => handleQtyInputCommit(item.product.id)}
+                              onFocus={(e) => e.currentTarget.select()}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                  e.currentTarget.blur();
+                                } else if (e.key === 'Escape') {
+                                  clearQtyDraft(item.product.id);
+                                  e.currentTarget.blur();
+                                }
+                              }}
+                              aria-label={`Cantidad de ${item.product.name}`}
+                              title="Usa las flechas o escribe la cantidad con el teclado"
+                              className="w-16 px-1 py-0.5 font-mono font-bold text-xs text-center text-slate-900 bg-transparent border-x border-slate-100 outline-none tabular-nums"
+                            />
                             <button
                               type="button"
                               onClick={() => handleUpdateQty(item.product.id, 1)}
-                              className="p-1 hover:bg-slate-100 text-slate-700 cursor-pointer rounded-r-lg"
+                              className="p-1.5 hover:bg-slate-100 text-slate-700 cursor-pointer rounded-r-lg"
                               title="Sumar cantidad"
                             >
                               <Plus className="w-2.5 h-2.5" />
